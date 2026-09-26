@@ -40,6 +40,12 @@ func (h *ChatHandler) handleAccountFallback(
 	endpoint string,
 ) error {
 	body = repairToolCallIDsInJSON(body)
+	// Flight phase for the live ops panel: everything below this point that
+	// takes measurable time is a connection lookup against the local DB, so
+	// the row reads "db" until the upstream forward starts.
+	reqID := log.RequestIDFromContext(ctx)
+	usagetracker.SetFlightTarget(reqID, model, provider, "")
+	usagetracker.SetFlightPhase(reqID, usagetracker.PhaseDB, "connection lookup")
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
 		if err != nil {

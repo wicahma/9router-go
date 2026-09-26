@@ -508,6 +508,8 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 					}
 				} else {
+					usagetracker.SetFlightTarget(comboReqID, modelInfo.Model, modelInfo.Provider, "")
+					usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseDB, "connection lookup")
 					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
@@ -714,6 +716,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 					}
 				} else {
+					usagetracker.SetFlightTarget(comboReqID, modelInfo.Model, modelInfo.Provider, "")
+					usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseDB, "connection lookup")
 					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break

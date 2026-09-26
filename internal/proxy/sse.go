@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/usagetracker"
 )
 
 // WriteSSEHeaders sets standard SSE headers on the response and writes HTTP 200.
@@ -131,6 +134,11 @@ type HeartbeatWriter struct {
 	mu        sync.Mutex
 	stopCh    chan struct{}
 	done      bool
+	ctx       context.Context
+	// streamMarked records that the first response byte reached the client.
+	// Set once, inside the mutex Write already takes, so marking the flight
+	// phase costs one branch per write and one map lookup per stream.
+	streamMarked bool
 }
 
 // NewHeartbeatWriter starts a background ticker that emits ": keep-alive\n\n"
@@ -147,6 +155,7 @@ func NewHeartbeatWriter(ctx context.Context, w http.ResponseWriter, interval tim
 		interval:  interval,
 		lastWrite: time.Now(),
 		stopCh:    make(chan struct{}),
+		ctx:       ctx,
 	}
 	go func() {
 		ticker := time.NewTicker(hw.interval)
@@ -216,6 +225,15 @@ func (hw *HeartbeatWriter) Write(b []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	hw.lastWrite = time.Now()
+	// First real byte to the client ends the upstream wait. The keep-alive
+	// ticker writes to the underlying writer directly, so a heartbeat can
+	// never flip the phase while the upstream is still silent.
+	if !hw.streamMarked {
+		hw.streamMarked = true
+		if hw.ctx != nil {
+			usagetracker.SetFlightPhase(log.RequestIDFromContext(hw.ctx), usagetracker.PhaseStream, "")
+		}
+	}
 	n, err := hw.w.Write(b)
 	return n, err
 }
