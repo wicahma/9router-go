@@ -418,6 +418,8 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		// /v1/models is unauthenticated here (200 with or without a key), so the
 		// generic models probe would accept any string. Use a chat probe instead.
 		return validateChatProbe(ctx, provider, cfg, apiKey)
+	case "kira":
+		return validateChatProbe(ctx, provider, cfg, apiKey)
 	}
 
 	if isAnthropicProbe(cfg) {

@@ -111,6 +111,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"kira": {
+		BaseURL:    "https://kiraai.vn/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"yolo-auto": {
+		BaseURL:    "https://yolo-auto.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"opencode": {
 		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
 		AuthHeader:    "Authorization",

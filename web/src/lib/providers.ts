@@ -1182,6 +1182,36 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "kira",
+    "name": "Kira AI",
+    "category": "freeTier",
+    "alias": "ki",
+    "color": "#E11D48",
+    "icon": "bolt",
+    "website": "https://kiraai.vn",
+    "notice": {"text":"150M tokens/day free (Kira Auto, Mini 1.0/2.0, Hy3, Mimo V2.5). 250M tokens/day on MiniMax M3 / Qwen 3.8 Flash / GLM 5.3 Flash while wallet balance > $0 (balance not deducted). kira-* models: 5M tokens/day. No credit card. Vietnamese console.", "apiKeyUrl":"https://kiraai.vn/dev"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "yolo-auto",
+    "name": "Yolo-Auto",
+    "category": "freeTier",
+    "alias": "ya",
+    "color": "#0EA5E9",
+    "icon": "auto_awesome",
+    "website": "https://yolo-auto.com",
+    "notice": {"text":"Flat monthly rate, no per-token billing. Free: 15 requests/week (resets Mon 00:00 UTC). Builder $19/mo ~200M tokens/day. Pro $39/mo ~750M tokens/day. Qwen3.8 Flash 256K context. Paid plans sold out as of 2026-09-26.", "apiKeyUrl":"https://yolo-auto.com/signup"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "aionlabs",
     "name": "Aion Labs",
     "category": "freeTier",

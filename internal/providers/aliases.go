@@ -95,6 +95,8 @@ var ProviderAliasMap = map[string]string{
 	"nst":            "neosantara",
 	"alo":            "aionlabs",
 	"xf":             "iflytek",
+	"ki":             "kira",
+	"ya":             "yolo-auto",
 	"xq":             "xquik",
 	"zd":             "zed",
 }
