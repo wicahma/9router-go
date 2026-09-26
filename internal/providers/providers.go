@@ -86,6 +86,26 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"requesty": {
+		BaseURL:    "https://router.requesty.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"sea-lion": {
+		BaseURL:    "https://api.sea-lion.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"neosantara": {
+		BaseURL:    "https://api.neosantara.xyz/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"aionlabs": {
+		BaseURL:    "https://api.aionlabs.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"opencode": {
 		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
 		AuthHeader:    "Authorization",

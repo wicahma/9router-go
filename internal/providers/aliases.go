@@ -90,6 +90,10 @@ var ProviderAliasMap = map[string]string{
 	"vx":             "vertex",
 	"vxp":            "vertex-partner",
 	"ws":             "windsurf",
+	"ry":             "requesty",
+	"sl":             "sea-lion",
+	"nst":            "neosantara",
+	"alo":            "aionlabs",
 	"xq":             "xquik",
 	"zd":             "zed",
 }

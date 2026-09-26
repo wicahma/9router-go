@@ -1122,6 +1122,66 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "requesty",
+    "name": "Requesty",
+    "category": "freeTier",
+    "alias": "ry",
+    "color": "#0EA5E9",
+    "icon": "hub",
+    "website": "https://requesty.ai",
+    "notice": {"text":"200 requests/day on free models. No credit card, no trial timer.","apiKeyUrl":"https://app.requesty.ai/api-keys"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "sea-lion",
+    "name": "SEA-LION",
+    "category": "freeTier",
+    "alias": "sl",
+    "color": "#EF4444",
+    "icon": "public",
+    "website": "https://sea-lion.ai",
+    "notice": {"text":"10 req/min, no token budget, no expiry. POC tier — limits cannot be raised.","apiKeyUrl":"https://playground.sea-lion.ai"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "neosantara",
+    "name": "Neosantara",
+    "category": "freeTier",
+    "alias": "nst",
+    "color": "#DC2626",
+    "icon": "flag",
+    "website": "https://www.neosantara.xyz",
+    "notice": {"text":"Rp 10.000 credits refreshed monthly (non-accumulating). 3-15 RPM. No credit card.","apiKeyUrl":"https://www.neosantara.xyz/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "aionlabs",
+    "name": "Aion Labs",
+    "category": "freeTier",
+    "alias": "alo",
+    "color": "#8B5CF6",
+    "icon": "auto_awesome",
+    "website": "https://aionlabs.ai",
+    "notice": {"text":"15 RPM / 20k TPM / 20k tokens per day on the permanent free tier. No card required.","apiKeyUrl":"https://aionlabs.ai/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "fish-audio",
     "name": "Fish Audio",
     "category": "apikey",
