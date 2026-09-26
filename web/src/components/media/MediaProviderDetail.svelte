@@ -388,7 +388,7 @@
   })
 
   let exampleEndpoint = $derived.by(() => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130'
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20128'
     if (kind === 'video') return `${origin}/v1/videos/generations`
     if (kind === 'image') return `${origin}/v1/images/generations`
     if (kind === 'tts') return `${origin}/v1/audio/speech`
@@ -400,7 +400,7 @@
   })
 
   let exampleCurl = $derived.by(() => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130'
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20128'
     const key = activeApiKey || 'YOUR_KEY'
     const defaultModel = selectedModelId || mediaModels[0]?.id || ''
     const qualifiedModel = resolveQualifiedModel(defaultModel)

@@ -43,8 +43,8 @@
   let copiedId = $state<string | null>(null)
   let shownKeyIds = $state<Set<string>>(new Set())
 
-  // Origin resolution (SSR fallback uses the Go default port 20130)
-  let localOrigin = $state('http://localhost:20130')
+  // Origin resolution (SSR fallback uses the Go default port 20128)
+  let localOrigin = $state('http://localhost:20128')
   let localEndpoint = $derived(`${localOrigin}/v1`)
   onMount(() => {
     if (typeof window !== 'undefined') {

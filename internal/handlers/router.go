@@ -164,6 +164,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
 
+	// CLI Tools status for the dashboard (session/cookie auth). The API-key
+	// variant of this path lives in SetupRoutes for CLI callers.
+	r.Get("/api/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
+
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)

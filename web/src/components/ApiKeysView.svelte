@@ -85,7 +85,7 @@
         CLI & Remote Access
       </h1>
       <p class="font-body text-xs sm:text-sm text-text-muted max-w-2xl leading-relaxed">
-        Issue and manage Bearer tokens for connecting clients (Cursor IDE, Claude Code CLI, omp, Cline) to the local gateway on port 20130.
+        Issue and manage Bearer tokens for connecting clients (Cursor IDE, Claude Code CLI, omp, Cline) to the local gateway on port 20128.
       </p>
     </div>
 
@@ -202,7 +202,7 @@
         <div class="p-3 rounded-lg bg-bg border border-border font-code text-[11px] text-text-main space-y-1 select-all">
           <div>
             <span class="text-text-subtle">Base URL: </span>
-            <span class="text-info">http://localhost:20130/v1</span>
+            <span class="text-info">http://localhost:20128/v1</span>
           </div>
           <div>
             <span class="text-text-subtle">API Key: </span>
@@ -218,7 +218,7 @@
           <span class="font-code text-[10px] text-text-subtle">Terminal Environment</span>
         </div>
         <div class="p-3 rounded-lg bg-bg border border-border font-code text-[11px] text-text-main space-y-1 select-all">
-          <div>export ANTHROPIC_BASE_URL="http://localhost:20130"</div>
+          <div>export ANTHROPIC_BASE_URL="http://localhost:20128"</div>
           <div>export ANTHROPIC_API_KEY="{primaryKey}"</div>
         </div>
       </div>

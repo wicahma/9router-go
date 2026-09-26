@@ -37,8 +37,9 @@
   let searchQuery = $state('')
   let activeCategory = $state<'all' | 'cli' | 'ide' | 'mitm'>('all')
   let copiedSnippetId = $state<string | null>(null)
-  // SSR fallback uses the Go default port 20130; live origin wins on mount.
-  let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130')
+  let selectedTool = $state<ToolItem | null>(null)
+  // SSR fallback uses the Go default port 20128; live origin wins on mount.
+  let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20128')
   onMount(() => {
     if (typeof window !== 'undefined') {
       localOrigin = window.location.origin
@@ -130,7 +131,7 @@
       configType: 'mitm',
       instructions: [
         'Antigravity MITM intercepts Google Cloud Code PA traffic transparently.',
-        `Point HTTP_PROXY or system proxy to 9router-go on port 20130.`,
+        `Point HTTP_PROXY or system proxy to 9router-go on port 20128.`,
         'All tools with _ide suffixes will be seamlessly uncloaked and routed to configured connections.',
       ],
     },

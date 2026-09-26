@@ -303,7 +303,7 @@
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">
               <Loader2 class="w-7 h-7 animate-spin text-brand-500" />
-              <span class="font-code text-xs">Connecting to 9router-go Localhost Gateway (:20130)...</span>
+              <span class="font-code text-xs">Connecting to 9router-go Localhost Gateway (:20128)...</span>
             </div>
           {:else}
             {#if activeTab === 'endpoint'}
