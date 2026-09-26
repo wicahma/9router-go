@@ -3,7 +3,7 @@ package providers
 import "testing"
 
 func TestNewFreeTierProviders_Wired(t *testing.T) {
-	for _, id := range []string{"requesty", "sea-lion", "neosantara", "aionlabs"} {
+	for _, id := range []string{"requesty", "sea-lion", "neosantara", "aionlabs", "iflytek"} {
 		cfg, ok := KnownProviders[id]
 		if !ok {
 			t.Fatalf("KnownProviders missing %q", id)
@@ -23,5 +23,14 @@ func TestNewFreeTierProviders_Wired(t *testing.T) {
 	}
 	if ResolveAlias("sl") != "sea-lion" {
 		t.Error("alias sl must resolve to sea-lion")
+	}
+	if ResolveAlias("nst") != "neosantara" {
+		t.Error("alias nst must resolve to neosantara")
+	}
+	if ResolveAlias("alo") != "aionlabs" {
+		t.Error("alias alo must resolve to aionlabs")
+	}
+	if ResolveAlias("xf") != "iflytek" {
+		t.Error("alias xf must resolve to iflytek")
 	}
 }

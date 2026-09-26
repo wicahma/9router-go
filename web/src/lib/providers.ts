@@ -1167,6 +1167,21 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "iflytek",
+    "name": "iFlytek Spark",
+    "category": "freeTier",
+    "alias": "xf",
+    "color": "#1668DC",
+    "icon": "bolt",
+    "website": "https://www.xfyun.cn",
+    "notice": {"text":"Spark Lite is free (\u514d\u8d39\u4f7f\u7528) with 8K context; one-off new-user allowance covers the paid tiers. APIPassword auth; Chinese console signup.","apiKeyUrl":"https://console.xfyun.cn/services/cbm"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "aionlabs",
     "name": "Aion Labs",
     "category": "freeTier",
