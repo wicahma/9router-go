@@ -414,6 +414,10 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validatePerplexityWeb(ctx, apiKey)
 	case "qoder":
 		return validateQoder(ctx, apiKey, psd)
+	case "neosantara":
+		// /v1/models is unauthenticated here (200 with or without a key), so the
+		// generic models probe would accept any string. Use a chat probe instead.
+		return validateChatProbe(ctx, provider, cfg, apiKey)
 	}
 
 	if isAnthropicProbe(cfg) {
@@ -444,6 +448,26 @@ func validateAnthropicStyle(ctx context.Context, provider string, cfg providers.
 	headers["content-type"] = "application/json"
 	// 400/529 still prove the key was accepted; only 401/403 mean bad key.
 	status, _, err := validateProbeDo(ctx, http.MethodPost, url, headers, payload)
+	if err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
+	}
+	return validateOutcome{
+		valid:     status != http.StatusUnauthorized && status != http.StatusForbidden,
+		supported: true,
+	}
+}
+
+// validateChatProbe sends a 1-token chat completion. Used when the provider's
+// /v1/models listing is public: a 200 there proves nothing about the key.
+func validateChatProbe(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string) validateOutcome {
+	payload, _ := json.Marshal(map[string]any{
+		"model":      validateDefaultModel(provider),
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	})
+	headers := validateAuthHeaders(cfg, apiKey)
+	headers["Content-Type"] = "application/json"
+	status, _, err := validateProbeDo(ctx, http.MethodPost, cfg.BaseURL, headers, payload)
 	if err != nil {
 		return validateOutcome{supported: true, message: err.Error()}
 	}
