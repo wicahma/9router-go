@@ -106,6 +106,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"agnes": {
+		BaseURL:    "https://apihub.agnes-ai.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"iflytek": {
 		BaseURL:    "https://spark-api-open.xf-yun.com/v1/chat/completions",
 		AuthHeader: "Authorization",

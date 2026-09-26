@@ -97,6 +97,8 @@ var ProviderAliasMap = map[string]string{
 	"xf":             "iflytek",
 	"ki":             "kira",
 	"ya":             "yolo-auto",
+	"agn":            "agnes",
+	"agnes-ai":       "agnes",
 	"xq":             "xquik",
 	"zd":             "zed",
 }

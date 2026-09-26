@@ -39,6 +39,23 @@ func TestNewFreeTierProviders_Wired(t *testing.T) {
 	if ResolveAlias("ya") != "yolo-auto" {
 		t.Error("alias ya must resolve to yolo-auto")
 	}
+	// agnes: free-tier OpenAI-compatible, passthrough models (no seed), original registry had passthroughModels: true
+	agnCfg, ok := KnownProviders["agnes"]
+	if !ok {
+		t.Fatal("KnownProviders missing agnes")
+	}
+	if agnCfg.BaseURL == "" || agnCfg.AuthHeader == "" || agnCfg.AuthScheme == "" {
+		t.Errorf("agnes incomplete: %+v", agnCfg)
+	}
+	if ResolveAlias("agnes") != "agnes" {
+		t.Errorf("ResolveAlias(agnes) = %q, want identity", ResolveAlias("agnes"))
+	}
+	if ResolveAlias("agn") != "agnes" {
+		t.Error("alias agn must resolve to agnes")
+	}
+	if ResolveAlias("agnes-ai") != "agnes" {
+		t.Error("alias agnes-ai must resolve to agnes")
+	}
 	if ResolveAlias("kira") == "kiro" || ResolveAlias("kr") != "kiro" {
 		t.Error("kira must not collide with kiro")
 	}

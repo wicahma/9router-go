@@ -19,6 +19,7 @@ func RegisterAll() {
 	Register("iflytek", func() Executor { return ForwardOpenAI })
 	Register("kira", func() Executor { return ForwardOpenAI })
 	Register("yolo-auto", func() Executor { return ForwardOpenAI })
+	Register("agnes", func() Executor { return ForwardOpenAI })
 	Register("opencode", func() Executor { return ForwardOpencode })
 	Register("gemini", func() Executor { return ForwardOpenAI })
 	Register("github", func() Executor { return ForwardOpenAI })

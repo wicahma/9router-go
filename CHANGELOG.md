@@ -3,6 +3,11 @@
 
 ## [Unreleased]
 
+### ✨ `agnes` — free-tier provider
+
+- Agnes AI (`category: freeTier` in the original registry): OpenAI-compatible gateway at `apihub.agnes-ai.com` with free sign-up credits. API-key bearer auth, any model id is accepted through passthrough (matching the original registry's `passthroughModels: true`; live model listing requires a key, so nothing is seeded).
+- Aliases: `agn`, `agnes-ai` → `agnes`.
+
 ### 🐛 Kiro OAuth auto-refresh + token selection (`e956cda` parity)
 
 - Kiro OAuth connections now refresh proactively: `internal/proxy/oauth/background.go` runs a 5-minute tick (30-minute lead window) over active OAuth connections and persists rotated tokens; wired in `internal/app/server.go` alongside the catalog sync. The refresher registry (`oauth.RegisterAll`) already registers a Kiro refresher, so the loop refreshes every due OAuth connection, not just Kiro.
