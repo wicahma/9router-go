@@ -194,10 +194,11 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	if refresher := oauth.Get(provider); refresher != nil {
 		log.Info("oauth", "token expired, custom refresh", "provider", provider, "project", projectID)
 		result, err := refresher(context.Background(), &oauth.Params{
-			Client:       h.Client,
-			Provider:     provider,
-			RefreshToken: oauthData.RefreshToken,
-			AccessToken:  currentToken,
+			Client:               h.Client,
+			Provider:             provider,
+			RefreshToken:         oauthData.RefreshToken,
+			AccessToken:          currentToken,
+			ProviderSpecificData: oauth.StringMap(psdField(connMap)),
 		})
 		if err != nil {
 			return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
@@ -290,9 +291,10 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	if refresher := oauth.Get(provider); refresher != nil {
 		log.Info("oauth", "force refresh", "provider", provider)
 		result, err := refresher(context.Background(), &oauth.Params{
-			Client:       h.Client,
-			Provider:     provider,
-			RefreshToken: oauthData.RefreshToken,
+			Client:               h.Client,
+			Provider:             provider,
+			RefreshToken:         oauthData.RefreshToken,
+			ProviderSpecificData: oauth.StringMap(psdField(connMap)),
 		})
 		if err == nil && result != nil {
 			var existing map[string]any
@@ -502,4 +504,10 @@ func (h *ChatHandler) handleGeminiNonStream(ctx context.Context, w http.Response
 	w.WriteHeader(http.StatusOK)
 	w.Write(openaiResp)
 	return nil
+}
+
+// psdField returns a connection payload's providerSpecificData blob.
+func psdField(connMap map[string]any) map[string]any {
+	m, _ := connMap["providerSpecificData"].(map[string]any)
+	return m
 }

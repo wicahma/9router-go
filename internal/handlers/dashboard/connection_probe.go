@@ -23,9 +23,9 @@ import (
 //
 // Differences from upstream, kept intentionally:
 //   - Token refresh reuses the Go refresher registry (internal/proxy/oauth) and
-//     the client IDs in providers.KnownOAuthConfigs, so providers upstream
-//     refreshes with configs we do not carry (kimi, kimi-coding, kiro) report
-//     "Token expired"/"Token invalid or revoked" instead of silently refreshing.
+//     the client IDs in providers.KnownOAuthConfigs, so providers that carry no
+//     refresh config (kimi, kimi-coding) report "Token expired"/"Token invalid
+//     or revoked" instead of silently refreshing.
 //   - Upstream's proactive codex "maxRefreshAgeMs" stale-window refresh is not
 //     ported; the plain expiresAt lead window below is used for every provider.
 const (
@@ -827,10 +827,11 @@ func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, provider 
 		client = &http.Client{Timeout: connectionProbeTimeout}
 	}
 	result, err := oauth.Refresh(ctx, &oauth.Params{
-		Client:       client,
-		Provider:     providers.ResolveAlias(provider),
-		RefreshToken: data.RefreshToken,
-		AccessToken:  data.AccessToken,
+		Client:               client,
+		Provider:             providers.ResolveAlias(provider),
+		RefreshToken:         data.RefreshToken,
+		AccessToken:          data.AccessToken,
+		ProviderSpecificData: oauth.StringMap(data.ProviderSpecificData),
 	})
 	if err != nil || result == nil || result.AccessToken == "" {
 		return nil

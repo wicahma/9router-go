@@ -151,7 +151,10 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
+	// Upstream translates the OpenAI body into a Kiro conversationState
+	// envelope here (translator.OpenAIToKiro); this tree has no kiro
+	// translator yet, so the body is forwarded verbatim.
+	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream, req.ConnData)
 	if err != nil {
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
@@ -283,7 +286,6 @@ func toCommandcodeImageBlock(part map[string]any) map[string]any {
 	}
 	return nil
 }
-
 
 // buildCommandcodeBody transforms OpenAI request payload into CommandCode schema
 // {threadId, memory, config, params} matching upstream openaiToCommandCodeRequest.

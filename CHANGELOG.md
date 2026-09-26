@@ -3,6 +3,14 @@
 
 ## [Unreleased]
 
+### 🐛 Kiro OAuth auto-refresh + token selection (`e956cda` parity)
+
+- Kiro OAuth connections now refresh proactively: `internal/proxy/oauth/background.go` runs a 5-minute tick (30-minute lead window) over active OAuth connections and persists rotated tokens; wired in `internal/app/server.go` alongside the catalog sync. The refresher registry (`oauth.RegisterAll`) already registers a Kiro refresher, so the loop refreshes every due OAuth connection, not just Kiro.
+- New `internal/proxy/oauth/kiro.go` refresher routes by stored credentials: AWS SSO OIDC (`clientId`/`clientSecret` + region, camelCase contract against `https://oidc.<region>.amazonaws.com/token`) or the desktop social endpoint. `oauth.Params` gained `ProviderSpecificData` so login-time credentials reach refreshers (all call sites updated).
+- `resolveProviderAuthToken` (upstream `e956cda` parity): Kiro connections with `authMethod != "api_key"` now send `accessToken`, not `apiKey` — previously the wrong credential produced `403 The bearer token included in the request is invalid`. `ForwardKiro` gained `TokenType`/`profile-arn` headers and endpoint rotation `q.<region>` → `codewhisperer.<region>` → `runtime.kiro.dev` with 401/403/404 fallback (400 stays terminal).
+- Kiro's translator (`OpenAIToKiro` envelope) is not ported yet; request bodies forward verbatim — documented in `executor/providers.go`.
+- Tests: `kiro_token_test.go`, `grokcli_kiro_test.go` (upstream), plus `background_test.go` selection table and a live-refresh test that skips without `/tmp/kiro_conn.json`.
+
 ### 🐛 Dashboard logging, request details, and cached-token parity
 
 - Moved console-log APIs to the dashboard-authenticated `/api/translator/console-logs*` boundary; dashboard sessions and local CLI tokens work, while engine API keys cannot read operational logs or change global log level.
