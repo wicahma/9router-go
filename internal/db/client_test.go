@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"testing"
 )
@@ -56,8 +58,57 @@ func TestOpenDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query busy_timeout: %v", err)
 	}
-	if busyTimeout != 5000 {
-		t.Errorf("expected busy_timeout to be 5000, got %d", busyTimeout)
+	if busyTimeout != 10000 {
+		t.Errorf("expected busy_timeout to be 10000, got %d", busyTimeout)
+	}
+}
+
+// TestOpenDatabasePragmasOnEveryConn guards the bug where db.Exec() applied
+// PRAGMAs to a single pooled connection: connections dialed afterwards had
+// busy_timeout=0 and failed instantly with SQLITE_BUSY under concurrent writes.
+func TestOpenDatabasePragmasOnEveryConn(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test_db_pool_*.sqlite")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	conn, err := OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("OpenDatabase failed: %v", err)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	var held []*sql.Conn
+	for i := 0; i < 4; i++ {
+		c, err := conn.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	defer func() {
+		for _, c := range held {
+			c.Close()
+		}
+	}()
+
+	for i, c := range held {
+		var busyTimeout, foreignKeys int
+		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout;").Scan(&busyTimeout); err != nil {
+			t.Fatalf("conn %d: query busy_timeout: %v", i, err)
+		}
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys;").Scan(&foreignKeys); err != nil {
+			t.Fatalf("conn %d: query foreign_keys: %v", i, err)
+		}
+		if busyTimeout != 10000 {
+			t.Errorf("conn %d: expected busy_timeout 10000, got %d", i, busyTimeout)
+		}
+		if foreignKeys != 1 {
+			t.Errorf("conn %d: expected foreign_keys 1, got %d", i, foreignKeys)
+		}
 	}
 }
 

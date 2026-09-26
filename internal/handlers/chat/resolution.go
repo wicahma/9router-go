@@ -29,10 +29,16 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 	// ResponseHeaderTimeout bounds how long we wait for the upstream to
 	// start responding — closing the "accept then go silent" gap without
 	// killing a stream that has already begun.
+	// 30s is deliberate: a healthy provider answers headers in well under a
+	// second (measured 146ms on the worst offender here). A 2-minute header
+	// timeout turned a stalled Cloudflare HTTP/2 connection into a multi-minute
+	// silence for the client — indistinguishable from a hang.
 	var transport http.RoundTripper
 	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
 		t := origTransport.Clone()
-		t.ResponseHeaderTimeout = 2 * time.Minute
+		t.ResponseHeaderTimeout = 30 * time.Second
+		// A stalled connection must not be reused for the next request.
+		t.MaxIdleConnsPerHost = 32
 		transport = proxy.NewFallbackTransport(t)
 	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
 		transport = fb

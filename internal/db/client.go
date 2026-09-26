@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -30,24 +29,25 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	// and its directory private to the owning user.
 	_ = os.Chmod(dbDir, 0700)
 
-	db, err := sql.Open("sqlite", path)
+	// PRAGMAs that must hold on EVERY pooled connection (busy_timeout,
+	// foreign_keys, journal_mode, synchronous) go in the DSN: database/sql
+	// pools connections, and db.Exec() only ever reaches one of them, leaving
+	// the rest without busy_timeout — those return SQLITE_BUSY immediately
+	// under concurrent writes (usage inserts) instead of waiting.
+	// temp_store/mmap_size/cache_size are read-only after connect, so they
+	// stay here.
+	dsn := path + "?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open(%s): %w", path, err)
 	}
 
-	// Configure PRAGMAs for performance, safety, and concurrency.
-	// busy_timeout is critical in WAL mode to prevent immediate "database is locked" errors during concurrent writes.
-	// foreign_keys is required to enforce relational database integrity.
-	pragmas := `
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+	if _, err = db.Exec(`
 PRAGMA temp_store = MEMORY;
 PRAGMA mmap_size = 30000000;
 PRAGMA cache_size = -64000;
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
-`
-	if _, err = db.Exec(pragmas); err != nil {
+`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pragma exec: %w", err)
 	}
@@ -60,10 +60,13 @@ PRAGMA busy_timeout = 5000;
 		return nil, fmt.Errorf("chmod db file %s: %w", path, err)
 	}
 
-	// Configure connection pool limits for SQLite to reduce lock contention
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(time.Hour)
+	// Pool limits: readers must not queue behind writers. Each chat request
+	// reads connections/settings; usage logging writes request details. With a
+	// 4-connection cap a 7-way parallel burst starved callers into unbounded
+	// waits inside database/sql.
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(16)
+	db.SetConnMaxLifetime(0)
 
 	return db, nil
 }
