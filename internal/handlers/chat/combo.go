@@ -17,6 +17,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/usagetracker"
 )
 
 // detectNewTurn reports whether the request body starts a new conversation
@@ -454,17 +455,24 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
+	comboReqID := log.RequestIDFromContext(ctx)
 	for attempt := 0; attempt < 2; attempt++ {
+		usagetracker.SetFlightAttempt(comboReqID, attempt+1)
 		if attempt > 0 {
 			wait := comboRetryAfter(earliestRetryAfter)
 			if wait == 0 {
 				break
 			}
+			// Surface the sleep: a request parked here is exactly the
+			// "stopped for minutes then resumed" case, and it looks
+			// indistinguishable from a hang without a phase label.
+			usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseQueue, "retry-after "+wait.String())
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(wait):
 			}
+			usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseUpstream, "")
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil
@@ -653,17 +661,24 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
+	comboReqID := log.RequestIDFromContext(ctx)
 	for attempt := 0; attempt < 2; attempt++ {
+		usagetracker.SetFlightAttempt(comboReqID, attempt+1)
 		if attempt > 0 {
 			wait := comboRetryAfter(earliestRetryAfter)
 			if wait == 0 {
 				break
 			}
+			// Surface the sleep: a request parked here is exactly the
+			// "stopped for minutes then resumed" case, and it looks
+			// indistinguishable from a hang without a phase label.
+			usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseQueue, "retry-after "+wait.String())
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(wait):
 			}
+			usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseUpstream, "")
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil

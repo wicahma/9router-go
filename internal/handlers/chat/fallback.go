@@ -319,6 +319,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	var fwdErr error
 
 	usagetracker.GetTracker().TrackPending(model, provider, connectionID, true, false)
+	// Flight phase for the live ops panel: the request has left the queue and
+	// is now waiting on an upstream. Reuses the ctx request ID, no allocation
+	// beyond the string that is already in the context.
+	reqID := log.RequestIDFromContext(ctx)
+	usagetracker.SetFlightTarget(reqID, model, provider, connectionID)
+	usagetracker.SetFlightPhase(reqID, usagetracker.PhaseUpstream, provider+"/"+model)
 	defer func() {
 		hasErr := fwdErr != nil
 		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)

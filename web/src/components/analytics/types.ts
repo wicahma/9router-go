@@ -34,6 +34,19 @@ export interface ActiveRequestItem {
   count?: number
 }
 
+export interface FlightItem {
+  id?: string
+  model?: string
+  provider?: string
+  account?: string
+  phase?: string
+  detail?: string
+  startedMs?: number
+  phaseMs?: number
+  ageMs?: number
+  attempt?: number
+}
+
 
 export interface RequestDetailItem {
   id?: string

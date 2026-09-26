@@ -11,12 +11,14 @@
     type StatsData,
     type RequestDetailItem,
     type ActiveRequestItem,
-    type RecentRequestItem
+    type RecentRequestItem,
+    type FlightItem
   } from './types'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
+  import InFlightCard from './InFlightCard.svelte'
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
@@ -29,6 +31,7 @@
   let isFetching = $state(false)
   let stats = $state<StatsData>({})
   let activeRequests = $state<ActiveRequestItem[]>([])
+  let flights = $state<FlightItem[]>([])
   let pulseProvider = $state<string>('')
   let lastProvider = $state<string>('')
   let errorProvider = $state<string>('')
@@ -179,6 +182,9 @@
                 if (data.activeRequests.length > 0 && data.activeRequests[0].provider) {
                   lastProvider = data.activeRequests[0].provider
                 }
+              }
+              if (Array.isArray(data.flights)) {
+                flights = data.flights
               }
               if (data.errorProvider) {
                 errorProvider = data.errorProvider
@@ -340,8 +346,8 @@
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
 
-    <!-- Topology + Recent Requests -->
-    <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+    <!-- Topology + Recent Requests + In-Flight -->
+    <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)_minmax(240px,1fr)]">
       <ProviderTopologyCard
         providers={topologyProviders}
         {activeRequests}
@@ -400,6 +406,7 @@
           </div>
         {/if}
       </div>
+      <InFlightCard {flights} />
     </div>
 
     <!-- Breakdown Table -->

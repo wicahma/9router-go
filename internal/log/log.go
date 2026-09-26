@@ -133,6 +133,16 @@ type RequestIDContextKey string
 // RequestIDKey is the context key used to store request IDs.
 const RequestIDKey RequestIDContextKey = "requestID"
 
+// RequestIDFromContext returns the correlation ID attached by the request-ID
+// middleware, or "" when the context carries none (background work, tests).
+func RequestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(RequestIDKey).(string)
+	return id
+}
+
 // Level represents a log level.
 type Level int
 

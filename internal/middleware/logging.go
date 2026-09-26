@@ -6,7 +6,25 @@ import (
 	"time"
 
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/usagetracker"
 )
+
+// upstreamPrefixes lists the request paths that leave the process. Only these
+// are worth tracking as in-flight: dashboard polling and asset requests finish
+// in microseconds and would only add noise.
+var upstreamPrefixes = []string{
+	"/chat/", "/messages", "/responses", "/embeddings", "/completions",
+	"/images/", "/audio/", "/search", "/scrape", "/videos/", "/rerank",
+}
+
+func isUpstreamPath(path string) bool {
+	for _, p := range upstreamPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // statusWriter wraps http.ResponseWriter to capture the status code
 // and guard against duplicate WriteHeader calls.
@@ -67,6 +85,11 @@ func isQuietPath(path string) bool {
 // RequestLogger returns a middleware that logs each HTTP request with
 // method, path, status code, duration, and request ID using the
 // structured logger. It also strips repeated /v1/ prefixes from paths.
+//
+// It also owns the lifecycle of the in-flight flight table: a request that
+// fans out to an upstream is registered once on entry (phase "queue") and
+// removed on exit, whatever the exit path. Pairing both ends here means a
+// handler cannot forget to clean up.
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
@@ -79,6 +102,12 @@ func RequestLogger(next http.Handler) http.Handler {
 		if reqID != "" {
 			w.Header().Set("X-Request-ID", reqID)
 		}
+
+		if isUpstreamPath(path) {
+			usagetracker.StartFlight(reqID, strings.TrimPrefix(path, "/"), "", "")
+			defer usagetracker.EndFlight(reqID)
+		}
+
 		ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(ww, req)
 

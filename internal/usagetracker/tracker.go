@@ -38,6 +38,7 @@ type RecentRequest struct {
 type StreamPayload struct {
 	ActiveRequests []ActiveRequest `json:"activeRequests"`
 	RecentRequests []RecentRequest `json:"recentRequests"`
+	Flights        []Flight        `json:"flights"`
 	ErrorProvider  string          `json:"errorProvider"`
 	Pending        PendingState    `json:"pending"`
 }
@@ -272,6 +273,7 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 	return StreamPayload{
 		ActiveRequests: active,
 		RecentRequests: recent,
+		Flights:        SnapshotFlights(),
 		ErrorProvider:  errProv,
 		Pending: PendingState{
 			ByModel:   byModelCopy,
