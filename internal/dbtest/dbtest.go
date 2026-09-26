@@ -26,6 +26,8 @@ func SchemaStatements() []string {
 			priority INTEGER,
 			isActive INTEGER DEFAULT 1,
 			data TEXT NOT NULL,
+			lastUsedAt TEXT,
+			consecutiveUseCount INTEGER DEFAULT 0,
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		)`,

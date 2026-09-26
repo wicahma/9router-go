@@ -102,6 +102,9 @@ func TestHandleSystemone_Live_Opencode(t *testing.T) {
 		strings.NewReader(`{"model":"oc/jev-1.13-free","state":"The server is responding normally with low latency.","questions":{"is_urgent":{"type":"noul","instructions":"Does this request require urgent attention?"}}}`),
 	)
 	handler.HandleSystemone(rec, req)
+	if rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusForbidden {
+		t.Skipf("opencode free tier rate limited (%d), skipping live test: %s", rec.Code, rec.Body.String())
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("live systemone request failed: status %d, body: %s", rec.Code, rec.Body.String())
 	}

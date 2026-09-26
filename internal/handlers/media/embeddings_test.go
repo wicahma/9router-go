@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/dbtest"
 	"9router/proxy/internal/handlers/chat"
 )
 
@@ -39,42 +40,10 @@ func setupEmbeddingsTestDB(t *testing.T) (*sql.DB, func()) {
 		os.Remove(tmpFile.Name())
 	}
 
-	schemas := []string{
-		`CREATE TABLE apiKeys (
-			id TEXT PRIMARY KEY,
-			key TEXT UNIQUE NOT NULL,
-			name TEXT,
-			machineId TEXT,
-			isActive INTEGER DEFAULT 1,
-			createdAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE providerConnections (
-			id TEXT PRIMARY KEY,
-			provider TEXT NOT NULL,
-			authType TEXT NOT NULL,
-			name TEXT,
-			email TEXT,
-			priority INTEGER,
-			isActive INTEGER DEFAULT 1,
-			data TEXT NOT NULL,
-			createdAt TEXT NOT NULL,
-			updatedAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE kv (
-			scope TEXT NOT NULL,
-			key TEXT NOT NULL,
-			value TEXT NOT NULL,
-			PRIMARY KEY (scope, key)
-		)`,
+	if err := dbtest.CreateTables(database); err != nil {
+		cleanup()
+		t.Fatalf("failed to create tables: %v", err)
 	}
-
-	for _, query := range schemas {
-		if _, err := database.Exec(query); err != nil {
-			cleanup()
-			t.Fatalf("failed to create table: %v", err)
-		}
-	}
-
 	_, err = database.Exec(`INSERT INTO apiKeys (id, key, name, isActive, createdAt) VALUES
 		('1', 'test-api-key', 'Test Key', 1, '2026-07-18T00:00:00Z')`)
 	if err != nil {

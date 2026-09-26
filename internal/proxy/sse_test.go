@@ -156,10 +156,15 @@ func (m *mockResponseWriter) Flush() {
 func TestHeartbeatWriter_EmitsKeepAliveWhenIdle(t *testing.T) {
 	rec := &mockResponseWriter{}
 	hw := NewHeartbeatWriter(context.Background(), rec, 25*time.Millisecond)
-	defer hw.Close()
 
 	// Wait for 2 heartbeat ticks (idle)
 	time.Sleep(70 * time.Millisecond)
+
+	// Close before reading: the ticker writes to rec from its own goroutine, so
+	// the buffer must not be read while the writer can still touch it.
+	if err := hw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	out := rec.String()
 	if !strings.Contains(out, ": keep-alive\n\n") {
