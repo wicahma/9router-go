@@ -85,7 +85,7 @@ func TestCLIDetectors_HasAllToolIDs(t *testing.T) {
 		"cowork", "copilot", "cline", "kilo", "deepseek-tui", "jcode",
 		"grok-build", "devin",
 	}
-	m := cliDetectors()
+	m := cliDetectors(nil)
 	for _, id := range want {
 		if _, ok := m[id]; !ok {
 			t.Errorf("missing tool detector for %q", id)

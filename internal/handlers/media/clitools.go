@@ -15,9 +15,15 @@ import (
 
 // cliStatus is the per-tool installed/version shape the dashboard expects
 // (port of each Next <tool>-settings GET, trimmed to just install + version).
+//
+// Has9Router is the "is this tool actually pointed at us" flag. The reference
+// declares it on the frontend but never populates it, so every detected tool
+// renders as "Not configured" forever; here it is filled by a read-only scan of
+// the operator's shell rc files.
 type cliStatus struct {
-	Installed bool    `json:"installed"`
-	Version   *string `json:"version"`
+	Installed  bool    `json:"installed"`
+	Version    *string `json:"version"`
+	Has9Router bool    `json:"has9Router"`
 }
 
 // cliVersionTimeout bounds each `--version` probe; install detection via
@@ -51,20 +57,24 @@ type toolDetector func(context.Context) (*cliStatus, error)
 // `cowork` checks Claude Desktop config dirs; `copilot` has no binary check
 // (reference hardcodes installed:true).
 type toolDef struct {
-	id        string
-	bin       string
-	hasVer    bool
-	dirCheck  func() bool
-	alwaysOn  bool
+	id       string
+	bin      string
+	hasVer   bool
+	dirCheck func() bool
+	alwaysOn bool
+	// envKey is the BASE_URL variable this tool reads to discover the gateway.
+	// Empty when the tool has no such variable (or is not a direct API client),
+	// in which case Has9Router stays false.
+	envKey string
 }
 
 var cliTools = []toolDef{
-	{id: "claude", bin: "claude"},
-	{id: "codex", bin: "codex"},
-	{id: "opencode", bin: "opencode"},
-	{id: "droid", bin: "droid"},
-	{id: "openclaw", bin: "openclaw"},
-	{id: "hermes", bin: "hermes"},
+	{id: "claude", bin: "claude", envKey: "ANTHROPIC_BASE_URL"},
+	{id: "codex", bin: "codex", envKey: "OPENAI_BASE_URL"},
+	{id: "opencode", bin: "opencode", envKey: "OPENAI_BASE_URL"},
+	{id: "droid", bin: "droid", envKey: "DROID_BASE_URL"},
+	{id: "openclaw", bin: "openclaw", envKey: "OPENCLAW_ENDPOINT"},
+	{id: "hermes", bin: "hermes", envKey: "HERMES_BASE_URL"},
 	{id: "cowork", dirCheck: coworkDirOK},
 	{id: "copilot", alwaysOn: true}, // VS Code config tool; reference returns installed:true
 	{id: "cline", bin: "cline"},
@@ -72,7 +82,7 @@ var cliTools = []toolDef{
 	{id: "deepseek-tui", bin: "deepseek"},
 	{id: "jcode", bin: "jcode"},
 	{id: "grok-build", bin: "grok"},
-	{id: "devin", bin: "devin", hasVer: true},
+	{id: "devin", bin: "devin", hasVer: true, envKey: "DEVIN_BASE_URL"},
 }
 
 // CLIToolsHandler aggregates per-tool CLI install/version status for the
@@ -91,31 +101,38 @@ func (h *CLIToolsHandler) HandleAllStatuses(w http.ResponseWriter, r *http.Reque
 	handlerutil.WriteJSON(w, http.StatusOK, cliStatuses(r.Context()))
 }
 
-// cliStatuses aggregates statuses for all known CLI tools.
+// cliStatuses aggregates statuses for all known CLI tools. The rc-file scan runs
+// once and is shared, so the file reads do not scale with the tool count.
 func cliStatuses(ctx context.Context) map[string]*cliStatus {
-	return detectAll(ctx, cliDetectors())
+	env := scanOperatorEnv()
+	return detectAll(ctx, cliDetectors(env))
 }
 
 // cliDetectors builds the detection map for every known tool.
-func cliDetectors() map[string]toolDetector {
+func cliDetectors(env map[string]string) map[string]toolDetector {
 	m := make(map[string]toolDetector, len(cliTools))
 	for _, t := range cliTools {
-		m[t.id] = t.detector()
+		m[t.id] = t.detector(env)
 	}
 	return m
 }
 
-// detector returns the tool's status probe. Presence is checked on the user
-// PATH via exec.LookPath (scope: plain PATH, no extra-bins trick).
-func (t toolDef) detector() toolDetector {
+// detector returns the tool's status probe. Presence is resolved against the
+// process PATH and then the per-user install roots, since the service user's
+// PATH is the bare system default.
+func (t toolDef) detector(env map[string]string) toolDetector {
+	has9Router := func(installed bool) bool {
+		return installed && t.envKey != "" && pointsAtGateway(env[t.envKey])
+	}
 	switch {
 	case t.alwaysOn:
 		return func(context.Context) (*cliStatus, error) {
-			return &cliStatus{Installed: true}, nil
+			return &cliStatus{Installed: true, Has9Router: has9Router(true)}, nil
 		}
 	case t.dirCheck != nil:
 		return func(context.Context) (*cliStatus, error) {
-			return &cliStatus{Installed: t.dirCheck()}, nil
+			ok := t.dirCheck()
+			return &cliStatus{Installed: ok, Has9Router: has9Router(ok)}, nil
 		}
 	default:
 		return func(ctx context.Context) (*cliStatus, error) {
@@ -124,7 +141,7 @@ func (t toolDef) detector() toolDetector {
 				// Not installed is a value, not an error (tool ≠ null).
 				return &cliStatus{Installed: false}, nil
 			}
-			s := &cliStatus{Installed: true}
+			s := &cliStatus{Installed: true, Has9Router: has9Router(true)}
 			if t.hasVer {
 				if v, err := binVersion(ctx, bin); err == nil && v != "" {
 					s.Version = &v

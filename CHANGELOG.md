@@ -3,6 +3,24 @@
 
 ## [Unreleased]
 
+### 🐛 CLI Tools: `has9Router` is now actually reported
+
+- **Every detected tool was stuck on "Not configured".** The dashboard renders
+  `Connected` only when `has9Router` is true, but no backend code ever set it —
+  the flag was declared on the frontend and never filled. It is now computed from
+  a read-only scan of the operator's shell rc files (`.bashrc`, `.profile`,
+  `.bash_profile`, `.zshrc`): a tool whose `BASE_URL` variable points at this
+  gateway reports connected, one pointed at a vendor does not.
+- Host matching is exact, not substring, so `router.diama.dev.evil.io` and
+  `router.diama.dev@evil.io` cannot spoof a configured card.
+- Seven tools declare their `BASE_URL` variable (`ANTHROPIC_`, `OPENAI_`,
+  `DROID_`, `OPENCLAW_`, `HERMES_`, `DEVIN_`); tools without one can never claim
+  to be connected.
+- Read-only by construction: rc files are opened O_RDONLY, nothing is written
+  back, no shell is evaluated. The parser handles plain `NAME=value` and
+  `export NAME=value` lines and deliberately skips compound commands
+  (`if ...; then export X=1; fi`) — noted as a ceiling in the test.
+
 ### 🐛 Dashboard: proxy modal overflow, clipped proxy dropdown, model drag, model test 401
 
 - **Apply Proxy modal overflowed and could not scroll.** The panel had no height
