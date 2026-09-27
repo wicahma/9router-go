@@ -12,19 +12,62 @@ func TestEstimateCostWithSource_TableMatchIsRealPrice(t *testing.T) {
 	}
 }
 
-func TestEstimateCostWithSource_UnknownModelIsMarkedDefault(t *testing.T) {
+func TestEstimateCostWithSource_CatalogFillsUnconfiguredModels(t *testing.T) {
+	withCatalog(t, func(model string) (float64, float64, bool) {
+		if model == "kimi-k3" {
+			return 3, 15, true
+		}
+		return 0, 0, false
+	})
+
 	cost, source := EstimateCostWithSource("kimi-k3", 1_000_000, 1_000_000)
+	if source != SourceCatalog {
+		t.Errorf("source = %q, want %q", source, SourceCatalog)
+	}
+	if want := 3.0 + 15.0; cost != want {
+		t.Errorf("cost = %v, want the catalog rate %v", cost, want)
+	}
+}
+
+func TestEstimateCostWithSource_CuratedTableBeatsCatalog(t *testing.T) {
+	// A locally configured rate is a decision, so the catalog must not
+	// overwrite it — claude-haiku is listed upstream at 4x the local rate
+	// because the prefix spans two model generations.
+	withCatalog(t, func(string) (float64, float64, bool) {
+		return 1, 5, true
+	})
+
+	cost, source := EstimateCostWithSource("claude-haiku", 1_000_000, 1_000_000)
+	if source != SourceTable {
+		t.Fatalf("source = %q, want %q — the local table must win", source, SourceTable)
+	}
+	if want := 0.25 + 1.25; cost != want {
+		t.Errorf("cost = %v, want the configured rate %v", cost, want)
+	}
+}
+
+func TestEstimateCostWithSource_DefaultIsTheLastResort(t *testing.T) {
+	withCatalog(t, func(string) (float64, float64, bool) { return 0, 0, false })
+
+	cost, source := EstimateCostWithSource("totally-unlisted-model", 1_000_000, 1_000_000)
 	if source != SourceDefault {
-		t.Errorf("source = %q, want %q — an unpriced model must not look priced", source, SourceDefault)
+		t.Errorf("source = %q, want %q", source, SourceDefault)
 	}
 	if want := 1.0 + 3.0; cost != want {
 		t.Errorf("cost = %v, want the default rate %v", cost, want)
 	}
 }
 
+func TestEstimateCostWithSource_DefaultAppliesWhenNoCatalogInstalled(t *testing.T) {
+	withCatalog(t, nil)
+
+	_, source := EstimateCostWithSource("kimi-k3", 100, 100)
+	if source != SourceDefault {
+		t.Errorf("source = %q, want %q — a nil lookup must not panic or invent a catalog rate", source, SourceDefault)
+	}
+}
+
 func TestEstimateCostWithSource_LongestPrefixWins(t *testing.T) {
-	// "claude-haiku" and "claude-sonnet-4" share no prefix, but a future
-	// "claude" entry would, so verify the winner is the longest one.
 	_, source := EstimateCostWithSource("deepseek-v4-flash", 100, 100)
 	if source != SourceTable {
 		t.Errorf("source = %q, want %q", source, SourceTable)
@@ -46,6 +89,8 @@ func TestEstimateCost_MatchesWithSourceWrapper(t *testing.T) {
 }
 
 func TestEstimateCostWithSource_ZeroTokensStillReportsSource(t *testing.T) {
+	withCatalog(t, func(string) (float64, float64, bool) { return 0, 0, false })
+
 	cost, source := EstimateCostWithSource("kimi-k3", 0, 0)
 	if cost != 0 {
 		t.Errorf("cost = %v, want 0", cost)
@@ -53,4 +98,12 @@ func TestEstimateCostWithSource_ZeroTokensStillReportsSource(t *testing.T) {
 	if source != SourceDefault {
 		t.Errorf("source = %q, want %q — a zero cost must not be mistaken for a free tier", source, SourceDefault)
 	}
+}
+
+// withCatalog installs a stub catalog lookup for the duration of one test.
+func withCatalog(t *testing.T, fn func(string) (float64, float64, bool)) {
+	t.Helper()
+	saved := CatalogPriceLookup
+	CatalogPriceLookup = fn
+	t.Cleanup(func() { CatalogPriceLookup = saved })
 }

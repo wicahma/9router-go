@@ -3,6 +3,29 @@
 
 ## [Unreleased]
 
+### ✨ Cost figures now come from the models.dev catalog, not a guess
+
+- The models.dev catalog the gateway already syncs every 24h was being read
+  for modalities and context limits only; its `cost` block was discarded. It is
+  now parsed and reduced to a per-model rate, so the thousands of models
+  nobody configured stop being billed at the flat `$1/$3` fallback.
+- **A model id has no single price.** models.dev lists each model once per
+  provider and those entries disagree — `kimi-k3` is served by 32 providers
+  carrying 13 different prices. A rate is therefore only accepted when strictly
+  more than half of the providers quoting that model agree; a genuine tie leaves
+  the model unpriced rather than resolving on Go's random map order.
+- Plan providers quoting `(0,0)` are excluded from the vote. They would
+  otherwise form a large majority on any model sold under a subscription and
+  drag the rate to zero for everyone paying per token.
+- The locally configured `pricingTable` still wins. `claude-haiku` is listed
+  upstream at 4x the local rate because the prefix spans two model generations,
+  and `deepseek-v4-flash` has no upstream majority at all, so letting the
+  catalog overwrite them would make those models worse.
+- `costSource` gains `catalog` between `table` and `default`, so a consensus
+  rate is never summed together with either a configured rate or a guess.
+- `pricing` consumes the catalog through a lookup function installed at
+  startup, since importing `providers` directly would be an import cycle.
+
 ### ✨ Wave 2: cost figures now say where they came from
 
 - **91.8% of every cost this gateway has recorded was invented.** The pricing

@@ -36,11 +36,30 @@ type SyncedModelLimits struct {
 	MaxOutput     int `json:"maxOutput,omitempty"`
 }
 
+// SyncedModelPrice holds the consensus upstream price for a model, in USD per
+// million tokens.
+//
+// models.dev lists a model once per provider, and those entries disagree:
+// kimi-k3 is served by 32 providers carrying 13 different prices. A single
+// model id therefore has no single price, so the value kept here is the one
+// most providers agree on, and Agreement records how strong that consensus was.
+type SyncedModelPrice struct {
+	InputPer1M  float64 `json:"inputPer1M"`
+	OutputPer1M float64 `json:"outputPer1M"`
+	// Agreement is the fraction of priced providers that quoted this exact
+	// pair. A value below 0.5 means no majority existed and nothing is stored.
+	Agreement float64 `json:"agreement"`
+}
+
 // SyncedCatalog represents the processed catalog file written to disk / kept in memory.
 type SyncedCatalog struct {
 	SyncedAt  string                                  `json:"syncedAt"`
 	Models    map[string]SyncedModelModalities        `json:"models"`
 	Providers map[string]map[string]SyncedModelLimits `json:"providers"`
+	// Prices maps a base model id to its consensus upstream price. Only models
+	// with a clear majority are present, so a miss is honest rather than a
+	// silent fallback to an invented rate.
+	Prices map[string]SyncedModelPrice `json:"prices,omitempty"`
 }
 
 type CatalogSyncState struct {
@@ -103,6 +122,29 @@ func GetCatalogModalities(model string) *SyncedModelModalities {
 		return &m
 	}
 	return nil
+}
+
+// GetCatalogPrice returns the consensus upstream price for a model, or false
+// when the catalog has no clear majority for it.
+func GetCatalogPrice(model string) (SyncedModelPrice, bool) {
+	if model == "" {
+		return SyncedModelPrice{}, false
+	}
+	base := strings.ToLower(model)
+	if idx := strings.Index(base, "/"); idx != -1 {
+		base = base[idx+1:]
+	}
+	if idx := strings.Index(base, ":"); idx != -1 {
+		base = base[:idx]
+	}
+
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	if globalCatalog == nil {
+		return SyncedModelPrice{}, false
+	}
+	p, ok := globalCatalog.Prices[base]
+	return p, ok
 }
 
 // LoadCatalogFromFile loads cached catalog from disk if it exists.
@@ -198,6 +240,10 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 				Context int `json:"context"`
 				Output  int `json:"output"`
 			} `json:"limit"`
+			Cost *struct {
+				Input  float64 `json:"input"`
+				Output float64 `json:"output"`
+			} `json:"cost"`
 		} `json:"models"`
 	}
 
@@ -210,6 +256,9 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 
 	modelsMap := make(map[string]SyncedModelModalities)
 	providersMap := make(map[string]map[string]SyncedModelLimits)
+	// priceVotes counts, per base model id, how many providers quoted each
+	// distinct price pair.
+	priceVotes := make(map[string]map[[2]float64]int)
 
 	for provID, provData := range rawData {
 		for modelID, mData := range provData.Models {
@@ -247,6 +296,15 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 					MaxOutput:     mData.Limit.Output,
 				}
 			}
+
+			// Prices
+			if mData.Cost != nil {
+				pair := [2]float64{mData.Cost.Input, mData.Cost.Output}
+				if priceVotes[base] == nil {
+					priceVotes[base] = make(map[[2]float64]int)
+				}
+				priceVotes[base][pair]++
+			}
 		}
 	}
 
@@ -255,6 +313,7 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 		SyncedAt:  nowStr,
 		Models:    modelsMap,
 		Providers: providersMap,
+		Prices:    consensusPrices(priceVotes),
 	}
 
 	catalogMu.Lock()
@@ -280,6 +339,43 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 
 	log.Info("catalog_sync", "catalog synchronized successfully", "models", len(modelsMap), "providers", len(providersMap))
 	return nil
+}
+
+// consensusPrices reduces per-provider price quotes to one rate per model.
+//
+// A model only gets an entry when strictly more than half of the providers
+// quoting it agree, so an outlier reseller cannot set the rate and a genuine
+// tie leaves the model unpriced instead of resolving on Go's random map
+// iteration order.
+//
+// A (0,0) quote is a subscription or token plan with no marginal per-token
+// charge. Such providers are excluded from the vote: they would otherwise form
+// a large majority on models that are free under a plan and drag the rate to
+// zero for everyone paying per token.
+func consensusPrices(votes map[string]map[[2]float64]int) map[string]SyncedModelPrice {
+	out := make(map[string]SyncedModelPrice, len(votes))
+	for model, tally := range votes {
+		var total, best int
+		var winner [2]float64
+		for pair, n := range tally {
+			if pair == ([2]float64{0, 0}) {
+				continue
+			}
+			total += n
+			if n > best {
+				best, winner = n, pair
+			}
+		}
+		if total == 0 || 2*best <= total {
+			continue
+		}
+		out[model] = SyncedModelPrice{
+			InputPer1M:  winner[0],
+			OutputPer1M: winner[1],
+			Agreement:   float64(best) / float64(total),
+		}
+	}
+	return out
 }
 
 // StartBackgroundCatalogSync runs initial sync and 24h timer loop.

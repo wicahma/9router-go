@@ -15,6 +15,7 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/shutdown"
@@ -68,6 +69,12 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
+			// pricing cannot import providers (cycle), so the catalog is handed
+			// over as a lookup function at startup.
+			pricing.CatalogPriceLookup = func(model string) (float64, float64, bool) {
+				p, ok := providers.GetCatalogPrice(model)
+				return p.InputPer1M, p.OutputPer1M, ok
+			}
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)

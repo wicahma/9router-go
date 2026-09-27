@@ -12,13 +12,22 @@ type Source string
 
 const (
 	// SourceTable means the model matched a pricingTable entry and the cost is
-	// a real published price.
+	// a deliberately configured rate.
 	SourceTable Source = "table"
-	// SourceDefault means no entry matched and defaultPricing was applied. The
+	// SourceCatalog means the rate came from the models.dev catalog: the price
+	// at least half of the providers quoting that model agree on. Real, but
+	// consensus, not an exact quote for the connection actually used.
+	SourceCatalog Source = "catalog"
+	// SourceDefault means nothing matched and defaultPricing was applied. The
 	// resulting number is a guess, not a price, and is not comparable with
-	// SourceTable figures.
+	// the other two.
 	SourceDefault Source = "default"
 )
+
+// CatalogPriceLookup resolves a model to its consensus upstream price. It is a
+// variable so pricing can consume the providers catalog without importing that
+// package, which would be a cycle. Set once at startup.
+var CatalogPriceLookup func(model string) (inputPer1M, outputPer1M float64, ok bool)
 
 // ModelPricing holds per-million-token costs for a model.
 type ModelPricing struct {
@@ -29,6 +38,13 @@ type ModelPricing struct {
 // pricingTable maps model name prefixes to their pricing.
 // Lookup uses longest-prefix matching so "claude-sonnet-4" catches
 // "claude-sonnet-4.5", "claude-sonnet-4-20250514", etc.
+//
+// These entries win over the upstream catalog. Two of them disagree with
+// models.dev consensus (claude-haiku is listed at 4x the local rate because the
+// prefix spans two generations), and deepseek-v4-flash has no upstream majority
+// at all, so letting the catalog overwrite them would make those worse. A
+// deliberate local rate is a decision; the catalog is a fallback for the
+// thousands of models nobody configured.
 var pricingTable = map[string]ModelPricing{
 	"claude-sonnet-4":   {InputPer1M: 3.0, OutputPer1M: 15.0},
 	"claude-haiku":      {InputPer1M: 0.25, OutputPer1M: 1.25},
@@ -75,9 +91,22 @@ func lookupPricing(model string) (ModelPricing, Source) {
 	}
 
 	if bestLen == 0 {
-		return defaultPricing, SourceDefault
+		return catalogOrDefault(model)
 	}
 	return bestPricing, SourceTable
+}
+
+// catalogOrDefault fills the gap for models nobody configured a rate for. The
+// catalog is consulted first because a consensus upstream price is closer to
+// truth than the flat default, and it reports SourceCatalog so the two are never
+// summed together as if they meant the same thing.
+func catalogOrDefault(model string) (ModelPricing, Source) {
+	if CatalogPriceLookup != nil {
+		if in, out, ok := CatalogPriceLookup(model); ok {
+			return ModelPricing{InputPer1M: in, OutputPer1M: out}, SourceCatalog
+		}
+	}
+	return defaultPricing, SourceDefault
 }
 
 // GetPricing returns the pricing for a model (exposed for external use / testing).
