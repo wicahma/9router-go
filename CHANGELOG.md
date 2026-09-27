@@ -3,6 +3,17 @@
 
 ## [Unreleased]
 
+### ✨ Per-model latency, not just cost
+
+- The dashboard can now show p50/p95/p99 latency per model, alongside cost and
+  tokens. The durations were already being recorded since the last release;
+  nothing was reading them.
+- Percentiles are computed in SQLite with a window function, so the 61k-row
+  usage history is never loaded into the gateway process and the request
+  handler's response shape is unchanged for models without timings.
+- A model whose requests have no recorded duration shows no percentiles rather
+  than `0ms`, so an unknown never reads as instant.
+
 ### ✨ Cost figures now come from the models.dev catalog, not a guess
 
 - The models.dev catalog the gateway already syncs every 24h was being read

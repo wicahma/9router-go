@@ -1,7 +1,7 @@
 export type MainTab = 'overview' | 'details'
 export type Period = 'today' | '24h' | '7d' | '30d' | '60d'
 export type TableView = 'model' | 'account' | 'apiKey' | 'endpoint'
-export type ViewMode = 'costs' | 'tokens'
+export type ViewMode = 'costs' | 'tokens' | 'latency'
 
 export interface UsageItem {
   requests?: number
@@ -16,6 +16,11 @@ export interface UsageItem {
   endpoint?: string
   provider?: string
   key?: string
+  // Latency percentiles, present only for models with recorded durations.
+  latencySamples?: number
+  p50Ms?: number
+  p95Ms?: number
+  p99Ms?: number
 }
 
 export interface RecentRequestItem {
@@ -109,6 +114,14 @@ export function cachedTokensFor(detail: RequestDetailItem): number {
 
 export function fmtCost(n?: number): string {
   return '$' + (n || 0).toFixed(2)
+}
+
+export function fmtMs(n?: number): string {
+  if (n === undefined || n === null) return '—'
+  if (n < 1000) return `${Math.round(n)}ms`
+  if (n < 60000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}s`
+  const m = Math.floor(n / 60000)
+  return `${m}m ${Math.round((n % 60000) / 1000)}s`
 }
 
 export function timeAgo(timestamp?: string): string {

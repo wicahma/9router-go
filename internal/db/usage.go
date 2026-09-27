@@ -167,6 +167,80 @@ func (r *Repo) GetRecentUsageHistory(limit int) ([]UsageHistoryRow, error) {
 	return res, nil
 }
 
+// LatencyStats is the latency distribution for one model+provider pair.
+//
+// Samples counts only requests that actually recorded a duration (the meta
+// column is populated from a known wave onwards, so older rows are invisible
+// here by design rather than counted as zero).
+type LatencyStats struct {
+	Model    string
+	Provider string
+	Samples  int
+	P50Ms    int64
+	P95Ms    int64
+	P99Ms    int64
+}
+
+// latencyPercentilesQuery computes p50/p95/p99 per model+provider in SQL.
+//
+// The percentiles are nearest-rank on the ordered sample set, which needs no
+// interpolation and is exact for the rank it reports. Doing this in SQLite
+// keeps the whole meta column out of the process: only three integers per
+// model+provider pair cross into Go. latency_ms comes from json_extract, which
+// is NULL for rows written before durations were recorded, so those rows drop
+// out instead of polluting the distribution with zeros.
+//
+// json_valid guards the whole query: json_extract raises on malformed input
+// rather than returning NULL, so without it a single junk meta value would make
+// the dashboard report nothing at all instead of ignoring that one row.
+const latencyPercentilesQuery = `
+WITH lat AS (
+  SELECT model,
+         COALESCE(provider, '') AS provider,
+         CAST(json_extract(meta, '$.latencyMs') AS INTEGER) AS v
+  FROM usageHistory
+  WHERE timestamp >= ?
+    AND json_valid(meta)
+    AND json_extract(meta, '$.latencyMs') IS NOT NULL
+),
+ranked AS (
+  SELECT model, provider, v,
+         ROW_NUMBER() OVER (PARTITION BY model, provider ORDER BY v) AS rn,
+         COUNT(*)     OVER (PARTITION BY model, provider)           AS cnt
+  FROM lat
+)
+SELECT model, provider, cnt,
+       MAX(CASE WHEN rn = (cnt * 50 + 99) / 100 THEN v END),
+       MAX(CASE WHEN rn = (cnt * 95 + 99) / 100 THEN v END),
+       MAX(CASE WHEN rn = (cnt * 99 + 99) / 100 THEN v END)
+FROM ranked
+GROUP BY model, provider
+ORDER BY cnt DESC
+LIMIT ?`
+
+// GetLatencyStatsSince returns per-model+provider latency percentiles for
+// requests at or after cutoff, ordered by sample count (busiest first).
+func (r *Repo) GetLatencyStatsSince(cutoff string, limit int) ([]LatencyStats, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Query(latencyPercentilesQuery, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query latency stats since %s: %w", cutoff, err)
+	}
+	defer rows.Close()
+
+	var res []LatencyStats
+	for rows.Next() {
+		var s LatencyStats
+		if err := rows.Scan(&s.Model, &s.Provider, &s.Samples, &s.P50Ms, &s.P95Ms, &s.P99Ms); err != nil {
+			continue
+		}
+		res = append(res, s)
+	}
+	return res, nil
+}
+
 // GetRequestDetailsPaged returns paged raw json strings and total count from requestDetails.
 func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) {
 	var total int

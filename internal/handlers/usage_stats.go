@@ -29,6 +29,12 @@ type ModelUsageItem struct {
 	RawModel         string  `json:"rawModel"`
 	Provider         string  `json:"provider"`
 	LastUsed         string  `json:"lastUsed"`
+	// Latency percentiles are absent, not zero, when the requests behind this
+	// row predate duration capture — a zero would read as "instant".
+	LatencySamples int   `json:"latencySamples,omitempty"`
+	P50Ms          int64 `json:"p50Ms,omitempty"`
+	P95Ms          int64 `json:"p95Ms,omitempty"`
+	P99Ms          int64 `json:"p99Ms,omitempty"`
 }
 
 type AccountUsageItem struct {
@@ -70,6 +76,46 @@ type EndpointUsageItem struct {
 	LastUsed         string  `json:"lastUsed"`
 }
 
+// applyLatencyStats overlays p50/p95/p99 onto the byModel rows.
+//
+// Percentiles are keyed on model+provider while byModel is keyed on a display
+// string, and the two code paths that build that string store different raw
+// values for the provider (a node display name vs the raw id). Matching each
+// row on its own (rawModel, provider) pair avoids having to reconstruct the
+// display string, and a row with no matching samples simply keeps no
+// percentiles.
+//
+// usageHistory.provider holds the raw node/connection id, whereas a byModel row
+// carries the node's display name, so the percentile key has to be normalised
+// through the same nodeNameMap the rows were built with. Without that the two
+// sides never meet and every row silently stays blank.
+func applyLatencyStats(resp *UsageStatsResponse, stats []db.LatencyStats, nodeNameMap map[string]string) {
+	byPair := make(map[string]db.LatencyStats, len(stats))
+	for _, s := range stats {
+		byPair[s.Model+"|"+displayProvider(s.Provider, nodeNameMap)] = s
+	}
+
+	for key, item := range resp.ByModel {
+		s, ok := byPair[item.RawModel+"|"+item.Provider]
+		if !ok {
+			continue
+		}
+		item.LatencySamples = s.Samples
+		item.P50Ms, item.P95Ms, item.P99Ms = s.P50Ms, s.P95Ms, s.P99Ms
+		resp.ByModel[key] = item
+	}
+}
+
+// displayProvider maps a raw provider id to the label the dashboard shows for
+// it, falling back to the id itself.
+func displayProvider(provider string, nodeNameMap map[string]string) string {
+	if dn, ok := nodeNameMap[provider]; ok && dn != "" {
+		return dn
+	}
+	return provider
+}
+
+// UsageStatsResponse aggregates request statistics for the dashboard.
 type UsageStatsResponse struct {
 	TotalRequests         int                          `json:"totalRequests"`
 	TotalPromptTokens     int64                        `json:"totalPromptTokens"`
@@ -372,7 +418,36 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			resp.RecentRequests = dedupedRecent
 		}
 
+		latencyStats, err := repo.GetLatencyStatsSince(cutoffLatency(period, time.Now().UTC()), 100)
+		if err == nil {
+			applyLatencyStats(&resp, latencyStats, nodeNameMap)
+		}
+
 		handlerutil.WriteJSON(w, http.StatusOK, resp)
+	}
+}
+
+// cutoffLatency returns the lower bound used for latency percentiles.
+//
+// Percentiles always read raw usageHistory, never the daily rollup: the rollup
+// stores no durations, so sampling it would silently report zeros. That means
+// the window is computed directly from the requested period instead of being
+// tied to the two periods that happen to query usageHistory for other reasons.
+func cutoffLatency(period string, now time.Time) string {
+	switch period {
+	case "7d":
+		return now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	case "30d":
+		return now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+	case "60d":
+		return now.Add(-60 * 24 * time.Hour).Format(time.RFC3339)
+	case "all":
+		return now.Add(-365 * 24 * time.Hour).Format(time.RFC3339)
+	case "24h":
+		return now.Add(-24 * time.Hour).Format(time.RFC3339)
+	default:
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		return startOfDay.Format(time.RFC3339)
 	}
 }
 

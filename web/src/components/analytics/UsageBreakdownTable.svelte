@@ -5,6 +5,7 @@
   import {
     fmt,
     fmtCost,
+    fmtMs,
     timeAgo,
     TABLE_OPTIONS,
     type StatsData,
@@ -25,22 +26,30 @@
 
   let tableData = $derived((): ProcessedUsageRow[] => {
     if (!stats) return []
+    // Percentiles are only computed per model+provider, so the latency view is
+    // always the model table regardless of the dropdown.
+    const view: TableView = viewMode === 'latency' ? 'model' : tableView
     let sourceMap: Record<string, UsageItem> = {}
-    if (tableView === 'model') sourceMap = stats.byModel || {}
-    else if (tableView === 'account') sourceMap = stats.byAccount || {}
-    else if (tableView === 'apiKey') sourceMap = stats.byApiKey || {}
-    else if (tableView === 'endpoint') sourceMap = stats.byEndpoint || {}
+    if (view === 'model') sourceMap = stats.byModel || {}
+    else if (view === 'account') sourceMap = stats.byAccount || {}
+    else if (view === 'apiKey') sourceMap = stats.byApiKey || {}
+    else if (view === 'endpoint') sourceMap = stats.byEndpoint || {}
 
-    return Object.entries(sourceMap)
-      .map(([key, item]) => {
-        const totalTokens = (item.promptTokens || 0) + (item.completionTokens || 0)
-        return {
-          key,
-          ...item,
-          totalTokens,
-        }
-      })
-      .sort((a, b) => (b.requests || 0) - (a.requests || 0))
+    const rows = Object.entries(sourceMap).map(([key, item]) => {
+      const totalTokens = (item.promptTokens || 0) + (item.completionTokens || 0)
+      return {
+        key,
+        ...item,
+        totalTokens,
+      }
+    })
+
+    if (viewMode === 'latency') {
+      // Models with no recorded durations sort last instead of topping the list
+      // with zeros.
+      return rows.sort((a, b) => (b.p95Ms || 0) - (a.p95Ms || 0))
+    }
+    return rows.sort((a, b) => (b.requests || 0) - (a.requests || 0))
   })
 </script>
 
@@ -49,33 +58,27 @@
     <!-- View selector dropdown -->
     <select
       bind:value={tableView}
-      class="w-full sm:w-auto rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-text-main focus:outline-none focus:ring-2 focus:ring-brand-500/50 cursor-pointer"
+      disabled={viewMode === 'latency'}
+      class="w-full sm:w-auto rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-text-main focus:outline-none focus:ring-2 focus:ring-brand-500/50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {#each TABLE_OPTIONS as opt}
         <option value={opt.value}>{opt.label}</option>
       {/each}
     </select>
 
-    <!-- Toggle: Costs | Tokens -->
+    <!-- Toggle: Costs | Tokens | Latency -->
     <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm self-start sm:self-auto">
-      <button
-        type="button"
-        onclick={() => (viewMode = 'costs')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'costs'
-          ? 'bg-brand-500 text-white shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Costs
-      </button>
-      <button
-        type="button"
-        onclick={() => (viewMode = 'tokens')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'tokens'
-          ? 'bg-brand-500 text-white shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Tokens
-      </button>
+      {#each [{ id: 'costs', label: 'Costs' }, { id: 'tokens', label: 'Tokens' }, { id: 'latency', label: 'Latency' }] as m}
+        <button
+          type="button"
+          onclick={() => (viewMode = m.id as ViewMode)}
+          class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === m.id
+            ? 'bg-brand-500 text-white shadow-sm'
+            : 'text-text-muted hover:text-text-main'}"
+        >
+          {m.label}
+        </button>
+      {/each}
     </div>
   </div>
 
@@ -84,6 +87,10 @@
     {#if tableData().length === 0}
       <div class="p-8 text-center text-text-muted text-sm font-body">
         No usage recorded for this period.
+      </div>
+    {:else if viewMode === 'latency' && !tableData().some((r) => (r.latencySamples || 0) > 0)}
+      <div class="p-8 text-center text-text-muted text-sm font-body">
+        No request timings recorded yet.
       </div>
     {:else}
       <div class="overflow-x-auto">
@@ -97,6 +104,11 @@
               <th class="py-3 px-4 text-right">Requests</th>
               {#if viewMode === 'costs'}
                 <th class="py-3 px-4 text-right">Total Cost</th>
+              {:else if viewMode === 'latency'}
+                <th class="py-3 px-4 text-right">p50</th>
+                <th class="py-3 px-4 text-right">p95</th>
+                <th class="py-3 px-4 text-right">p99</th>
+                <th class="py-3 px-4 text-right">Samples</th>
               {:else}
                 <th class="py-3 px-4 text-right">In Tokens</th>
                 <th class="py-3 px-4 text-right">Out Tokens</th>
@@ -147,6 +159,11 @@
                   <td class="py-3 px-4 text-right font-mono font-bold text-warning">
                     {fmtCost(row.cost)}
                   </td>
+                {:else if viewMode === 'latency'}
+                  <td class="py-3 px-4 text-right font-mono text-text-main">{fmtMs(row.p50Ms)}</td>
+                  <td class="py-3 px-4 text-right font-mono font-semibold text-warning">{fmtMs(row.p95Ms)}</td>
+                  <td class="py-3 px-4 text-right font-mono text-danger">{fmtMs(row.p99Ms)}</td>
+                  <td class="py-3 px-4 text-right font-mono text-text-muted">{fmt(row.latencySamples)}</td>
                 {:else}
                   <td class="py-3 px-4 text-right font-mono text-brand-500">
                     {fmt(row.promptTokens)}
