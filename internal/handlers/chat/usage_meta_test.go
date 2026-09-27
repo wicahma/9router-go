@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"testing"
 
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 )
 
@@ -11,7 +12,7 @@ func TestBuildUsageMeta_CarriesLatencyAndTokens(t *testing.T) {
 	info := &UsageLogInfo{Provider: "kiro", Model: "claude-sonnet-4", ConnectionID: "conn-7"}
 	usage := &translator.OpenAIUsage{PromptTokens: 120, CompletionTokens: 45}
 
-	raw := buildUsageMeta(info, 1234, 87, 200, usage, 30, 5)
+	raw := buildUsageMeta(info, 1234, 87, 200, usage, 30, 5, 0.42, pricing.SourceTable)
 
 	var got usageMeta
 	if err := json.Unmarshal(raw, &got); err != nil {
@@ -35,6 +36,23 @@ func TestBuildUsageMeta_CarriesLatencyAndTokens(t *testing.T) {
 	if got.Provider != "kiro" || got.ConnectionID != "conn-7" {
 		t.Errorf("identity fields not preserved: %+v", got)
 	}
+	if got.CostSource != "table" || got.Cost != 0.42 {
+		t.Errorf("cost provenance not persisted: source=%q cost=%v", got.CostSource, got.Cost)
+	}
+}
+
+func TestBuildUsageMeta_DefaultSourceIsNotDressedUpAsPriced(t *testing.T) {
+	info := &UsageLogInfo{Provider: "cbcn", Model: "kimi-k3", ConnectionID: "c2"}
+	usage := &translator.OpenAIUsage{PromptTokens: 10, CompletionTokens: 4}
+
+	var got usageMeta
+	raw := buildUsageMeta(info, 500, 0, 200, usage, 0, 0, 0.0004, pricing.SourceDefault)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CostSource != "default" {
+		t.Errorf("costSource = %q, want %q — an unpriced model must be visible as such", got.CostSource, pricing.SourceDefault)
+	}
 }
 
 func TestBuildUsageMeta_NonStreamingHasNoTTFT(t *testing.T) {
@@ -42,7 +60,7 @@ func TestBuildUsageMeta_NonStreamingHasNoTTFT(t *testing.T) {
 	usage := &translator.OpenAIUsage{PromptTokens: 5, CompletionTokens: 5}
 
 	var got usageMeta
-	if err := json.Unmarshal(buildUsageMeta(info, 300, 0, 200, usage, 0, 0), &got); err != nil {
+	if err := json.Unmarshal(buildUsageMeta(info, 300, 0, 200, usage, 0, 0, 0.01, pricing.SourceDefault), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Streamed {

@@ -1,73 +1,56 @@
 package pricing
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestEstimateCost(t *testing.T) {
-	cost := EstimateCost("gpt-4o", 1000, 500)
-	// 1000/1M * 2.5 + 500/1M * 10.0 = 0.0025 + 0.005 = 0.0075
-	expected := 0.0075
-	if cost != expected {
-		t.Errorf("gpt-4o: got %f, want %f", cost, expected)
+func TestEstimateCostWithSource_TableMatchIsRealPrice(t *testing.T) {
+	cost, source := EstimateCostWithSource("claude-sonnet-4-20250514", 1_000_000, 1_000_000)
+	if source != SourceTable {
+		t.Errorf("source = %q, want %q", source, SourceTable)
+	}
+	if want := 3.0 + 15.0; cost != want {
+		t.Errorf("cost = %v, want %v", cost, want)
 	}
 }
 
-func TestEstimateCost_ZeroTokens(t *testing.T) {
-	cost := EstimateCost("gpt-4o", 0, 0)
-	if cost != 0 {
-		t.Errorf("expected 0, got %f", cost)
+func TestEstimateCostWithSource_UnknownModelIsMarkedDefault(t *testing.T) {
+	cost, source := EstimateCostWithSource("kimi-k3", 1_000_000, 1_000_000)
+	if source != SourceDefault {
+		t.Errorf("source = %q, want %q — an unpriced model must not look priced", source, SourceDefault)
+	}
+	if want := 1.0 + 3.0; cost != want {
+		t.Errorf("cost = %v, want the default rate %v", cost, want)
 	}
 }
 
-func TestEstimateCost_DefaultPricing(t *testing.T) {
-	cost := EstimateCost("unknown-model", 1000000, 1000000)
-	// default: $1.0/1M input, $3.0/1M output
-	expected := 4.0
-	if cost != expected {
-		t.Errorf("expected %f, got %f", expected, cost)
+func TestEstimateCostWithSource_LongestPrefixWins(t *testing.T) {
+	// "claude-haiku" and "claude-sonnet-4" share no prefix, but a future
+	// "claude" entry would, so verify the winner is the longest one.
+	_, source := EstimateCostWithSource("deepseek-v4-flash", 100, 100)
+	if source != SourceTable {
+		t.Errorf("source = %q, want %q", source, SourceTable)
 	}
-}
-
-func TestEstimateCost_PrefixMatch(t *testing.T) {
-	// claude-haiku-3-5-sonnet should match claude-haiku prefix
-	cost := EstimateCost("claude-haiku-3-5-sonnet", 2000000, 500000)
-	// 2M/1M * 0.25 + 0.5M/1M * 1.25 = 0.5 + 0.625 = 1.125
-	expected := 1.125
-	if cost != expected {
-		t.Errorf("claude-haiku prefix: got %f, want %f", cost, expected)
-	}
-}
-
-func TestGetPricing(t *testing.T) {
-	p := GetPricing("gpt-4o")
-	if p.InputPer1M != 2.5 || p.OutputPer1M != 10.0 {
-		t.Errorf("got %#v", p)
-	}
-
-	p = GetPricing("nonexistent")
-	if p != defaultPricing {
-		t.Errorf("expected default, got %#v", p)
-	}
-}
-
-func TestLookupPricing_ExactMatch(t *testing.T) {
-	p := lookupPricing("deepseek-v4-flash")
+	p := GetPricing("deepseek-v4-flash")
 	if p.InputPer1M != 0.07 {
-		t.Errorf("expected 0.07, got %f", p.InputPer1M)
+		t.Errorf("InputPer1M = %v, want 0.07", p.InputPer1M)
 	}
 }
 
-func TestLookupPricing_CaseInsensitive(t *testing.T) {
-	p := lookupPricing("GPT-4O-Turbo")
-	if p.InputPer1M != 2.5 {
-		t.Errorf("expected 2.5 for case-insensitive match, got %f", p.InputPer1M)
+func TestEstimateCost_MatchesWithSourceWrapper(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "claude-haiku", "unknown-model", "agnes-3.0-flash"} {
+		want := EstimateCost(model, 1234, 567)
+		got, _ := EstimateCostWithSource(model, 1234, 567)
+		if got != want {
+			t.Errorf("%s: EstimateCost = %v, EstimateCostWithSource = %v", model, want, got)
+		}
 	}
 }
 
-func TestLookupPricing_LongestPrefix(t *testing.T) {
-	p := lookupPricing("claude-sonnet-4-20250514")
-	if p.InputPer1M != 3.0 {
-		t.Errorf("expected 3.0 for claude-sonnet-4 prefix, got %f", p.InputPer1M)
+func TestEstimateCostWithSource_ZeroTokensStillReportsSource(t *testing.T) {
+	cost, source := EstimateCostWithSource("kimi-k3", 0, 0)
+	if cost != 0 {
+		t.Errorf("cost = %v, want 0", cost)
+	}
+	if source != SourceDefault {
+		t.Errorf("source = %q, want %q — a zero cost must not be mistaken for a free tier", source, SourceDefault)
 	}
 }

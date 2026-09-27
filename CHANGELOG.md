@@ -3,6 +3,21 @@
 
 ## [Unreleased]
 
+### ✨ Wave 2: cost figures now say where they came from
+
+- **91.8% of every cost this gateway has recorded was invented.** The pricing
+  table holds four prefixes, and any model outside them fell through to a
+  `$1/$3` default that was then stored in `usageHistory.cost` as if it were a
+  real price. Of 55,225 priced rows, only 4,506 matched the table.
+- `pricing.EstimateCostWithSource` now returns the figure together with its
+  provenance — `table` (a published price) or `default` (a guess) — and that
+  label is persisted in `usageHistory.meta` as `costSource`, along with the cost
+  figure itself. Readers can now split real spend from estimated spend instead
+  of averaging the two together.
+- `EstimateCost` is kept as a thin wrapper so existing callers are unchanged.
+- The label survives a zero cost: a model with no tokens still reports its
+  source, so a zero can no longer be misread as a free tier.
+
 ### ✨ Wave 1: latency and TTFT are now persisted per request
 
 - **`usageHistory.meta` was writing a copy of columns the row already had.**

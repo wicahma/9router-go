@@ -3,6 +3,7 @@ package chat
 import (
 	json "encoding/json/v2"
 
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 )
 
@@ -14,23 +15,25 @@ import (
 // every request, written to the log file, and then dropped. They are persisted
 // here so latency can be queried instead of guessed at.
 type usageMeta struct {
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	ConnectionID  string `json:"connectionId"`
-	LatencyMs     int64  `json:"latencyMs"`
-	TTFTMs        int64  `json:"ttftMs"`
-	HTTPStatus    int    `json:"httpStatus"`
-	Streamed      bool   `json:"streamed"`
-	PromptTokens  int    `json:"promptTokens"`
-	OutputTokens  int    `json:"completionTokens"`
-	CachedTokens  int    `json:"cachedTokens"`
-	CacheCreation int    `json:"cacheCreationInputTokens"`
+	Provider      string  `json:"provider"`
+	Model         string  `json:"model"`
+	ConnectionID  string  `json:"connectionId"`
+	LatencyMs     int64   `json:"latencyMs"`
+	TTFTMs        int64   `json:"ttftMs"`
+	HTTPStatus    int     `json:"httpStatus"`
+	Streamed      bool    `json:"streamed"`
+	CostSource    string  `json:"costSource"`
+	Cost          float64 `json:"cost"`
+	PromptTokens  int     `json:"promptTokens"`
+	OutputTokens  int     `json:"completionTokens"`
+	CachedTokens  int     `json:"cachedTokens"`
+	CacheCreation int     `json:"cacheCreationInputTokens"`
 }
 
 // buildUsageMeta assembles the meta document for a completed request. A
 // non-streaming exchange has ttftMs of 0, which is why Streamed is derived from
 // it rather than passed in.
-func buildUsageMeta(info *UsageLogInfo, latencyMs, ttftMs int64, httpStatus int, usage *translator.OpenAIUsage, cached, cacheCreation int) []byte {
+func buildUsageMeta(info *UsageLogInfo, latencyMs, ttftMs int64, httpStatus int, usage *translator.OpenAIUsage, cached, cacheCreation int, cost float64, costSource pricing.Source) []byte {
 	b, err := json.Marshal(usageMeta{
 		Provider:      info.Provider,
 		Model:         info.Model,
@@ -39,6 +42,8 @@ func buildUsageMeta(info *UsageLogInfo, latencyMs, ttftMs int64, httpStatus int,
 		TTFTMs:        ttftMs,
 		HTTPStatus:    httpStatus,
 		Streamed:      ttftMs > 0,
+		CostSource:    string(costSource),
+		Cost:          cost,
 		PromptTokens:  usage.PromptTokens,
 		OutputTokens:  usage.CompletionTokens,
 		CachedTokens:  cached,

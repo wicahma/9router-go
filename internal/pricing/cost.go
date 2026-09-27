@@ -2,6 +2,24 @@ package pricing
 
 import "strings"
 
+// Source records how a cost figure was arrived at, so a reader can tell a
+// priced model from one that merely fell through to the default rate.
+//
+// A zero Cost is otherwise ambiguous: it can mean a genuinely free tier, a
+// model absent from the table, or a request that reported no tokens. Before
+// this existed every one of those looked identical in usageHistory.
+type Source string
+
+const (
+	// SourceTable means the model matched a pricingTable entry and the cost is
+	// a real published price.
+	SourceTable Source = "table"
+	// SourceDefault means no entry matched and defaultPricing was applied. The
+	// resulting number is a guess, not a price, and is not comparable with
+	// SourceTable figures.
+	SourceDefault Source = "default"
+)
+
 // ModelPricing holds per-million-token costs for a model.
 type ModelPricing struct {
 	InputPer1M  float64
@@ -12,10 +30,10 @@ type ModelPricing struct {
 // Lookup uses longest-prefix matching so "claude-sonnet-4" catches
 // "claude-sonnet-4.5", "claude-sonnet-4-20250514", etc.
 var pricingTable = map[string]ModelPricing{
-	"claude-sonnet-4": {InputPer1M: 3.0, OutputPer1M: 15.0},
-	"claude-haiku":    {InputPer1M: 0.25, OutputPer1M: 1.25},
+	"claude-sonnet-4":   {InputPer1M: 3.0, OutputPer1M: 15.0},
+	"claude-haiku":      {InputPer1M: 0.25, OutputPer1M: 1.25},
 	"deepseek-v4-flash": {InputPer1M: 0.07, OutputPer1M: 0.28},
-	"gpt-4o":          {InputPer1M: 2.5, OutputPer1M: 10.0},
+	"gpt-4o":            {InputPer1M: 2.5, OutputPer1M: 10.0},
 }
 
 // defaultPricing is the fallback when no prefix matches.
@@ -24,24 +42,29 @@ var defaultPricing = ModelPricing{InputPer1M: 1.0, OutputPer1M: 3.0}
 // EstimateCost calculates the USD cost for a request given the model name and token counts.
 // It uses longest-prefix matching against the pricing table, falling back to defaultPricing.
 func EstimateCost(model string, promptTokens, completionTokens int) float64 {
-	pricing := lookupPricing(model)
-
-	inputCost := float64(promptTokens) / 1_000_000 * pricing.InputPer1M
-	outputCost := float64(completionTokens) / 1_000_000 * pricing.OutputPer1M
-	return inputCost + outputCost
+	c, _ := EstimateCostWithSource(model, promptTokens, completionTokens)
+	return c
 }
 
-// lookupPricing finds the best matching pricing entry for a model name.
-// It tries exact matches first, then longest-prefix matches.
-func lookupPricing(model string) ModelPricing {
+// EstimateCostWithSource returns the cost together with the reason that number
+// was chosen, so callers can persist how much of their spend is priced and how
+// much is invented.
+func EstimateCostWithSource(model string, promptTokens, completionTokens int) (float64, Source) {
+	p, source := lookupPricing(model)
+	inputCost := float64(promptTokens) / 1_000_000 * p.InputPer1M
+	outputCost := float64(completionTokens) / 1_000_000 * p.OutputPer1M
+	return inputCost + outputCost, source
+}
+
+// lookupPricing finds the best matching pricing entry for a model name and
+// reports whether the match came from the table or the fallback.
+func lookupPricing(model string) (ModelPricing, Source) {
 	model = strings.ToLower(model)
 
-	// Exact match
 	if p, ok := pricingTable[model]; ok {
-		return p
+		return p, SourceTable
 	}
 
-	// Longest-prefix match
 	bestLen := 0
 	bestPricing := defaultPricing
 	for prefix, p := range pricingTable {
@@ -51,10 +74,14 @@ func lookupPricing(model string) ModelPricing {
 		}
 	}
 
-	return bestPricing
+	if bestLen == 0 {
+		return defaultPricing, SourceDefault
+	}
+	return bestPricing, SourceTable
 }
 
 // GetPricing returns the pricing for a model (exposed for external use / testing).
 func GetPricing(model string) ModelPricing {
-	return lookupPricing(model)
+	p, _ := lookupPricing(model)
+	return p
 }

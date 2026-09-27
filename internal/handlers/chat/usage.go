@@ -147,7 +147,7 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	}
 
 	totalTokens := usage.PromptTokens + usage.CompletionTokens
-	cost := pricing.EstimateCost(info.Model, usage.PromptTokens, usage.CompletionTokens)
+	cost, costSource := pricing.EstimateCostWithSource(info.Model, usage.PromptTokens, usage.CompletionTokens)
 
 	cachedTokens := usage.GetCachedTokens()
 	cacheCreationTokens := usage.CacheCreationInputTokens
@@ -155,9 +155,9 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	// This path only runs for a completed exchange, so the upstream status is
 	// 200 by construction; the status is carried in meta for shape parity with
 	// the failure path, which records the real code.
-	metaJSON := buildUsageMeta(info, latencyMs, ttftMs, http.StatusOK, usage, cachedTokens, cacheCreationTokens)
+	metaJSON := buildUsageMeta(info, latencyMs, ttftMs, http.StatusOK, usage, cachedTokens, cacheCreationTokens, cost, costSource)
 
-	log.Info("usage", "logged", "provider", info.Provider, "model", info.Model, "prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens, "cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost)
+	log.Info("usage", "logged", "provider", info.Provider, "model", info.Model, "prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens, "cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost, "cost_source", costSource)
 
 	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens)
 	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, string(metaJSON), tokensJSON); err != nil {
