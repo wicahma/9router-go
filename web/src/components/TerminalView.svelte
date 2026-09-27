@@ -5,6 +5,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Card from '../lib/ui/Card.svelte'
   import { notifications } from '../lib/notifications'
+  import { filterConsoleLogs, stripAnsi } from './consoleLog'
 
   const MAX_LINES = 200
 
@@ -20,7 +21,6 @@
     DBG: 'text-purple-400',
   }
 
-  const ANSI_RE = /\u001b\[[0-9;]*m/g
   const BRACKET_TAG_RE = /\[(\w+)\]/
   const LEADING_LEVEL_RE = /^(LOG|INFO|INF|WARN|WRN|ERROR|ERR|DEBUG|DBG)\b/
 
@@ -28,13 +28,11 @@
   let logElement = $state<HTMLDivElement | null>(null)
   let logLevel = $state('info')
   let levelBusy = $state(false)
+  let query = $state('')
 
   const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
 
-  /** Server lines can still carry terminal colors (e.g. captured stdout). */
-  function stripAnsi(line: string): string {
-    return line.replace(ANSI_RE, '')
-  }
+  const filteredLogs = $derived(filterConsoleLogs(logs, query))
 
   /** Same rule as Next: a level tag wins, everything else is green. */
   function levelColor(line: string): string {
@@ -165,15 +163,22 @@
 
   // Auto-scroll to bottom on new logs
   $effect(() => {
-    void logs.length
+    void filteredLogs.length
     if (logElement) logElement.scrollTop = logElement.scrollHeight
   })
 </script>
 
 <div class="">
   <Card>
-    <div class="flex items-center justify-end gap-2 px-4 pt-3 pb-2">
-      <label class="text-xs text-text-muted" for="console-log-level">Level</label>
+    <div class="flex flex-wrap items-center gap-2 px-4 pt-3 pb-2">
+      <input
+        type="search"
+        class="flex-1 min-w-[8rem] text-xs bg-surface border border-border rounded-md px-2 py-1.5 text-text-primary placeholder:text-text-muted"
+        placeholder="Filter logs..."
+        bind:value={query}
+        aria-label="Filter console logs"
+      />
+      <label class="text-xs text-text-muted whitespace-nowrap" for="console-log-level">Level</label>
       <select
         id="console-log-level"
         class="text-xs bg-surface border border-border rounded-md px-2 py-1.5 text-text-primary disabled:opacity-50"
@@ -196,9 +201,11 @@
     >
       {#if logs.length === 0}
         <span class="text-text-muted">No console logs yet.</span>
+      {:else if filteredLogs.length === 0}
+        <span class="text-text-muted">No lines match "{query}".</span>
       {:else}
         <div class="space-y-0.5">
-          {#each logs as line, i (i)}
+          {#each filteredLogs as line, i (i)}
             <div><span class={levelColor(line)}>{stripAnsi(line)}</span></div>
           {/each}
         </div>

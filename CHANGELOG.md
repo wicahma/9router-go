@@ -3,6 +3,14 @@
 
 ## [Unreleased]
 
+### ✨ Filter the console log
+
+- The console log page has a search box. It filters the buffered lines as you
+  type, case-insensitively, matching the text you actually see (ANSI colour
+  codes are ignored, so `error` matches a red line).
+- Purely client-side: the server buffer is already capped at 200 lines, so
+  there was nothing to gain from a server-side query endpoint.
+
 ### ✨ Per-model latency, not just cost
 
 - The dashboard can now show p50/p95/p99 latency per model, alongside cost and
