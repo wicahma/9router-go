@@ -41,6 +41,9 @@
   let modalNameError = $state('')
   let editingIdx = $state<number | null>(null)
   let editDraft = $state('')
+  let dragIdx = $state<number | null>(null)
+  let overIdx = $state<number | null>(null)
+  let listEl = $state<HTMLElement | null>(null)
 
   const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/
 
@@ -75,6 +78,60 @@
   function removeModel(idx: number) {
     onUpdateModels(models.filter((_, i) => i !== idx))
     if (editingIdx === idx) editingIdx = null
+  }
+
+  // Drag reorder. The grabbed row is removed and reinserted at the drop index
+  // (array splice, not a swap) so a move across several positions lands in one
+  // gesture instead of walking one slot per row crossed.
+  function onDragStart(e: DragEvent, idx: number) {
+    dragIdx = idx
+    e.dataTransfer?.setData('text/plain', String(idx))
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+  }
+
+  function onDragOver(e: DragEvent, idx: number) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (overIdx !== idx) overIdx = idx
+    autoScrollList(e.clientY)
+  }
+
+  function autoScrollList(clientY: number) {
+    const el = listEl
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const edge = 28
+    if (clientY < r.top + edge) el.scrollTop -= 12
+    else if (clientY > r.bottom - edge) el.scrollTop += 12
+  }
+
+  function onDrop(e: DragEvent, idx: number) {
+    e.preventDefault()
+    const from = dragIdx ?? Number.parseInt(e.dataTransfer?.getData('text/plain') ?? '', 10)
+    dragIdx = null
+    overIdx = null
+    if (Number.isNaN(from) || from === idx || from === null) return
+    const arr = [...models]
+    const [moved] = arr.splice(from, 1)
+    arr.splice(idx, 0, moved)
+    onUpdateModels(arr)
+  }
+
+  function onDragEnd() {
+    dragIdx = null
+    overIdx = null
+  }
+
+  // Keyboard reorder: the grip handle is focusable and moves the row with the
+  // arrow keys, so reordering works without a pointer.
+  function onGripKeydown(e: KeyboardEvent, idx: number) {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveModel(idx, -1)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveModel(idx, 1)
+    }
   }
 
   function startEdit(idx: number, model: string) {
@@ -123,11 +180,35 @@
           <p class="text-xs text-text-muted">No models added yet</p>
         </div>
       {:else}
-        <div class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]">
-          {#each models as model, idx}
+        <div
+          bind:this={listEl}
+          class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]"
+          role="list"
+        >
+          {#each models as model, idx (model)}
             {@const caps = getModelCaps(model)}
-            <div class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors">
-              <GripVertical class="w-3.5 h-3.5 text-text-muted cursor-grab shrink-0" />
+            <div
+              role="listitem"
+              draggable="true"
+              ondragstart={(e) => onDragStart(e, idx)}
+              ondragover={(e) => onDragOver(e, idx)}
+              ondrop={(e) => onDrop(e, idx)}
+              ondragend={onDragEnd}
+              class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors {dragIdx === idx
+                ? 'opacity-40'
+                : ''} {overIdx === idx && dragIdx !== null && dragIdx !== idx
+                ? 'ring-1 ring-brand-500'
+                : ''}"
+            >
+              <span
+                class="flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-text-muted active:cursor-grabbing focus-visible:cursor-grab"
+                role="button"
+                tabindex="0"
+                aria-label={`Reorder ${model}. Use arrow up and arrow down keys to move.`}
+                onkeydown={(e) => onGripKeydown(e, idx)}
+              >
+                <GripVertical class="w-3.5 h-3.5" />
+              </span>
               <span class="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{idx + 1}</span>
               {#if editingIdx === idx}
                 <input

@@ -3,6 +3,28 @@
 
 ## [Unreleased]
 
+### 🐛 Dashboard: proxy modal overflow, clipped proxy dropdown, model drag, model test 401
+
+- **Apply Proxy modal overflowed and could not scroll.** The panel had no height
+  cap, so the pool list grew past the viewport. Panel is now `max-h-[90vh]`
+  flex-column with a `min-h-0 flex-1 overflow-y-auto` body, and the header,
+  "Applying…" note and Cancel row are `shrink-0` so they stay pinned.
+- **Proxy dropdown in the connection list was clipped by the list itself.** The
+  menu was `absolute` inside a `max-h-[500px] overflow-y-auto` container, so it
+  was cut off (and picked up the list's scroll). It is now `position: fixed`
+  anchored to the trigger's viewport rect, flips above the button when it would
+  run past the bottom edge, and re-measures on scroll/resize while open.
+- **Model rows in the combo editor could not be dragged.** The grip icon existed
+  but had no drag handlers, so reordering was arrow-button only. Rows are now
+  `draggable` with `dragstart`/`dragover`/`drop`/`dragend`; the drop is a splice
+  (remove + insert at the target index) so a multi-slot move lands in one
+  gesture. The list auto-scrolls when a drag nears its top/bottom edge, and the
+  grip is focusable with arrow-key reorder for pointer-free use.
+- **`/api/models/test` returned 401 "Authentication required" for every
+  provider test.** The route was mounted inside the `RequireApiKey` group, but
+  the dashboard calls it with its session cookie and no API key. Moved to the
+  dashboard-auth group (upstream parity), with a regression test.
+
 ### ✨ `agnes` — free-tier provider
 
 - Agnes AI (`category: freeTier` in the original registry): OpenAI-compatible gateway at `apihub.agnes-ai.com` with free sign-up credits. API-key bearer auth, any model id is accepted through passthrough (matching the original registry's `passthroughModels: true`; live model listing requires a key, so nothing is seeded).

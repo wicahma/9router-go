@@ -258,6 +258,11 @@
 
   // Row UI state
   let activeProxyDropdownId = $state<string | null>(null)
+  // Viewport rect of the open proxy dropdown, measured from its trigger button.
+  // The connection list scrolls (overflow-y-auto), so an absolutely positioned
+  // menu is clipped by it; a viewport-fixed menu anchored to this rect is not.
+  let proxyDropdownRect = $state<{ top: number; left: number; minWidth: number } | null>(null)
+  let proxyDropdownTrigger = $state<HTMLElement | null>(null)
   let updatingProxyConnId = $state<string | null>(null)
   let copiedModelId = $state<string | null>(null)
   let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
@@ -1042,8 +1047,50 @@
     }
   }
 
-  async function assignProxyPool(conn: ProviderConnection, poolId: string | null) {
+  function closeProxyDropdown() {
     activeProxyDropdownId = null
+    proxyDropdownRect = null
+    proxyDropdownTrigger = null
+  }
+
+  function toggleProxyDropdown(connId: string, trigger: HTMLElement) {
+    if (activeProxyDropdownId === connId) {
+      closeProxyDropdown()
+      return
+    }
+    activeProxyDropdownId = connId
+    proxyDropdownTrigger = trigger
+  }
+
+  // Anchor the menu to the trigger's viewport rect, flipping above the button
+  // when it would run past the bottom edge. The connection list scrolls, so the
+  // viewport-fixed menu is re-measured while the page moves.
+  function positionProxyDropdown() {
+    if (!proxyDropdownTrigger) return
+    const r = proxyDropdownTrigger.getBoundingClientRect()
+    const height = (proxyPools.length + 1) * 32 + 8
+    const below = r.bottom + 4
+    const flip = below + height > window.innerHeight && r.top - height > 0
+    proxyDropdownRect = {
+      top: flip ? r.top - height - 4 : below,
+      left: r.left,
+      minWidth: Math.max(r.width, 160)
+    }
+  }
+
+  $effect(() => {
+    if (!activeProxyDropdownId) return
+    positionProxyDropdown()
+    window.addEventListener('scroll', positionProxyDropdown, true)
+    window.addEventListener('resize', positionProxyDropdown)
+    return () => {
+      window.removeEventListener('scroll', positionProxyDropdown, true)
+      window.removeEventListener('resize', positionProxyDropdown)
+    }
+  })
+
+  async function assignProxyPool(conn: ProviderConnection, poolId: string | null) {
+    closeProxyDropdown()
     updatingProxyConnId = conn.id
     try {
       await api.updateConnection(conn.id, proxyAssignmentPayload(poolId))
@@ -2616,7 +2663,7 @@
                     <div class="relative">
                       <button
                         type="button"
-                        onclick={() => (activeProxyDropdownId = activeProxyDropdownId === conn.id ? null : conn.id)}
+                        onclick={(e) => toggleProxyDropdown(conn.id, e.currentTarget as HTMLElement)}
                         disabled={updatingProxyConnId === conn.id}
                         class="flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 {proxyBadge.hasAnyProxy ? 'text-primary' : 'text-text-muted hover:text-primary'} cursor-pointer"
                       >
@@ -2626,14 +2673,17 @@
                         <span class="text-[10px] leading-tight">Proxy</span>
                       </button>
 
-                      {#if activeProxyDropdownId === conn.id}
+                      {#if activeProxyDropdownId === conn.id && proxyDropdownRect}
                         <!-- Backdrop -->
                         <div
                           class="fixed inset-0 z-40"
-                          onclick={() => (activeProxyDropdownId = null)}
+                          onclick={closeProxyDropdown}
                           role="presentation"
                         ></div>
-                        <div class="absolute right-0 top-full z-50 mt-1 max-w-[78vw] min-w-[160px] rounded-lg border border-border bg-bg py-1 shadow-lg">
+                        <div
+                          class="fixed z-50 max-h-[60vh] overflow-y-auto rounded-lg border border-border bg-bg py-1 shadow-lg"
+                          style="top: {proxyDropdownRect.top}px; left: {proxyDropdownRect.left}px; min-width: max({proxyDropdownRect.minWidth}px, 160px)"
+                        >
                           <button
                             type="button"
                             onclick={() => assignProxyPool(conn, null)}
@@ -3393,8 +3443,8 @@
       onclick={() => (showApplyProxyModal = false)}
       role="presentation"
     ></div>
-    <div class="relative w-full bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-lg p-6">
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
+    <div class="relative flex max-h-[90vh] w-full flex-col bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-lg p-6">
+      <div class="flex shrink-0 items-center justify-between pb-3 border-b border-border-subtle mb-4">
         <h2 class="text-lg font-semibold text-text-main">
           Apply Proxy ({providerConnections.length} connections)
         </h2>
@@ -3407,7 +3457,7 @@
         </button>
       </div>
 
-      <div class="space-y-2 mb-6">
+      <div class="min-h-0 flex-1 space-y-2 overflow-y-auto">
         <button
           type="button"
           onclick={handleApplyProxyRotate}
@@ -3456,10 +3506,10 @@
       </div>
 
       {#if isApplyingProxy}
-        <p class="mb-4 text-xs text-text-muted">Applying...</p>
+        <p class="mt-4 shrink-0 text-xs text-text-muted">Applying...</p>
       {/if}
 
-      <div class="flex justify-end">
+      <div class="mt-6 flex shrink-0 justify-end">
         <button
           type="button"
           onclick={() => (showApplyProxyModal = false)}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -197,6 +198,30 @@ func TestSetupServerRouter_SPARoutes(t *testing.T) {
 	// When no API keys exist in test DB, RequireApiKey allows or denies based on settings
 	if wAPI.Code == http.StatusNotFound {
 		t.Errorf("expected /api/settings to be handled by API handler, not 404")
+	}
+}
+
+// A client API key must not be the only way in: the dashboard tests models with
+// its session cookie only, so mounting /api/models/test under RequireApiKey made
+// every provider test fail with 401 "Authentication required".
+func TestModelTestRouteUsesDashboardGateNotApiKey(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/models/test", strings.NewReader(`{"model":"gpt-4o-mini"}`)))
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("open dashboard model test status = %d, want past auth gate: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("/api/models/test not mounted: %s", rec.Body.String())
 	}
 }
 

@@ -62,7 +62,6 @@ func SetupRoutes(r interface {
 	r.Get("/api/models/catalog-sync", chatH.HandleCatalogSyncStatus)
 	r.Post("/api/models/catalog-sync", chatH.HandleCatalogSyncTrigger)
 	r.Get("/api/models", chatH.HandleModels)
-	r.Post("/api/models/test", chatH.HandleTestModel)
 	r.Post("/chat/completions", chatH.HandleChatCompletions)
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
@@ -195,6 +194,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Post("/api/models/custom", dashH.HandleSaveCustomModel)
 	r.Delete("/api/models/custom/{key}", dashH.HandleDeleteCustomModel)
 	r.Get("/api/models/disabled", dashH.HandleGetDisabledModels)
+	// Model test: dashboard-auth (session cookie), not client API key. The
+	// dashboard calls it without an API key, so mounting it under
+	// RequireApiKey made every provider test fail with 401 "Authentication
+	// required". Upstream registers it on the dashboard group too.
+	chatH := chat.NewChatHandler(repo)
+	r.Post("/api/models/test", chatH.HandleTestModel)
 	mediaH := media.NewMediaHandler(repo, nil, nil)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
