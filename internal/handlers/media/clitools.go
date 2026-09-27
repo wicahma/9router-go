@@ -24,6 +24,24 @@ type cliStatus struct {
 // LookPath is synchronous with no timeout.
 const cliVersionTimeout = 2 * time.Second
 
+// userBinDirs are per-user install roots a CLI is commonly unpacked into. The
+// service runs as its own unprivileged user (9router) whose PATH is the bare
+// system default, so a tool the dashboard's own user installed under ~/.local
+// bin is invisible to exec.LookPath alone — every tool would report
+// "not installed" even though it is on the operator's machine.
+//
+// Read access to these dirs is granted per-file via ACL; the OS permission model
+// decides the rest, and a miss is just a miss. ponytail: no recursive walk, no
+// $HOME discovery, no shelling out. Configurable per deployment if another
+// operator's home lives elsewhere.
+var userBinDirs = []string{
+	"/home/diama/.local/bin",
+	"/home/diama/bin",
+	"/home/diama/.bun/bin",
+	"/home/diama/.npm-global/bin",
+	"/home/diama/.cargo/bin",
+}
+
 // toolDetector reports one tool's status, or err/panic → null (the reference
 // all-statuses route wraps each tool GET in try/catch and maps throws to null).
 type toolDetector func(context.Context) (*cliStatus, error)
@@ -101,19 +119,36 @@ func (t toolDef) detector() toolDetector {
 		}
 	default:
 		return func(ctx context.Context) (*cliStatus, error) {
-			if _, err := exec.LookPath(t.bin); err != nil {
+			bin, ok := lookupToolBin(t.bin)
+			if !ok {
 				// Not installed is a value, not an error (tool ≠ null).
 				return &cliStatus{Installed: false}, nil
 			}
 			s := &cliStatus{Installed: true}
 			if t.hasVer {
-				if v, err := binVersion(ctx, t.bin); err == nil && v != "" {
+				if v, err := binVersion(ctx, bin); err == nil && v != "" {
 					s.Version = &v
 				}
 			}
 			return s, nil
 		}
 	}
+}
+
+// lookupToolBin resolves a tool's binary against the process PATH first, then
+// the per-user install roots. Returns the resolved path, which binVersion needs
+// (a bare name would not resolve from the service's PATH).
+func lookupToolBin(name string) (string, bool) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, true
+	}
+	for _, dir := range userBinDirs {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode().Perm()&0o111 != 0 {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // detectAll runs each tool's detector under a per-tool try/catch; a detector
