@@ -3,6 +3,26 @@
 
 ## [Unreleased]
 
+### ✨ Wave 1: latency and TTFT are now persisted per request
+
+- **`usageHistory.meta` was writing a copy of columns the row already had.**
+  Every request computed `ttftMs` and `latencyMs`, logged both to the service
+  log, and then wrote only `{"provider","model","connectionId"}` to the database.
+  The numbers existed for the life of the request and were thrown away, which is
+  why 48,111 of 60,291 rows had an empty meta document and there was no way to
+  ask which provider was slow.
+- Meta is now a typed struct covering `latencyMs`, `ttftMs`, `httpStatus`,
+  `streamed`, and the token counters (`promptTokens`, `completionTokens`,
+  `cachedTokens`, `cacheCreationInputTokens`). No schema change — the column and
+  its existing shape are reused.
+- `streamed` is derived from a non-zero TTFT rather than passed in, so a
+  non-streaming exchange is recorded as such instead of being assumed to be a
+  stream. Verified live: a `stream:false` request persisted `ttft=0,
+  streamed=false` and a `stream:true` request persisted `ttft=143, streamed=true`.
+- Requests that fail never reach `usageHistory` (there is a single call site and
+  it runs only on completion); failures were and remain in `requestDetails`,
+  which already carried latency under a `latency` key.
+
 ### 🐛 CLI Tools: `has9Router` is now actually reported
 
 - **Every detected tool was stuck on "Not configured".** The dashboard renders
