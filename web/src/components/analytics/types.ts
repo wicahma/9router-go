@@ -59,6 +59,7 @@ export interface RequestDetailItem {
   timestamp?: string
   provider?: string
   model?: string
+  attempts?: number
   latency?: {
     total?: number
     ttft?: number

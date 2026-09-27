@@ -3,6 +3,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Upstream attempt count per request** — `usageHistory.meta.attempts` records how many upstream forwards a client request burned before it landed, so a success that barely survived a fallback chain is distinguishable from one that never retried. Counted at the single `tryForwardWithConnection` call site via a per-request `atomic.Int64` in the context; rendered on the Details tab, highlighted when retries happened.
+
 ### ✨ Filter the console log
 
 - The console log page has a search box. It filters the buffered lines as you

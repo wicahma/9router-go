@@ -214,6 +214,12 @@
             </div>
           </div>
           <div class="p-3 rounded-lg bg-surface-2 border border-border col-span-2 sm:col-span-4">
+            <div class="text-text-muted text-[10px] uppercase font-bold">Attempts</div>
+            <div class="font-code text-sm font-bold mt-1 {(selectedDetail.attempts ?? 1) > 1 ? 'text-warning' : 'text-text-main'}">
+              {selectedDetail.attempts ?? 1}
+            </div>
+          </div>
+          <div class="p-3 rounded-lg bg-surface-2 border border-border col-span-2 sm:col-span-4">
             <div class="text-text-muted text-[10px] uppercase font-bold">Cached Tokens</div>
             <div class="font-code text-sm font-bold text-info mt-1">
               {fmt(cachedTokensFor(selectedDetail))}

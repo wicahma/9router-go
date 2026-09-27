@@ -215,6 +215,10 @@ type forwardRequestParams struct {
 
 func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
+	// One call site for every upstream forward, so this is the only place an
+	// attempt can be counted without missing a path (fallback loop, combo,
+	// fusion).
+	handlerutil.CountAttempt(ctx)
 	provider, model := f.Provider, f.Model
 	connectionID, connData := f.ConnectionID, f.ConnData
 	body, isStream := f.Body, f.IsStream
@@ -457,6 +461,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ConnectionID: connectionID,
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
+			Attempts:     handlerutil.GetAttempts(ctx),
 		}
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
 		fwdErr = nil
@@ -476,6 +481,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			Model:        model,
 			ConnectionID: connectionID,
 			Endpoint:     endpoint,
+			Attempts:     handlerutil.GetAttempts(ctx),
 		},
 		usage,
 		fwdErr,

@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 
 	"9router/proxy/internal/constants"
 )
@@ -153,3 +154,39 @@ func GetSessionID(ctx context.Context) string {
 	return ""
 }
 
+type attemptCountKey struct{}
+
+// WithAttemptCounter installs a per-request upstream attempt counter. Install it
+// where the request context is created: fallback and combo loops rebuild the
+// connection on every retry but keep the context, so the counter is the only
+// place the total number of upstream tries survives to logging time.
+func WithAttemptCounter(ctx context.Context) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, attemptCountKey{}, &atomic.Int64{})
+}
+
+// CountAttempt records one upstream forward attempt.
+func CountAttempt(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if c, ok := ctx.Value(attemptCountKey{}).(*atomic.Int64); ok {
+		c.Add(1)
+	}
+}
+
+// GetAttempts returns the upstream attempts recorded on this context, or 1 when
+// no counter is installed — a request that reached the forward path tried at
+// least once, so 1 is the honest floor, not 0.
+func GetAttempts(ctx context.Context) int {
+	if ctx != nil {
+		if c, ok := ctx.Value(attemptCountKey{}).(*atomic.Int64); ok {
+			if n := int(c.Load()); n > 0 {
+				return n
+			}
+		}
+	}
+	return 1
+}

@@ -28,12 +28,26 @@ type usageMeta struct {
 	OutputTokens  int     `json:"completionTokens"`
 	CachedTokens  int     `json:"cachedTokens"`
 	CacheCreation int     `json:"cacheCreationInputTokens"`
+	// Attempts counts upstream forwards burned by this client request. One means
+	// the first connection worked; higher means fallback/combo retries. Without
+	// it a slow success is indistinguishable from one that barely survived.
+	Attempts int `json:"attempts"`
+}
+
+// attemptsFor reports how many upstream tries the request cost, floored at one
+// so an old caller that never counted is not reported as zero tries.
+func attemptsFor(info *UsageLogInfo) int {
+	if info == nil || info.Attempts < 1 {
+		return 1
+	}
+	return info.Attempts
 }
 
 // buildUsageMeta assembles the meta document for a completed request. A
 // non-streaming exchange has ttftMs of 0, which is why Streamed is derived from
 // it rather than passed in.
 func buildUsageMeta(info *UsageLogInfo, latencyMs, ttftMs int64, httpStatus int, usage *translator.OpenAIUsage, cached, cacheCreation int, cost float64, costSource pricing.Source) []byte {
+	attempts := attemptsFor(info)
 	b, err := json.Marshal(usageMeta{
 		Provider:      info.Provider,
 		Model:         info.Model,
@@ -48,6 +62,7 @@ func buildUsageMeta(info *UsageLogInfo, latencyMs, ttftMs int64, httpStatus int,
 		OutputTokens:  usage.CompletionTokens,
 		CachedTokens:  cached,
 		CacheCreation: cacheCreation,
+		Attempts:      attempts,
 	})
 	if err != nil {
 		// A struct of scalars cannot fail to marshal; keep the row anyway.

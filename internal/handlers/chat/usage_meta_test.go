@@ -70,3 +70,31 @@ func TestBuildUsageMeta_NonStreamingHasNoTTFT(t *testing.T) {
 		t.Errorf("latencyMs = %d, want 300", got.LatencyMs)
 	}
 }
+
+func TestBuildUsageMeta_AttemptsArePersisted(t *testing.T) {
+	info := &UsageLogInfo{Provider: "kiro", Model: "claude-sonnet-4", ConnectionID: "c9", Attempts: 3}
+	usage := &translator.OpenAIUsage{PromptTokens: 10, CompletionTokens: 5}
+
+	var got usageMeta
+	if err := json.Unmarshal(buildUsageMeta(info, 900, 0, 200, usage, 0, 0, 0.01, pricing.SourceTable), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Attempts != 3 {
+		t.Errorf("attempts = %d, want 3 — retries are the whole point of the field", got.Attempts)
+	}
+}
+
+func TestBuildUsageMeta_UncountedRequestIsOneAttempt(t *testing.T) {
+	// The media paths do not install a counter. Reporting 0 tries would read as
+	// "never reached upstream", which is a different fact.
+	info := &UsageLogInfo{Provider: "openai", Model: "gpt-4o", ConnectionID: "c1"}
+	usage := &translator.OpenAIUsage{PromptTokens: 4, CompletionTokens: 4}
+
+	var got usageMeta
+	if err := json.Unmarshal(buildUsageMeta(info, 100, 0, 200, usage, 0, 0, 0.01, pricing.SourceDefault), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Attempts != 1 {
+		t.Errorf("attempts = %d, want 1", got.Attempts)
+	}
+}
