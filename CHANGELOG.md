@@ -3,6 +3,18 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Catalog prices unreachable behind nested provider paths** — upstream model ids
+  are not all one segment deep (`accounts/fireworks/models/x`), but the id
+  reducer dropped only the first segment. The catalog stored such a price under
+  `fireworks/models/x` while every lookup sent the bare name, so a bare query
+  could never hit it and the request fell through to the flat default rate.
+  The reduction now drops everything up to the last slash, and a bare catalog
+  key always wins over a provider alias; only when no bare entry exists does a
+  miss fall back to the alias with the strongest agreement, so the result never
+  depends on Go's map order. 52 of 1,653 priceable model names went from
+  unpriceable to priced, and no model that already had a rate changed it.
+
 ### Added
 - **Upstream attempt count per request** — `usageHistory.meta.attempts` records how many upstream forwards a client request burned before it landed, so a success that barely survived a fallback chain is distinguishable from one that never retried. Counted at the single `tryForwardWithConnection` call site via a per-request `atomic.Int64` in the context; rendered on the Details tab, highlighted when retries happened.
 

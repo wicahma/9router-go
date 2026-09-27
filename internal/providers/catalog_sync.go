@@ -105,13 +105,7 @@ func GetCatalogModalities(model string) *SyncedModelModalities {
 	if model == "" {
 		return nil
 	}
-	base := strings.ToLower(model)
-	if idx := strings.Index(base, "/"); idx != -1 {
-		base = base[idx+1:]
-	}
-	if idx := strings.Index(base, ":"); idx != -1 {
-		base = base[:idx]
-	}
+	base := baseModelID(model)
 
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
@@ -124,27 +118,55 @@ func GetCatalogModalities(model string) *SyncedModelModalities {
 	return nil
 }
 
+// baseModelID reduces an upstream model id to the bare model name. Ids are not
+// all one segment deep ("accounts/fireworks/models/x"), so everything up to the
+// last slash is dropped, as is a trailing ":tag".
+//
+// The catalog keys and the lookups must agree on this, otherwise a bare name
+// can never hit a price stored under a nested key.
+func baseModelID(model string) string {
+	base := strings.ToLower(model)
+	if idx := strings.LastIndex(base, "/"); idx != -1 {
+		base = base[idx+1:]
+	}
+	if idx := strings.Index(base, ":"); idx != -1 {
+		base = base[:idx]
+	}
+	return base
+}
+
 // GetCatalogPrice returns the consensus upstream price for a model, or false
 // when the catalog has no clear majority for it.
 func GetCatalogPrice(model string) (SyncedModelPrice, bool) {
 	if model == "" {
 		return SyncedModelPrice{}, false
 	}
-	base := strings.ToLower(model)
-	if idx := strings.Index(base, "/"); idx != -1 {
-		base = base[idx+1:]
-	}
-	if idx := strings.Index(base, ":"); idx != -1 {
-		base = base[:idx]
-	}
+	base := baseModelID(model)
 
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if globalCatalog == nil {
 		return SyncedModelPrice{}, false
 	}
-	p, ok := globalCatalog.Prices[base]
-	return p, ok
+	if p, ok := globalCatalog.Prices[base]; ok {
+		return p, true
+	}
+
+	// No canonical entry: fall back to a provider alias of the same model,
+	// strongest agreement first. Scanning is safe only as a miss path — a bare
+	// key always wins above — and picking by agreement keeps the result from
+	// depending on Go's map order.
+	var best SyncedModelPrice
+	found := false
+	for key, p := range globalCatalog.Prices {
+		if baseModelID(key) != base {
+			continue
+		}
+		if !found || p.Agreement > best.Agreement {
+			best, found = p, true
+		}
+	}
+	return best, found
 }
 
 // LoadCatalogFromFile loads cached catalog from disk if it exists.
@@ -262,13 +284,7 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 
 	for provID, provData := range rawData {
 		for modelID, mData := range provData.Models {
-			base := strings.ToLower(modelID)
-			if idx := strings.Index(base, "/"); idx != -1 {
-				base = base[idx+1:]
-			}
-			if idx := strings.Index(base, ":"); idx != -1 {
-				base = base[:idx]
-			}
+			base := baseModelID(modelID)
 
 			// Aggregate modalities
 			cur := modelsMap[base]
