@@ -260,9 +260,18 @@
   let activeProxyDropdownId = $state<string | null>(null)
   // Viewport rect of the open proxy dropdown, measured from its trigger button.
   // The connection list scrolls (overflow-y-auto), so an absolutely positioned
-  // menu is clipped by it; a viewport-fixed menu anchored to this rect is not.
-  let proxyDropdownRect = $state<{ top: number; left: number; minWidth: number } | null>(null)
+  // menu is clipped by it; a viewport-fixed menu is not.
+  //
+  // The menu scrolls internally, so its height is clamped to the room actually
+  // available on the side it opens, and it flips above the trigger when there is
+  // more room up there. That keeps both ends inside the viewport regardless of
+  // pool count, without guessing item height.
+  let proxyDropdownRect = $state<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null)
   let proxyDropdownTrigger = $state<HTMLElement | null>(null)
+  // Menu sizing: never taller than this fraction of the viewport, and flip above
+  // the trigger once less than this much room is left below it.
+  const MAX_MENU_HEIGHT_RATIO = 0.6
+  const MIN_MENU_HEIGHT = 120
   let updatingProxyConnId = $state<string | null>(null)
   let copiedModelId = $state<string | null>(null)
   let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
@@ -1068,13 +1077,18 @@
   function positionProxyDropdown() {
     if (!proxyDropdownTrigger) return
     const r = proxyDropdownTrigger.getBoundingClientRect()
-    const height = (proxyPools.length + 1) * 32 + 8
-    const below = r.bottom + 4
-    const flip = below + height > window.innerHeight && r.top - height > 0
+    const GAP = 4
+    const roomBelow = window.innerHeight - r.bottom - GAP
+    const roomAbove = r.top - GAP
+    // Open upward only when there is more room above than below and little
+    // below; otherwise drop down. Either way the height is clamped to the room
+    // that side actually has, so the far end never leaves the viewport.
+    const openUp = roomBelow < MIN_MENU_HEIGHT && roomAbove > roomBelow
     proxyDropdownRect = {
-      top: flip ? r.top - height - 4 : below,
+      top: openUp ? roomAbove : r.bottom + GAP,
       left: r.left,
-      minWidth: Math.max(r.width, 160)
+      minWidth: Math.max(r.width, 160),
+      maxHeight: Math.min(openUp ? roomAbove : roomBelow, window.innerHeight * MAX_MENU_HEIGHT_RATIO)
     }
   }
 
@@ -2681,8 +2695,8 @@
                           role="presentation"
                         ></div>
                         <div
-                          class="fixed z-50 max-h-[60vh] overflow-y-auto rounded-lg border border-border bg-bg py-1 shadow-lg"
-                          style="top: {proxyDropdownRect.top}px; left: {proxyDropdownRect.left}px; min-width: max({proxyDropdownRect.minWidth}px, 160px)"
+                          class="fixed z-50 overflow-y-auto rounded-lg border border-border bg-bg py-1 shadow-lg"
+                          style="top: {proxyDropdownRect.top}px; left: {proxyDropdownRect.left}px; min-width: max({proxyDropdownRect.minWidth}px, 160px); max-height: {proxyDropdownRect.maxHeight}px"
                         >
                           <button
                             type="button"
