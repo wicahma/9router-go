@@ -40,6 +40,41 @@ func New() *Registry {
 	}
 }
 
+// shared is the process-wide registry. Limits come from the global settings
+// row, so all handlers must share one set of buckets — a per-handler
+// registry would let each one spend the full RPS budget.
+var shared = New()
+
+// Shared returns the process-wide registry used by the request hot path.
+func Shared() *Registry { return shared }
+
+// Load makes limits the registry's entire configuration, dropping every key
+// that is not present. Buckets for surviving keys are discarded too, so a
+// limit that was just edited starts from a full bucket rather than inheriting
+// tokens burned under the old cap. Called on startup and on every settings
+// write; the hot path only ever reads.
+func (r *Registry) Load(limits map[string]int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.buckets {
+		if limits[k] <= 0 {
+			delete(r.buckets, k)
+		}
+	}
+	for k, v := range limits {
+		if v <= 0 {
+			continue
+		}
+		if b, ok := r.buckets[k]; ok {
+			b.rps = float64(v)
+			b.tokens = float64(v)
+			b.last = r.now()
+			continue
+		}
+		r.buckets[k] = &bucket{tokens: float64(v), last: r.now(), rps: float64(v)}
+	}
+}
+
 // SetLimit sets the requests-per-second ceiling for key, where a value of
 // zero or less removes the limit. Changing a limit clamps the live bucket to
 // the new burst instead of topping it up, so lowering the cap takes effect at
