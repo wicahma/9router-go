@@ -563,6 +563,13 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						break
 					}
 					var ue *upstreamError
+					// Local RPS denial: the model is over budget, not broken.
+					// Do not lock the connection, and do not treat it as an
+					// upstream 429 — move on to the next model in the combo.
+					if isRateLimited(fwdErr) {
+						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						break
+					}
 					if errors.As(fwdErr, &ue) {
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
@@ -761,6 +768,13 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						break
 					}
 					var ue *upstreamError
+					// Local RPS denial: the model is over budget, not broken.
+					// Do not lock the connection, and do not treat it as an
+					// upstream 429 — move on to the next model in the combo.
+					if isRateLimited(fwdErr) {
+						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						break
+					}
 					if errors.As(fwdErr, &ue) {
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)

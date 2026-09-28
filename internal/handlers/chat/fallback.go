@@ -18,6 +18,7 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/ratelimit"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
@@ -134,6 +135,15 @@ func (h *ChatHandler) handleAccountFallback(
 			lastErr = err
 		}
 		var ue *upstreamError
+		// Type separation already keeps this out of the lock path below
+		// (a rateLimitError is not an *upstreamError, so the retryable
+		// branch never matches). What this branch buys is not burning the
+		// rest of the connection list: every connection for this model
+		// shares one bucket, so each further iteration is another DB lookup
+		// that cannot succeed.
+		if isRateLimited(lastErr) {
+			return lastErr
+		}
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
@@ -220,6 +230,18 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// fusion).
 	handlerutil.CountAttempt(ctx)
 	provider, model := f.Provider, f.Model
+
+	// Local RPS ceiling, checked before anything is sent upstream so an
+	// over-budget request never costs a connection lookup or a real request.
+	// Every forward for this model — any connection, any route — draws from
+	// the same bucket, which is the point: the limit belongs to the
+	// subscription, not to the connection.
+	if ok, wait := ratelimit.Shared().Allow(provider + "/" + model); !ok {
+		RateLimitDenied.Add(1)
+		log.Warn("rps limit", "provider", provider, "model", model, "retry_in_ms", wait.Milliseconds())
+		return newRateLimitError(provider+"/"+model, wait)
+	}
+
 	connectionID, connData := f.ConnectionID, f.ConnData
 	body, isStream := f.Body, f.IsStream
 	translateResponse, endpoint := f.TranslateResponse, f.Endpoint
