@@ -47,6 +47,9 @@ type SettingsData struct {
 	ComboStrategies            map[string]ComboStrategy    `json:"comboStrategies,omitempty"`
 	ProviderStrategies         map[string]ProviderStrategy    `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
+	// ModelRps caps requests-per-second per model key ("provider/model").
+	// Absent or zero means unlimited; there is no per-provider bucket.
+	ModelRps map[string]int `json:"modelRps,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -182,6 +185,18 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 		}
 	}
 
+	// Per-model RPS ceilings. Hand-rolled like the maps above: a JSON
+	// object decodes as map[string]any, so map[string]int is not filled in
+	// automatically.
+	if mr, ok := raw["modelRps"].(map[string]any); ok {
+		s.ModelRps = make(map[string]int, len(mr))
+		for k, v := range mr {
+			if n, ok := v.(float64); ok && n > 0 {
+				s.ModelRps[k] = int(n)
+			}
+		}
+	}
+
 	// Capacity adapter pools (vision, audioInput, etc.)
 	if caRaw, ok := raw["capacityAdapter"].(map[string]any); ok {
 		s.CapacityAdapter = make(map[string]CapacityAdapterEntry, len(caRaw))
@@ -308,3 +323,23 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 		"comboStrategies": currentMap,
 	})
 }
+
+// SetModelRps stores the per-model RPS ceilings and returns the resulting
+// map, so callers that hold the registry can push the new limits without
+// re-reading settings. The RPS map is the whole update payload: this is a
+// full replacement, not a merge, so a client sending `{"a":0}` clears
+// every other entry. That is intentional and matches how the Dashboard
+// writes the sibling maps.
+func (r *Repo) SetModelRps(m map[string]int) (map[string]int, error) {
+	clean := make(map[string]int, len(m))
+	for k, v := range m {
+		if v > 0 {
+			clean[k] = v
+		}
+	}
+	if err := r.UpdateSettingsRaw(map[string]any{"modelRps": clean}); err != nil {
+		return nil, err
+	}
+	return clean, nil
+}
+
