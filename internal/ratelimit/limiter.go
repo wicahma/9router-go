@@ -60,6 +60,28 @@ func (r *Registry) Limits() map[string]int {
 	return out
 }
 
+// FromRaw normalises a modelRps value decoded from JSON. A JSON object decodes
+// as map[string]any, so map[string]int is never populated automatically, and a
+// client can send anything — entries that are not positive integers are
+// dropped rather than turned into a limit of zero (which would throttle a
+// model to nothing). Shared by the settings reader and the dashboard write
+// path so both agree on what a valid limit is.
+func FromRaw(v any) map[string]int {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]int, len(obj))
+	for k, raw := range obj {
+		f, ok := raw.(float64)
+		if !ok || f <= 0 {
+			continue
+		}
+		out[k] = int(f)
+	}
+	return out
+}
+
 // Load makes limits the registry's entire configuration, dropping every key
 // that is not present. Buckets for surviving keys are discarded too, so a
 // limit that was just edited starts from a full bucket rather than inheriting

@@ -17,6 +17,7 @@ import (
 	"9router/proxy/internal/auth"
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/ratelimit"
 )
 
 // Dashboard client headers, matching the Next dashboard settings/database route.
@@ -104,6 +105,14 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// The request hot path reads the RPS registry, not the settings row, so a
+	// write that changes modelRps has to be pushed into it or the change only
+	// takes effect after a restart. Keyed on the key being present: a save of
+	// an unrelated setting must not wipe the limits.
+	if raw, present := updates["modelRps"]; present {
+		ratelimit.Shared().Load(ratelimit.FromRaw(raw))
 	}
 
 	updated, err := h.Repo.GetSettingsRaw()

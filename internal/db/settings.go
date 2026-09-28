@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/ratelimit"
 )
 
 // ComboStrategy defines routing strategy, sticky limit, and judge model for a combo.
@@ -185,16 +186,11 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 		}
 	}
 
-	// Per-model RPS ceilings. Hand-rolled like the maps above: a JSON
-	// object decodes as map[string]any, so map[string]int is not filled in
-	// automatically.
-	if mr, ok := raw["modelRps"].(map[string]any); ok {
-		s.ModelRps = make(map[string]int, len(mr))
-		for k, v := range mr {
-			if n, ok := v.(float64); ok && n > 0 {
-				s.ModelRps[k] = int(n)
-			}
-		}
+	// Per-model RPS ceilings. ratelimit.FromRaw owns the decoding rules so
+	// this reader and the dashboard write path cannot drift apart on what
+	// counts as a valid limit.
+	if mr, present := raw["modelRps"]; present {
+		s.ModelRps = ratelimit.FromRaw(mr)
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)
@@ -323,23 +319,3 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 		"comboStrategies": currentMap,
 	})
 }
-
-// SetModelRps stores the per-model RPS ceilings and returns the resulting
-// map, so callers that hold the registry can push the new limits without
-// re-reading settings. The RPS map is the whole update payload: this is a
-// full replacement, not a merge, so a client sending `{"a":0}` clears
-// every other entry. That is intentional and matches how the Dashboard
-// writes the sibling maps.
-func (r *Repo) SetModelRps(m map[string]int) (map[string]int, error) {
-	clean := make(map[string]int, len(m))
-	for k, v := range m {
-		if v > 0 {
-			clean[k] = v
-		}
-	}
-	if err := r.UpdateSettingsRaw(map[string]any{"modelRps": clean}); err != nil {
-		return nil, err
-	}
-	return clean, nil
-}
-
