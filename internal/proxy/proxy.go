@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"9router/proxy/internal/constants"
 )
 
 // UpstreamError captures a non-200 upstream response.
@@ -43,9 +45,7 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
 var directProxyClient = &http.Client{
-	Transport: &http.Transport{
-		Proxy: nil, // direct connection to bypass proxy allowlist
-	},
+	Transport: constants.DefaultHTTPTransportConfig.NewTransport(),
 }
 
 func isProxyFailure(err error, resp *http.Response) bool {

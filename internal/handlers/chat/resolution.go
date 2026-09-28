@@ -1,12 +1,7 @@
 package chat
 
 import (
-	json "encoding/json/v2"
-	"fmt"
-	"net/http"
-	"strings"
-	"time"
-
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
@@ -14,6 +9,11 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	json "encoding/json/v2"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
@@ -36,9 +36,12 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 	var transport http.RoundTripper
 	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
 		t := origTransport.Clone()
+		constants.DefaultHTTPTransportConfig.Configure(t)
+		// The shared config's 2-minute header timeout is too long here: a
+		// stalled Cloudflare HTTP/2 connection would look like a multi-minute
+		// hang to the client. 30s is deliberate — a healthy provider answers
+		// headers in well under a second (measured 146ms on the worst offender).
 		t.ResponseHeaderTimeout = 30 * time.Second
-		// A stalled connection must not be reused for the next request.
-		t.MaxIdleConnsPerHost = 32
 		transport = proxy.NewFallbackTransport(t)
 	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
 		transport = fb
