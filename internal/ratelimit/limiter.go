@@ -48,6 +48,18 @@ var shared = New()
 // Shared returns the process-wide registry used by the request hot path.
 func Shared() *Registry { return shared }
 
+// Limits returns a copy of the currently active limits, for logging and the
+// dashboard. The hot path does not use this.
+func (r *Registry) Limits() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]int, len(r.buckets))
+	for k, b := range r.buckets {
+		out[k] = int(b.rps)
+	}
+	return out
+}
+
 // Load makes limits the registry's entire configuration, dropping every key
 // that is not present. Buckets for surviving keys are discarded too, so a
 // limit that was just edited starts from a full bucket rather than inheriting

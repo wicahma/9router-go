@@ -18,6 +18,7 @@ import (
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/ratelimit"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -66,6 +67,20 @@ func ProvideServer(p ServerParams) *http.Server {
 			}
 			updater.StartBackgroundCheck(shutdown.Context(), autoUpdate)
 			log.Printf("[config] auto-update enabled=%v", autoUpdate)
+
+			// Per-model RPS ceilings. GetSettings is an uncached SQLite read,
+			// so this is loaded once here and re-loaded on every settings
+			// write; the request path only ever reads the registry.
+			if p.Repo != nil {
+				if settings, sErr := p.Repo.GetSettings(); sErr == nil && settings != nil {
+					ratelimit.Shared().Load(settings.ModelRps)
+				} else if sErr != nil {
+					log.Printf("[config] model rps: %v", sErr)
+				}
+				if n := len(ratelimit.Shared().Limits()); n > 0 {
+					log.Printf("[config] model rps limits active=%d", n)
+				}
+			}
 
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
