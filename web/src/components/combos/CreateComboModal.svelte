@@ -14,27 +14,32 @@
   import Button from '../../lib/ui/Button.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
+  import { getModelRps } from './types'
 
   interface Props {
     isOpen: boolean
     editingCombo: Combo | null
     models: string[]
+    modelRps?: Record<string, number>
     isSaving?: boolean
     onClose: () => void
     onSave: (name: string, models: string[]) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
+    onSetModelRps: (model: string, rps: number) => void
   }
 
   let {
     isOpen,
     editingCombo,
     models,
+    modelRps = {},
     isSaving = false,
     onClose,
     onSave,
     onOpenModelPicker,
     onUpdateModels,
+    onSetModelRps,
   }: Props = $props()
 
   let modalName = $state(editingCombo?.name || '')
@@ -239,6 +244,20 @@
               {#if caps.reasoning}
                 <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
               {/if}
+              <label class="flex shrink-0 items-center gap-1" title="Requests per second ceiling. 0 = unlimited. Applies to this model in every combo.">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="∞"
+                  value={getModelRps(modelRps, model) || ''}
+                  onchange={(e) => onSetModelRps(model, parseRpsInput(e.currentTarget.value))}
+                  aria-label={`Requests per second limit for ${model}`}
+                  class="w-14 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <span class="text-[10px] text-text-muted">rps</span>
+              </label>
               <div class="flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"

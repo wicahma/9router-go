@@ -4,9 +4,11 @@
   import {
     clearJudgeModel,
     getComboModels,
+    normalizeModelRps,
     parseCapacityAdapterSettings,
     updateComboStrategy,
     updateJudgeModel,
+    updateModelRps,
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
@@ -49,6 +51,7 @@
     audioInput: { enabled: true, roundRobin: false, models: [] },
   })
   let copiedId = $state<string | null>(null)
+  let modelRps = $state<Record<string, number>>({})
 
   // Edit / Create Modal state
   let editingCombo = $state<Combo | null>(null)
@@ -72,6 +75,7 @@
       if (s?.capacityAdapter && typeof s.capacityAdapter === 'object') {
         capacityAdapter = parseCapacityAdapterSettings(s.capacityAdapter as Record<string, unknown>)
       }
+      modelRps = normalizeModelRps(s?.modelRps)
     } catch (e) {
       console.error('Failed to load settings:', e)
     }
@@ -123,6 +127,19 @@
     } catch (e) {
       console.error('Failed to clear judge:', e)
     }
+  }
+
+  async function saveModelRps(next: Record<string, number>) {
+    modelRps = next
+    try {
+      await api.patchSettings({ modelRps: next })
+    } catch (e) {
+      console.error('Failed to update model RPS limits:', e)
+    }
+  }
+
+  async function handleSetModelRps(model: string, rps: number) {
+    await saveModelRps(updateModelRps(modelRps, model, rps))
   }
 
   async function saveCapacityAdapter(next: CapacityAdapterState) {
@@ -279,11 +296,13 @@
     isOpen={isCreatingOpen}
     {editingCombo}
     models={modalModels}
+    {modelRps}
     isSaving={isSavingCombo}
     onClose={closeModal}
     onSave={handleSaveCombo}
     onOpenModelPicker={() => openModelPicker('combo')}
     onUpdateModels={(newModels) => (modalModels = newModels)}
+    onSetModelRps={handleSetModelRps}
   />
 {/key}
 

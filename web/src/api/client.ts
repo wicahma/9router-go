@@ -82,6 +82,8 @@ export interface Settings {
   outboundProxyEnabled?: boolean
   outboundProxyUrl?: string
   outboundNoProxy?: string
+  /** Per-model requests-per-second ceiling. Missing or 0 = unlimited. */
+  modelRps?: Record<string, number>
   providerStrategies?: Record<string, ProviderStrategyConfig>
   [key: string]: unknown
 }
