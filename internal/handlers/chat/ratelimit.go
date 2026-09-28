@@ -3,6 +3,8 @@ package chat
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -48,4 +50,18 @@ func newRateLimitError(key string, wait time.Duration) *rateLimitError {
 		ms = 1
 	}
 	return &rateLimitError{key: key, retryAfterMs: ms}
+}
+
+// writeRpsError answers the client with 429 and a Retry-After in whole
+// seconds. Seconds are the HTTP-defined unit, and the wait is rounded UP:
+// rounding down would invite an immediate retry that gets denied again, which
+// is exactly the hammering the limit exists to prevent.
+func writeRpsError(w http.ResponseWriter, rl *rateLimitError) {
+	w.Header().Set("Retry-After", strconv.FormatInt((rl.retryAfterMs+999)/1000, 10))
+	body := fmt.Sprintf(
+		`{"error":{"message":%q,"type":"rate_limit_error","code":429}}`,
+		fmt.Sprintf("model %s reached its requests-per-second limit, retry shortly", rl.key))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	w.Write([]byte(body))
 }

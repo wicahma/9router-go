@@ -84,6 +84,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	h.handleSingleModel(ctx, w, body, modelInfo, reqBody.Stream, false)
 }
+
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
 func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
@@ -104,6 +105,14 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 	if result != nil {
 		if cw.IsCommitted() {
 			log.Error("chat", "upstream error after headers committed", "error", result)
+			return
+		}
+		// Every model in the chain ran out of local RPS budget: this is a 429
+		// we produced, not an upstream failure, so it must not be dressed up
+		// as a 502.
+		var rl *rateLimitError
+		if errors.As(result, &rl) {
+			writeRpsError(cw, rl)
 			return
 		}
 		var ue *upstreamError
@@ -212,6 +221,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	h.handleMessagesSingleModel(ctx, w, workingBody, modelInfo, reqBody.Stream, translateResponse)
 }
+
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
@@ -226,6 +236,14 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 	if result != nil {
 		if cw.IsCommitted() {
 			log.Error("chat", "upstream error after headers committed", "error", result)
+			return
+		}
+		// Every model in the chain ran out of local RPS budget: this is a 429
+		// we produced, not an upstream failure, so it must not be dressed up
+		// as a 502.
+		var rl *rateLimitError
+		if errors.As(result, &rl) {
+			writeRpsError(cw, rl)
 			return
 		}
 		var ue *upstreamError
