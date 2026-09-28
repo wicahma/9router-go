@@ -16,6 +16,17 @@
   unpriceable to priced, and no model that already had a rate changed it.
 
 ### Added
+- **Per-model RPS ceilings** — several upstream subscriptions are sold with a hard
+  requests-per-second cap, so a model can now declare one from the combo editor
+  (0 or blank = unlimited, stored as `modelRps` in settings). Enforcement is a
+  token bucket (refill = RPS, burst = RPS) applied at the single upstream forward
+  call site: no goroutine, no ticker, no DB read on the request path, just a map
+  lookup and a few float ops, and a denied request never touches the network. A
+  model that is out of budget is skipped in favour of the next entry in the
+  combo/fallback chain instead of burning an upstream 429, and the client only
+  sees `rate_limit_exceeded` when the whole chain is spent. A local denial uses
+  its own sentinel rather than a 429-shaped error, so it can never trip the
+  connection lock that a genuine upstream 429 does.
 - **Upstream attempt count per request** — `usageHistory.meta.attempts` records how many upstream forwards a client request burned before it landed, so a success that barely survived a fallback chain is distinguishable from one that never retried. Counted at the single `tryForwardWithConnection` call site via a per-request `atomic.Int64` in the context; rendered on the Details tab, highlighted when retries happened.
 
 ### ✨ Filter the console log
