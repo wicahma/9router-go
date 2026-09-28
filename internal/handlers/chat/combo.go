@@ -435,6 +435,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
+	// A model rejected by the local RPS ceiling produces no *upstreamError, so
+	// lastErr stays nil when the whole combo is over budget. Keep the denial
+	// here instead: without it the client gets a 502 for what is really a 429
+	// and immediately retries, which is the hammering the limit prevents.
+	var rpsDenied *rateLimitError
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
@@ -478,6 +483,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			lastErr = nil
 			earliestRetryAfter = ""
 			excludeIDs = nil
+			rpsDenied = nil
 		}
 
 		for _, entry := range models {
@@ -568,6 +574,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					// upstream 429 — move on to the next model in the combo.
 					if isRateLimited(fwdErr) {
 						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						if rl := rpsError(fwdErr); rl != nil && (rpsDenied == nil || rl.retryAfterMs < rpsDenied.retryAfterMs) {
+							rpsDenied = rl
+						}
 						break
 					}
 					if errors.As(fwdErr, &ue) {
@@ -646,6 +655,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	if cw.IsCommitted() {
 		return
 	}
+	if rpsDenied != nil {
+		writeRpsError(cw, rpsDenied)
+		return
+	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
@@ -655,6 +668,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
+	// See handleComboFallback: without this an all-throttled combo answers 502.
+	var rpsDenied *rateLimitError
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -693,6 +708,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			lastErr = nil
 			earliestRetryAfter = ""
 			excludeIDs = nil
+			rpsDenied = nil
 		}
 
 		for _, entry := range models {
@@ -773,6 +789,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					// upstream 429 — move on to the next model in the combo.
 					if isRateLimited(fwdErr) {
 						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						if rl := rpsError(fwdErr); rl != nil && (rpsDenied == nil || rl.retryAfterMs < rpsDenied.retryAfterMs) {
+							rpsDenied = rl
+						}
 						break
 					}
 					if errors.As(fwdErr, &ue) {
@@ -849,6 +868,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		return
 	}
 	if cw.IsCommitted() {
+		return
+	}
+	if rpsDenied != nil {
+		writeRpsError(cw, rpsDenied)
 		return
 	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")

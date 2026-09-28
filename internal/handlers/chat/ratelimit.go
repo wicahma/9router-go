@@ -37,6 +37,16 @@ func (e *rateLimitError) Unwrap() error { return errRateLimited }
 // than from an upstream.
 func isRateLimited(err error) bool { return errors.Is(err, errRateLimited) }
 
+// rpsError extracts the denial from an error chain, or nil when the error did
+// not come from the local ceiling.
+func rpsError(err error) *rateLimitError {
+	var rl *rateLimitError
+	if errors.As(err, &rl) {
+		return rl
+	}
+	return nil
+}
+
 // RateLimitDenied counts locally throttled requests so the dashboard can show
 // what the RPS ceilings are costing. A plain atomic counter: the hot path
 // must not take a second lock, and a lost increment on shutdown is harmless.
