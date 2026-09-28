@@ -4,6 +4,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Backup file carried live credentials** — `GET /api/settings/database` wrote the raw settings blob into the payload, so every `9router-backup-*.json` contained the dashboard password hash and the live OIDC client secret. Export now strips them via `stripSecretSettings` (reuses `secretSettingKeys`), and `importDatabase` reads the live secrets inside the transaction before the wipe, so a restore can never downgrade auth to the default password. Ported from upstream `004fc39` (issue #35); the upstream-only `TestHandleImportDatabase_ClientContract` case is not ported — it pins behavior the fork does not implement (header-auth import).
 - **Catalog prices unreachable behind nested provider paths** — upstream model ids
   are not all one segment deep (`accounts/fireworks/models/x`), but the id
   reducer dropped only the first segment. The catalog stored such a price under
