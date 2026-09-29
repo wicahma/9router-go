@@ -23,7 +23,6 @@
 
   // Theme state
   let isDark = $state(true)
-  let isDonateOpen = $state(false)
   let isAppDrawerOpen = $state(false)
   let isLangMenuOpen = $state(false)
   let isChangelogOpen = $state(false)
@@ -246,20 +245,9 @@
     {/if}
   </div>
 
-  <!-- Right action buttons: Donate, Theme, Language flag, App drawer -->
+  <!-- Right action buttons: Theme, Language flag, App drawer -->
   <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
-    <!-- 1. Donate button -->
-    <button
-      type="button"
-      onclick={() => (isDonateOpen = true)}
-      class="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-xs sm:text-sm font-medium cursor-pointer"
-      aria-label="Donate"
-    >
-      <span class="material-symbols-outlined text-[18px]">volunteer_activism</span>
-      <span class="hidden sm:inline">Donate</span>
-    </button>
-
-    <!-- 2. Light/Dark theme toggle -->
+    <!-- 1. Light/Dark theme toggle -->
     <button
       type="button"
       onclick={toggleTheme}
@@ -357,89 +345,6 @@
     </div>
   </div>
 </header>
-
-<!-- Donate Modal -->
-{#if isDonateOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/40 backdrop-blur-sm"
-      onclick={() => (isDonateOpen = false)}
-      onkeydown={(e) => e.key === 'Escape' && (isDonateOpen = false)}
-      role="button"
-      tabindex="-1"
-      aria-label="Close background"
-    ></div>
-
-    <div
-      class="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col gap-5 z-10 animate-in fade-in zoom-in-95"
-    >
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle">
-        <h2 class="text-lg font-semibold text-text-main flex items-center gap-2">
-          <span class="material-symbols-outlined text-pink-500">volunteer_activism</span>
-          Support 9router-go
-        </h2>
-        <button
-          type="button"
-          onclick={() => (isDonateOpen = false)}
-          class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          aria-label="Close"
-        >
-          <span class="material-symbols-outlined text-[20px]">close</span>
-        </button>
-      </div>
-
-      <p class="text-sm text-text-muted leading-relaxed">
-        9router-go is a fast, lightweight and open-source high-throughput AI gateway in Go. If 9router-go saves you time and tokens, consider supporting the project!
-      </p>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <a
-          href="https://github.com/luqman-v1/9router-go"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-brand-500/40 transition-all group"
-        >
-          <div class="size-10 rounded-full flex items-center justify-center bg-brand-500/10 text-brand-500">
-            <span class="material-symbols-outlined text-[22px]">star</span>
-          </div>
-          <div class="min-w-0">
-            <div class="text-sm font-semibold text-text-main group-hover:text-brand-500 transition-colors">
-              GitHub Repository
-            </div>
-            <div class="text-xs text-text-muted">Star & contribute on GitHub</div>
-          </div>
-        </a>
-
-        <a
-          href="https://github.com/luqman-v1/9router-go/releases"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-pink-500/40 transition-all group"
-        >
-          <div class="size-10 rounded-full flex items-center justify-center bg-pink-500/10 text-pink-500">
-            <span class="material-symbols-outlined text-[22px]">rocket_launch</span>
-          </div>
-          <div class="min-w-0">
-            <div class="text-sm font-semibold text-text-main group-hover:text-pink-500 transition-colors">
-              Releases & Updates
-            </div>
-            <div class="text-xs text-text-muted">Latest releases & changelog</div>
-          </div>
-        </a>
-      </div>
-
-      <div class="flex justify-end pt-2">
-        <button
-          type="button"
-          onclick={() => (isDonateOpen = false)}
-          class="px-4 py-2 text-sm rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium transition-colors cursor-pointer"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <!-- Change Log Modal -->
 <ChangelogModal isOpen={isChangelogOpen} onClose={() => (isChangelogOpen = false)} />
