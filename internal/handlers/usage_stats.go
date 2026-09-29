@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+type UsageTrendItem struct {
+	Timestamp        string  `json:"timestamp"`
+	Requests         int     `json:"requests"`
+	PromptTokens     int64   `json:"promptTokens"`
+	CompletionTokens int64   `json:"completionTokens"`
+	CachedTokens     int64   `json:"cachedTokens"`
+	Cost             float64 `json:"cost"`
+	AvgLatencyMs     int64   `json:"avgLatencyMs,omitempty"`
+}
+
 type ProviderUsageItem struct {
 	Requests         int     `json:"requests"`
 	PromptTokens     int64   `json:"promptTokens"`
@@ -128,6 +138,7 @@ type UsageStatsResponse struct {
 	ByAccount             map[string]AccountUsageItem  `json:"byAccount"`
 	ByApiKey              map[string]ApiKeyUsageItem   `json:"byApiKey"`
 	ByEndpoint            map[string]EndpointUsageItem `json:"byEndpoint"`
+	Trend                 []UsageTrendItem             `json:"trend"`
 	ActiveRequests        []usagetracker.ActiveRequest `json:"activeRequests"`
 	RecentRequests        []usagetracker.RecentRequest `json:"recentRequests"`
 	ErrorProvider         string                       `json:"errorProvider"`
@@ -519,6 +530,11 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			applyLatencyStats(&resp, latencyStats, nodeNameMap)
 		}
 
+		trendDaily := period != "today" && period != "24h"
+		if trend, err := repo.GetUsageTrendSince(cutoffLatency(period, time.Now().UTC()), trendDaily); err == nil {
+			resp.Trend = buildTrend(trend, period, time.Now().UTC())
+		}
+
 		handlerutil.WriteJSON(w, http.StatusOK, resp)
 	}
 }
@@ -545,6 +561,58 @@ func cutoffLatency(period string, now time.Time) string {
 		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		return startOfDay.Format(time.RFC3339)
 	}
+}
+
+// buildTrend densifies the query result into a fixed bucket grid so the chart
+// shows every hour/day in the window. Empty buckets are carried as zeros rather
+// than omitted: a missing bucket collapses the x-axis and makes a quiet stretch
+// look like a traffic spike.
+func buildTrend(rows []db.UsageTrend, period string, now time.Time) []UsageTrendItem {
+	byStamp := make(map[string]db.UsageTrend, len(rows))
+	for _, row := range rows {
+		byStamp[row.Timestamp] = row
+	}
+
+	var step time.Duration
+	var first time.Time
+	switch period {
+	case "today":
+		step = time.Hour
+		first = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	case "24h":
+		step = time.Hour
+		first = now.Truncate(time.Hour).Add(-23 * time.Hour)
+	case "30d":
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-29 * 24 * time.Hour)
+	case "60d":
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-59 * 24 * time.Hour)
+	default:
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-6 * 24 * time.Hour)
+	}
+
+	layout := time.RFC3339
+	if step >= 24*time.Hour {
+		layout = "2006-01-02T15:04:05Z"
+	}
+
+	var out []UsageTrendItem
+	for ts := first; !ts.After(now); ts = ts.Add(step) {
+		key := ts.Format(layout)
+		item := UsageTrendItem{Timestamp: key}
+		if row, ok := byStamp[key]; ok {
+			item.Requests = row.Requests
+			item.PromptTokens = row.PromptTokens
+			item.CompletionTokens = row.CompletionTokens
+			item.CachedTokens = row.CachedTokens
+			item.Cost = row.Cost
+			item.AvgLatencyMs = row.AvgLatencyMs
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.

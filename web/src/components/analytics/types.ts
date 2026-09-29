@@ -16,13 +16,22 @@ export interface UsageItem {
   endpoint?: string
   provider?: string
   key?: string
-  // Latency percentiles, present only for models with recorded durations.
+  avgLatencyMs?: number
   latencySamples?: number
   p50Ms?: number
   p95Ms?: number
   p99Ms?: number
 }
 
+export interface UsageTrendItem {
+  timestamp: string
+  requests?: number
+  promptTokens?: number
+  completionTokens?: number
+  cachedTokens?: number
+  cost?: number
+  avgLatencyMs?: number
+}
 export interface RecentRequestItem {
   status?: string
   model?: string
@@ -84,6 +93,7 @@ export interface StatsData {
   byAccount?: Record<string, UsageItem>
   byApiKey?: Record<string, UsageItem>
   byEndpoint?: Record<string, UsageItem>
+  trend?: UsageTrendItem[]
   activeRequests?: ActiveRequestItem[]
   recentRequests?: RecentRequestItem[]
   errorProvider?: string

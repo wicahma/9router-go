@@ -19,6 +19,7 @@
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
   import InFlightCard from './InFlightCard.svelte'
+  import UsageTrendChart from './UsageTrendChart.svelte'
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
@@ -113,9 +114,10 @@
     }
   })
 
-  // SSE real-time updates for activeRequests, recentRequests and error notifications
+
+    // SSE real-time updates for activeRequests, recentRequests and error notifications
   $effect(() => {
-    let isCancelled = false
+  let isCancelled = false
     let controller: AbortController | null = null
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -345,6 +347,9 @@
   {#if activeTab === 'overview'}
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
+
+    <!-- Usage trend over time -->
+    <UsageTrendChart trend={stats.trend} {period} />
 
     <!-- Topology + Recent Requests + In-Flight -->
     <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)_minmax(240px,1fr)]">

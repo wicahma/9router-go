@@ -73,7 +73,47 @@ func (r *Repo) UpdateConnectionLastUsed(connectionID string) error {
 	return nil
 }
 
-// UsageHistoryRow represents a record from the usageHistory table.
+type UsageTrend struct {
+	Timestamp        string
+	Requests         int
+	PromptTokens     int64
+	CompletionTokens int64
+	CachedTokens     int64
+	Cost             float64
+	AvgLatencyMs     int64
+}
+
+// GetUsageTrendSince returns UTC hour/day buckets from persisted request data.
+func (r *Repo) GetUsageTrendSince(cutoff string, daily bool) ([]UsageTrend, error) {
+	bucket := "substr(timestamp, 1, 13) || ':00:00Z'"
+	if daily {
+		bucket = "substr(timestamp, 1, 10) || 'T00:00:00Z'"
+	}
+	query := fmt.Sprintf(`
+		SELECT %s, COUNT(*), COALESCE(SUM(promptTokens), 0),
+		       COALESCE(SUM(completionTokens), 0), COALESCE(SUM(json_extract(tokens, '$.cached_tokens')), 0),
+		       COALESCE(SUM(cost), 0),
+		       CAST(COALESCE(AVG(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.latencyMs') END), 0) AS INTEGER)
+		FROM usageHistory
+		WHERE timestamp >= ?
+		GROUP BY 1 ORDER BY 1`, bucket)
+	rows, err := r.db.Query(query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("query usage trend: %w", err)
+	}
+	defer rows.Close()
+	var result []UsageTrend
+	for rows.Next() {
+		var item UsageTrend
+		if err := rows.Scan(&item.Timestamp, &item.Requests, &item.PromptTokens,
+			&item.CompletionTokens, &item.CachedTokens, &item.Cost, &item.AvgLatencyMs); err != nil {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
 type UsageHistoryRow struct {
 	Timestamp        string
 	Provider         string
