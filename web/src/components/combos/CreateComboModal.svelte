@@ -14,7 +14,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
-  import { getModelRps } from './types'
+  import { getModelRps, parseRpsInput } from './types'
 
   interface Props {
     isOpen: boolean
@@ -67,7 +67,19 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
+    flushPendingRps()
     onSave(modalName.trim(), models)
+  }
+
+  // The rps input commits on change (blur/Enter). Clicking Save blurs the field
+  // only after the click lands on some browsers, so commit any pending edit here
+  // too or a typed-but-not-blurred value is silently dropped.
+  function flushPendingRps() {
+    if (!listEl) return
+    for (const el of listEl.querySelectorAll<HTMLInputElement>('input[data-model]')) {
+      const model = el.dataset.model
+      if (model) onSetModelRps(model, parseRpsInput(el.value))
+    }
   }
 
   function moveModel(idx: number, delta: number) {
@@ -251,6 +263,7 @@
                   step="1"
                   inputmode="numeric"
                   placeholder="∞"
+                  data-model={model}
                   value={getModelRps(modelRps, model) || ''}
                   onchange={(e) => onSetModelRps(model, parseRpsInput(e.currentTarget.value))}
                   aria-label={`Requests per second limit for ${model}`}

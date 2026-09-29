@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,21 @@ import (
 func TestHandlerCacheControl(t *testing.T) {
 	h := Handler()
 
-	asset := "assets/index-UTtW_rdi.js"
+	entries, err := fs.ReadDir(DistFS, "dist/assets")
+	if err != nil {
+		t.Fatalf("read embedded assets: %v", err)
+	}
+	var asset string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".js") {
+			asset = "assets/" + e.Name()
+			break
+		}
+	}
+	if asset == "" {
+		t.Fatal("no .js asset embedded")
+	}
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+asset, nil))
 	if rec.Code != http.StatusOK {
