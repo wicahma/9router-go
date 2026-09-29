@@ -51,6 +51,28 @@
   )
 
   let hasPulse = $derived(Boolean(pulseProvider))
+
+  // Model yang sedang aktif per provider, dari stream live activeRequests.
+  let modelsByProvider = $derived.by(() => {
+    const m = new Map<string, { model: string; count: number }[]>()
+    for (const r of activeRequests) {
+      const key = (r.provider || '').toLowerCase()
+      if (!key || !r.model) continue
+      const list = m.get(key) || []
+      const hit = list.find((x) => x.model === r.model)
+      if (hit) hit.count += r.count || 1
+      else list.push({ model: r.model, count: r.count || 1 })
+      m.set(key, list)
+    }
+    return m
+  })
+
+  function activeModels(id: string, name: string): { model: string; count: number }[] {
+    const pid = id.toLowerCase()
+    const pname = (name || '').toLowerCase()
+    return modelsByProvider.get(pid) || modelsByProvider.get(pname) || []
+  }
+
   let activeCount = $derived(
     Math.max(activeRequests.reduce((sum, r) => sum + (r.count || 1), 0), hasPulse ? 1 : 0)
   )
@@ -151,7 +173,8 @@
         path,
         returnPath,
         textIcon,
-        color: p.color || '#6b7280'
+        color: p.color || '#6b7280',
+        models: activeModels(pid, pname).slice(0, 2)
       }
     })
 
@@ -499,6 +522,20 @@
         >
           {node.name}
         </span>
+
+        <!-- Live model labels for this provider -->
+        {#if node.models && node.models.length}
+          <div class="flex flex-wrap gap-1 items-center max-w-[220px]">
+            {#each node.models as m (m.model)}
+              <span
+                class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-info/10 text-info border border-info/25 truncate max-w-[120px]"
+                title={m.model}
+              >
+                {m.model}{m.count > 1 ? `×${m.count}` : ''}
+              </span>
+            {/each}
+          </div>
+        {/if}
 
         <!-- Active indicator -->
         {#if node.isActive}
