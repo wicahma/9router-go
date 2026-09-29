@@ -187,6 +187,51 @@
   let displayDescription = $derived(
     pageDescription !== undefined ? pageDescription : currentMeta.description
   )
+
+  // Daily usage mini stats (period=today, refresh quietly so the numbers track)
+  let dayStats = $state<{
+    totalRequests: number
+    totalPromptTokens: number
+    totalCachedTokens: number
+    totalCost: number
+  } | null>(null)
+
+  function abbrev(n: number): string {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+    return String(Math.round(n))
+  }
+
+  function dayCost(cost: number): string {
+    if (cost === 0) return '$0.00'
+    if (cost < 0.01) return '<$0.01'
+    return '$' + cost.toFixed(2)
+  }
+
+  $effect(() => {
+    if (typeof window === 'undefined') return
+    let cancelled = false
+    const load = () =>
+      api
+        .getUsageStats('today')
+        .then((s: any) => {
+          if (cancelled || !s) return
+          dayStats = {
+            totalRequests: s.totalRequests || 0,
+            totalPromptTokens: s.totalPromptTokens || 0,
+            totalCachedTokens: s.totalCachedTokens || 0,
+            totalCost: s.totalCost || 0,
+          }
+        })
+        .catch(() => {})
+    load()
+    const timer = setInterval(load, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  })
 </script>
 
 <header
@@ -244,6 +289,42 @@
       </div>
     {/if}
   </div>
+
+  <!-- Today mini stats: input / cached / est. cost / requests -->
+  {#if dayStats}
+    <div
+      class="hidden md:flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg border border-border-subtle bg-surface-2/60"
+      title="Today's usage"
+    >
+      <div class="flex flex-col items-end leading-tight">
+        <span class="text-[9px] text-text-muted uppercase tracking-wide">Input</span>
+        <span class="text-[11px] font-mono font-semibold text-text-main"
+          >{abbrev(dayStats.totalPromptTokens)}</span
+        >
+      </div>
+      <span class="w-px h-6 bg-border-subtle"></span>
+      <div class="flex flex-col items-end leading-tight">
+        <span class="text-[9px] text-text-muted uppercase tracking-wide">Cached</span>
+        <span class="text-[11px] font-mono font-semibold text-info"
+          >{abbrev(dayStats.totalCachedTokens)}</span
+        >
+      </div>
+      <span class="w-px h-6 bg-border-subtle"></span>
+      <div class="flex flex-col items-end leading-tight">
+        <span class="text-[9px] text-text-muted uppercase tracking-wide">Est. Cost</span>
+        <span class="text-[11px] font-mono font-semibold text-success"
+          >{dayCost(dayStats.totalCost)}</span
+        >
+      </div>
+      <span class="w-px h-6 bg-border-subtle"></span>
+      <div class="flex flex-col items-end leading-tight">
+        <span class="text-[9px] text-text-muted uppercase tracking-wide">Requests</span>
+        <span class="text-[11px] font-mono font-semibold text-text-main"
+          >{abbrev(dayStats.totalRequests)}</span
+        >
+      </div>
+    </div>
+  {/if}
 
   <!-- Right action buttons: Theme, Language flag, App drawer -->
   <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
