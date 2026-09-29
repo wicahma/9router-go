@@ -34,9 +34,9 @@
         <div class="flex flex-col gap-1.5">
           {#each errors?.byStatus || [] as row}
             <div class="flex items-center gap-2 text-xs">
-              <span class="w-10 shrink-0 font-mono font-bold text-error">{row.status}</span>
+              <span class="w-10 shrink-0 font-mono font-bold text-brand-500">{row.status}</span>
               <div class="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-bg">
-                <div class="h-full rounded-full bg-error/70" style="width: {Math.max(2, ((row.count || 0) / maxStatus) * 100)}%"></div>
+                <div class="h-full rounded-full bg-brand-500/70" style="width: {Math.max(2, ((row.count || 0) / maxStatus) * 100)}%"></div>
               </div>
               <span class="w-12 shrink-0 text-right font-mono text-text-main">{fmt(row.count)}</span>
             </div>
@@ -95,7 +95,7 @@
               {#each (errors?.trend || []) as point, i}
                 {@const h = point.errors > 0 ? Math.max(2, ((point.errors || 0) / maxTrend) * 80) : 0}
                 {@const w = 292 / Math.max((errors?.trend || []).length, 1)}
-                <rect x={4 + i * w} y={92 - h} width={Math.max(1, w - 2)} height={h} rx="1" class="fill-error/70">
+                <rect x={4 + i * w} y={92 - h} width={Math.max(1, w - 2)} height={h} rx="1" class="fill-brand-500/80">
                   <title>{new Date(point.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' })} · {fmt(point.errors)} errors</title>
                 </rect>
               {/each}

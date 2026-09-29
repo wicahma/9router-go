@@ -7,7 +7,6 @@
   let firstSample = $derived(ttft?.firstSample || '')
   let cacheRatio = $derived(cache?.hitRatio || 0)
   let topCache = $derived((cache?.byModel || []).slice(0, 6))
-  let maxCacheRatio = $derived(Math.max(0.01, ...topCache.map((row) => row.hitRatio || 0)))
   let hasData = $derived(ttftSamples > 0 || (cache?.promptTokens || 0) > 0)
 
   function fmtDate(iso: string): string {
@@ -96,26 +95,29 @@
         {#if topCache.length === 0}
           <p class="text-xs text-text-muted">No prompt token data recorded.</p>
         {:else}
-          <div class="flex flex-col gap-1.5">
-            {#each topCache as row}
-              <div class="flex items-center gap-2 text-xs">
-                <span class="min-w-0 flex-1 truncate font-mono text-text-main" title="{row.model} · {row.provider}"
-                  >{row.model}</span
-                >
-                <div class="h-2 w-24 shrink-0 overflow-hidden rounded-full bg-bg">
-                  <div
-                    class="h-full rounded-full bg-info/70"
-                    style="width: {Math.max(2, ((row.hitRatio || 0) / maxCacheRatio) * 100)}%"
-                  ></div>
-                </div>
-                <span class="w-14 shrink-0 text-right font-mono text-text-main"
-                  >{((row.hitRatio || 0) * 100).toFixed(1)}%</span
-                >
-                <span class="hidden shrink-0 font-mono text-[10px] text-text-muted sm:block"
-                  >{fmt(row.cachedTokens)}/{fmt(row.promptTokens)}</span
-                >
-              </div>
-            {/each}
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse text-xs">
+              <thead>
+                <tr class="border-b border-border text-text-muted">
+                  <th class="py-1 text-left font-semibold">Model</th>
+                  <th class="py-1 text-right font-semibold">Cached</th>
+                  <th class="py-1 text-right font-semibold">Input</th>
+                  <th class="py-1 text-right font-semibold">Hit</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono">
+                {#each topCache as row}
+                  <tr class="border-b border-border/50">
+                    <td class="max-w-0 truncate py-1 pr-2 text-left text-text-main" title="{row.model} · {row.provider}"
+                      >{row.model}</td
+                    >
+                    <td class="py-1 text-right text-info">{fmt(row.cachedTokens)}</td>
+                    <td class="py-1 text-right text-text-muted">{fmt(row.promptTokens)}</td>
+                    <td class="py-1 text-right text-info">{((row.hitRatio || 0) * 100).toFixed(1)}%</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
           </div>
           <p class="mt-2 text-[11px] text-text-muted">
             Hit ratio = cached input tokens / input tokens. Reads only — cache writes are not recorded in usage data.
