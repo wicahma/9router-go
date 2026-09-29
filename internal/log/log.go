@@ -180,7 +180,7 @@ var (
 )
 
 func init() {
-	currentLevel = LevelInfo
+	currentLevel = LevelDebug
 	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
 		if l, ok := levelNames[strings.ToLower(lvl)]; ok {
 			currentLevel = l

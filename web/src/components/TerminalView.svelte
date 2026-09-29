@@ -26,7 +26,7 @@
 
   let logs = $state<string[]>([])
   let logElement = $state<HTMLDivElement | null>(null)
-  let logLevel = $state('info')
+  let logLevel = $state('debug')
   let levelBusy = $state(false)
   let query = $state('')
 
