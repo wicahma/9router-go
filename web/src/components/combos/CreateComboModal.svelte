@@ -202,7 +202,7 @@
           class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]"
           role="list"
         >
-          {#each models as model, idx (model)}
+          {#each models as model, idx (model + '-' + idx)}
             {@const caps = getModelCaps(model)}
             <div
               role="listitem"

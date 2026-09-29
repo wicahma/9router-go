@@ -200,6 +200,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	// required". Upstream registers it on the dashboard group too.
 	chatH := chat.NewChatHandler(repo)
 	r.Post("/api/models/test", chatH.HandleTestModel)
+	r.Get("/api/version", chatH.HandleVersion)
+	r.Get("/api/version/status", chatH.HandleVersionStatus)
+	r.Get("/api/version/check", chatH.HandleCheckUpdate)
+	r.Get("/api/changelog", chatH.HandleChangelog)
 	mediaH := media.NewMediaHandler(repo, nil, nil)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
