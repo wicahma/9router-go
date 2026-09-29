@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -282,17 +283,34 @@ func (r *Repo) GetLatencyStatsSince(cutoff string, limit int) ([]LatencyStats, e
 }
 
 // GetRequestDetailsPaged returns paged raw json strings and total count from requestDetails.
-func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) {
+// status filters rows exactly ("" = all rows).
+func (r *Repo) GetRequestDetailsPaged(limit, offset int, status string) ([]string, int, error) {
 	var total int
-	if err := r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails`).Scan(&total); err != nil {
+	var err error
+	if status == "" {
+		err = r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails`).Scan(&total)
+	} else {
+		err = r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails WHERE status = ?`, status).Scan(&total)
+	}
+	if err != nil {
 		total = 0
 	}
 
-	rows, err := r.db.Query(`
+	var rows *sql.Rows
+	if status == "" {
+		rows, err = r.db.Query(`
 		SELECT data FROM requestDetails
 		ORDER BY timestamp DESC
 		LIMIT ? OFFSET ?
 	`, limit, offset)
+	} else {
+		rows, err = r.db.Query(`
+		SELECT data FROM requestDetails
+		WHERE status = ?
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`, status, limit, offset)
+	}
 	if err != nil {
 		return nil, total, fmt.Errorf("query requestDetails paged: %w", err)
 	}

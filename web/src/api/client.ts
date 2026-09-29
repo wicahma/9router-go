@@ -732,15 +732,17 @@ export const api = {
         if (text && text.trim().length > 0) return text
       }
     } catch {}
-    const res = await fetch('https://raw.githubusercontent.com/decolua/9router/refs/heads/master/CHANGELOG.md')
+    const res = await fetch(`${REPO_RAW_URL}/CHANGELOG.md`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return await res.text()
   },
 
   // Usage & Telemetry
   getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
-  getRequestDetails: (limit = 50, offset = 0) =>
-    request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
+  getRequestDetails: (limit = 50, offset = 0, status = '') =>
+    request<any>(
+      `/api/usage/request-details?limit=${limit}&offset=${offset}${status ? `&status=${encodeURIComponent(status)}` : ''}`
+    ),
   resetHealth: (provider: string, model?: string) =>
     request<{ status: string }>(`/admin/health/reset?provider=${encodeURIComponent(provider)}${model ? `&model=${encodeURIComponent(model)}` : ''}`, {
       method: 'POST',

@@ -651,7 +651,8 @@ func HandleRequestDetails(repo *db.Repo) http.HandlerFunc {
 			}
 		}
 
-		rawJSONs, total, err := repo.GetRequestDetailsPaged(limit, offset)
+		statusFilter := r.URL.Query().Get("status")
+		rawJSONs, total, err := repo.GetRequestDetailsPaged(limit, offset, statusFilter)
 		if err != nil {
 			handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return

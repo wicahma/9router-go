@@ -21,6 +21,7 @@
   import InFlightCard from './InFlightCard.svelte'
   import UsageTrendChart from './UsageTrendChart.svelte'
   import ErrorRetryPanel from './ErrorRetryPanel.svelte'
+  import ErrorLogCard from './ErrorLogCard.svelte'
   import TtftCachePanel from './TtftCachePanel.svelte'
   interface Props {
     connections?: ProviderConnection[]
@@ -355,6 +356,9 @@
 
     <!-- Errors & retries -->
     <ErrorRetryPanel errors={stats.errors} />
+
+    <!-- Raw error log: status, provider, model, tokens -->
+    <ErrorLogCard />
 
     <!-- TTFT percentiles + prompt cache -->
     <TtftCachePanel ttft={stats.ttft} cache={stats.cache} />
