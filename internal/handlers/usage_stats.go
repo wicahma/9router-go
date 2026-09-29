@@ -139,6 +139,7 @@ type UsageStatsResponse struct {
 	ByApiKey              map[string]ApiKeyUsageItem   `json:"byApiKey"`
 	ByEndpoint            map[string]EndpointUsageItem `json:"byEndpoint"`
 	Trend                 []UsageTrendItem             `json:"trend"`
+	Errors                ErrorStatsItem               `json:"errors"`
 	ActiveRequests        []usagetracker.ActiveRequest `json:"activeRequests"`
 	RecentRequests        []usagetracker.RecentRequest `json:"recentRequests"`
 	ErrorProvider         string                       `json:"errorProvider"`
@@ -535,6 +536,8 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			resp.Trend = buildTrend(trend, period, time.Now().UTC())
 		}
 
+		resp.Errors = buildErrorStats(repo, period, nodeNameMap)
+
 		handlerutil.WriteJSON(w, http.StatusOK, resp)
 	}
 }
@@ -563,16 +566,13 @@ func cutoffLatency(period string, now time.Time) string {
 	}
 }
 
-// buildTrend densifies the query result into a fixed bucket grid so the chart
-// shows every hour/day in the window. Empty buckets are carried as zeros rather
-// than omitted: a missing bucket collapses the x-axis and makes a quiet stretch
-// look like a traffic spike.
-func buildTrend(rows []db.UsageTrend, period string, now time.Time) []UsageTrendItem {
-	byStamp := make(map[string]db.UsageTrend, len(rows))
-	for _, row := range rows {
-		byStamp[row.Timestamp] = row
-	}
-
+// trendGrid returns every bucket timestamp in the window, oldest first.
+//
+// Empty buckets are carried as zeros rather than omitted: a missing bucket
+// collapses the x-axis and makes a quiet stretch look like a traffic spike. The
+// grid is computed once here so the usage and error series share it and can be
+// read against each other.
+func trendGrid(period string, now time.Time) []string {
 	var step time.Duration
 	var first time.Time
 	switch period {
@@ -598,9 +598,24 @@ func buildTrend(rows []db.UsageTrend, period string, now time.Time) []UsageTrend
 		layout = "2006-01-02T15:04:05Z"
 	}
 
-	var out []UsageTrendItem
+	var out []string
 	for ts := first; !ts.After(now); ts = ts.Add(step) {
-		key := ts.Format(layout)
+		out = append(out, ts.Format(layout))
+	}
+	return out
+}
+
+// buildTrend densifies the query result onto the bucket grid. Both sides use
+// the same string for a given bucket because the SQL bucket expression and the
+// grid layout are built from the same format, so no key normalisation is needed.
+func buildTrend(rows []db.UsageTrend, period string, now time.Time) []UsageTrendItem {
+	byStamp := make(map[string]db.UsageTrend, len(rows))
+	for _, row := range rows {
+		byStamp[row.Timestamp] = row
+	}
+
+	var out []UsageTrendItem
+	for _, key := range trendGrid(period, now) {
 		item := UsageTrendItem{Timestamp: key}
 		if row, ok := byStamp[key]; ok {
 			item.Requests = row.Requests

@@ -32,6 +32,35 @@ export interface UsageTrendItem {
   cost?: number
   avgLatencyMs?: number
 }
+
+export interface ErrorBucketItem {
+  key: string
+  count?: number
+}
+
+export interface StatusBucketItem {
+  status: string
+  count?: number
+}
+
+export interface AttemptBucketItem {
+  attempts: number
+  requests?: number
+}
+
+export interface ErrorTrendItem {
+  timestamp: string
+  errors?: number
+}
+
+export interface ErrorStatsItem {
+  total?: number
+  byStatus?: StatusBucketItem[]
+  byModel?: ErrorBucketItem[]
+  byProvider?: ErrorBucketItem[]
+  trend?: ErrorTrendItem[]
+  attempts?: AttemptBucketItem[]
+}
 export interface RecentRequestItem {
   status?: string
   model?: string
@@ -94,6 +123,7 @@ export interface StatsData {
   byApiKey?: Record<string, UsageItem>
   byEndpoint?: Record<string, UsageItem>
   trend?: UsageTrendItem[]
+  errors?: ErrorStatsItem
   activeRequests?: ActiveRequestItem[]
   recentRequests?: RecentRequestItem[]
   errorProvider?: string

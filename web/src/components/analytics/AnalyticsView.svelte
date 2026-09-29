@@ -20,6 +20,7 @@
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
   import InFlightCard from './InFlightCard.svelte'
   import UsageTrendChart from './UsageTrendChart.svelte'
+  import ErrorRetryPanel from './ErrorRetryPanel.svelte'
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
@@ -350,6 +351,9 @@
 
     <!-- Usage trend over time -->
     <UsageTrendChart trend={stats.trend} {period} />
+
+    <!-- Errors & retries -->
+    <ErrorRetryPanel errors={stats.errors} />
 
     <!-- Topology + Recent Requests + In-Flight -->
     <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)_minmax(240px,1fr)]">
