@@ -19,6 +19,17 @@
   let tableView = $state<TableView>('model')
   let viewMode = $state<ViewMode>('costs')
 
+  // Latency has no per-account/key/endpoint percentiles, so that mode always
+  // reads the model table — labels must follow the data, not the dropdown.
+  let view = $derived(viewMode === 'latency' ? 'model' : tableView)
+
+  function label(row: ProcessedUsageRow): string {
+    if (view === 'account') return row.accountName || row.key
+    if (view === 'apiKey') return row.keyName || row.key
+    if (view === 'endpoint') return row.endpoint || row.key
+    return row.rawModel || row.key
+  }
+
   interface ProcessedUsageRow extends UsageItem {
     key: string
     totalTokens: number
@@ -28,7 +39,6 @@
     if (!stats) return []
     // Percentiles are only computed per model+provider, so the latency view is
     // always the model table regardless of the dropdown.
-    const view: TableView = viewMode === 'latency' ? 'model' : tableView
     let sourceMap: Record<string, UsageItem> = {}
     if (view === 'model') sourceMap = stats.byModel || {}
     else if (view === 'account') sourceMap = stats.byAccount || {}
@@ -98,7 +108,7 @@
           <thead class="bg-surface-2 border-b border-border text-text-muted uppercase text-[10px] font-semibold tracking-wider">
             <tr>
               <th class="py-3 px-4">
-                {tableView === 'model' ? 'Model' : tableView === 'account' ? 'Account' : tableView === 'apiKey' ? 'Key Name' : 'Endpoint'}
+                {view === 'model' ? 'Model' : view === 'account' ? 'Account' : view === 'apiKey' ? 'Key Name' : 'Endpoint'}
               </th>
               <th class="py-3 px-4">Provider</th>
               <th class="py-3 px-4 text-right">Requests</th>
@@ -133,7 +143,7 @@
                         loading="lazy"
                       />
                     {/if}
-                    <span class="truncate">{row.rawModel || row.accountName || row.keyName || row.endpoint || row.key}</span>
+                    <span class="truncate">{label(row)}</span>
                   </div>
                 </td>
                 <td class="py-3 px-4">

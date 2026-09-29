@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
@@ -179,6 +180,21 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			}
 		}
 
+		// Map the masked key recorded in usage rows back to the key's label.
+		keyNameMap := make(map[string]string)
+		if keys, err := repo.GetApiKeys(); err == nil {
+			for _, k := range keys {
+				if k.Key == "" {
+					continue
+				}
+				name := chat.MaskAPIKey(k.Key)
+				if k.Name != nil && *k.Name != "" {
+					name = *k.Name
+				}
+				keyNameMap[chat.MaskAPIKey(k.Key)] = name
+			}
+		}
+
 		useDailySummary := period != "today" && period != "24h"
 
 		if useDailySummary {
@@ -253,7 +269,6 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 					if ba, ok := dayData["byAccount"].(map[string]any); ok {
 						for connID, aVal := range ba {
 							if am, ok := aVal.(map[string]any); ok {
-								rawModel, _ := am["rawModel"].(string)
 								prov, _ := am["provider"].(string)
 								accName := connMap[connID]
 								if accName == "" {
@@ -263,14 +278,15 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 										accName = "Account " + connID
 									}
 								}
-								accountKey := rawModel + " (" + prov + " - " + accName + ")"
+								// usageDaily stores one byAccount entry per connection,
+								// so the rollup key here is the account itself.
+								accountKey := accName
 								displayName := prov
 								if dn, ok := nodeNameMap[prov]; ok && dn != "" {
 									displayName = dn
 								}
 
 								cur := resp.ByAccount[accountKey]
-								cur.RawModel = rawModel
 								cur.Provider = displayName
 								cur.ConnectionID = connID
 								cur.AccountName = accName
@@ -280,6 +296,48 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 								cur.CachedTokens += getMapInt64(am, "cachedTokens")
 								cur.Cost += getMapFloat(am, "cost")
 								resp.ByAccount[accountKey] = cur
+							}
+						}
+					}
+
+					// byApiKey
+					if bk, ok := dayData["byApiKey"].(map[string]any); ok {
+						for key, val := range bk {
+							if vm, ok := val.(map[string]any); ok {
+								cur := resp.ByApiKey[key]
+								cur.RawModel, _ = vm["rawModel"].(string)
+								cur.Provider, _ = vm["provider"].(string)
+								cur.ApiKeyMasked, _ = vm["apiKey"].(string)
+								cur.ApiKeyKey = cur.ApiKeyMasked
+								if n, ok := keyNameMap[cur.ApiKeyMasked]; ok {
+									cur.KeyName = n
+								} else {
+									cur.KeyName = cur.ApiKeyMasked
+								}
+								cur.Requests += getMapInt(vm, "requests")
+								cur.PromptTokens += getMapInt64(vm, "promptTokens")
+								cur.CompletionTokens += getMapInt64(vm, "completionTokens")
+								cur.CachedTokens += getMapInt64(vm, "cachedTokens")
+								cur.Cost += getMapFloat(vm, "cost")
+								resp.ByApiKey[key] = cur
+							}
+						}
+					}
+
+					// byEndpoint
+					if be, ok := dayData["byEndpoint"].(map[string]any); ok {
+						for key, val := range be {
+							if vm, ok := val.(map[string]any); ok {
+								cur := resp.ByEndpoint[key]
+								cur.Endpoint, _ = vm["endpoint"].(string)
+								cur.RawModel, _ = vm["rawModel"].(string)
+								cur.Provider, _ = vm["provider"].(string)
+								cur.Requests += getMapInt(vm, "requests")
+								cur.PromptTokens += getMapInt64(vm, "promptTokens")
+								cur.CompletionTokens += getMapInt64(vm, "completionTokens")
+								cur.CachedTokens += getMapInt64(vm, "cachedTokens")
+								cur.Cost += getMapFloat(vm, "cost")
+								resp.ByEndpoint[key] = cur
 							}
 						}
 					}
@@ -339,7 +397,8 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 					}
 					resp.ByModel[modelKey] = m
 
-					// byAccount
+					// byAccount — one row per account; a connection spans many
+					// models, so keying on model would show each account N times.
 					if r.ConnectionID != "" {
 						accName := connMap[r.ConnectionID]
 						if accName == "" {
@@ -349,12 +408,12 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 								accName = "Account " + r.ConnectionID
 							}
 						}
-						accKey := r.Model + " (" + provName + " - " + accName + ")"
-						a := resp.ByAccount[accKey]
-						a.RawModel = r.Model
-						a.Provider = provDisplayName
-						a.ConnectionID = r.ConnectionID
+						a := resp.ByAccount[accName]
+						if a.ConnectionID == "" {
+							a.Provider = provDisplayName
+						}
 						a.AccountName = accName
+						a.ConnectionID = r.ConnectionID
 						a.Requests++
 						a.PromptTokens += promptTok
 						a.CompletionTokens += complTok
@@ -363,8 +422,45 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 						if r.Timestamp > a.LastUsed {
 							a.LastUsed = r.Timestamp
 						}
-						resp.ByAccount[accKey] = a
+						resp.ByAccount[accName] = a
 					}
+
+					// byApiKey
+					apiKey := r.APIKey
+					if apiKey == "" {
+						apiKey = "local-no-key"
+					}
+					akKey := apiKey + "|" + r.Model + "|" + provName
+					ak := resp.ByApiKey[akKey]
+					ak.RawModel, ak.Provider, ak.ApiKeyMasked, ak.ApiKeyKey = r.Model, provDisplayName, apiKey, apiKey
+					if n, ok := keyNameMap[apiKey]; ok {
+						ak.KeyName = n
+					} else {
+						ak.KeyName = apiKey
+					}
+					ak.Requests++
+					ak.PromptTokens += promptTok
+					ak.CompletionTokens += complTok
+					ak.CachedTokens += cachedTok
+					ak.Cost += entryCost
+					if r.Timestamp > ak.LastUsed {
+						ak.LastUsed = r.Timestamp
+					}
+					resp.ByApiKey[akKey] = ak
+
+					// byEndpoint
+					epKey := r.Endpoint + "|" + r.Model + "|" + provName
+					ep := resp.ByEndpoint[epKey]
+					ep.Endpoint, ep.RawModel, ep.Provider = r.Endpoint, r.Model, provDisplayName
+					ep.Requests++
+					ep.PromptTokens += promptTok
+					ep.CompletionTokens += complTok
+					ep.CachedTokens += cachedTok
+					ep.Cost += entryCost
+					if r.Timestamp > ep.LastUsed {
+						ep.LastUsed = r.Timestamp
+					}
+					resp.ByEndpoint[epKey] = ep
 				}
 			}
 		}
