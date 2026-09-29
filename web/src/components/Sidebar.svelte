@@ -35,6 +35,60 @@
   // Media providers accordion (collapsed by default)
   let isMediaOpen = $state(false)
 
+  // Live request card: in-flight provider/model + last completed tokens in/out
+  let liveReq = $state<{
+    provider: string
+    model: string
+    inflight: boolean
+    promptTokens: number
+    completionTokens: number
+  } | null>(null)
+
+  function abbrevNum(n: number): string {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+    return String(n)
+  }
+
+  $effect(() => {
+    if (typeof window === 'undefined') return
+    let cancelled = false
+    const load = () =>
+      api
+        .getUsageStats('today')
+        .then((s: any) => {
+          if (cancelled || !s) return
+          const act = (s.activeRequests || [])[0]
+          const rec = (s.recentRequests || [])[0]
+          if (act) {
+            liveReq = {
+              provider: act.provider || '',
+              model: act.model || '',
+              inflight: true,
+              promptTokens: rec?.promptTokens || 0,
+              completionTokens: rec?.completionTokens || 0,
+            }
+          } else if (rec) {
+            liveReq = {
+              provider: rec.provider || '',
+              model: rec.model || '',
+              inflight: false,
+              promptTokens: rec.promptTokens || 0,
+              completionTokens: rec.completionTokens || 0,
+            }
+          } else {
+            liveReq = null
+          }
+        })
+        .catch(() => {})
+    load()
+    const timer = setInterval(load, 10000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  })
+
   $effect(() => {
     api
       .getSystemVersion()
@@ -157,11 +211,32 @@
 <aside
   class="flex w-72 flex-col border-r border-border-subtle bg-sidebar backdrop-blur-xl transition-colors duration-300 min-h-full flex-shrink-0 select-none z-30"
 >
-  <!-- Window control / traffic lights -->
-  <div class="flex items-center gap-2 px-6 pt-5 pb-2">
-    <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
-    <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
-    <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
+  <!-- Live request: provider, model, token in/out -->
+  <div class="px-4 pt-4 pb-2">
+    {#if liveReq}
+      <div class="p-2.5 rounded-[10px] bg-surface border border-border-subtle flex flex-col gap-1.5">
+        <div class="flex items-center gap-1.5 min-w-0">
+          {#if liveReq.inflight}
+            <span class="relative flex h-2 w-2 shrink-0">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+          {:else}
+            <span class="h-2 w-2 rounded-full bg-text-muted shrink-0"></span>
+          {/if}
+          <span class="text-[11px] font-semibold text-text-main truncate">{liveReq.provider || 'idle'}</span>
+          <span class="text-[10px] font-mono text-text-muted truncate">{liveReq.model}</span>
+        </div>
+        <div class="flex items-center gap-3 text-[11px] font-mono">
+          <span class="text-text-muted">in <span class="text-text-main font-semibold">{abbrevNum(liveReq.promptTokens)}</span></span>
+          <span class="text-text-muted">out <span class="text-info font-semibold">{abbrevNum(liveReq.completionTokens)}</span></span>
+        </div>
+      </div>
+    {:else}
+      <div class="p-2.5 rounded-[10px] bg-surface border border-border-subtle">
+        <span class="text-[11px] text-text-muted">No requests yet</span>
+      </div>
+    {/if}
   </div>
 
   <!-- Brand header: 9router-go with official favicon.svg logo -->
