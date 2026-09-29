@@ -598,6 +598,14 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						}
 						continue
 					}
+					if connID != "" {
+						excludeIDs = append(excludeIDs, connID)
+						lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
+						_ = h.Repo.LockConnectionModel(connID, lockKey, 15, 0)
+						if lockKey != modelInfo.Model {
+							_ = h.Repo.LockConnectionModel(connID, modelInfo.Model, 15, 0)
+						}
+					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
 					if isKnownNoAuth {
 						break
@@ -812,6 +820,14 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							break
 						}
 						continue
+					}
+					if connID != "" {
+						excludeIDs = append(excludeIDs, connID)
+						lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
+						_ = h.Repo.LockConnectionModel(connID, lockKey, 15, 0)
+						if lockKey != modelInfo.Model {
+							_ = h.Repo.LockConnectionModel(connID, modelInfo.Model, 15, 0)
+						}
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
 					if isKnownNoAuth {

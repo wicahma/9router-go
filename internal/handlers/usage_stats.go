@@ -306,7 +306,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 							if vm, ok := val.(map[string]any); ok {
 								cur := resp.ByApiKey[key]
 								cur.RawModel, _ = vm["rawModel"].(string)
-								cur.Provider, _ = vm["provider"].(string)
+								cur.Provider = displayProvider(getMapString(vm, "provider"), nodeNameMap)
 								cur.ApiKeyMasked, _ = vm["apiKey"].(string)
 								cur.ApiKeyKey = cur.ApiKeyMasked
 								if n, ok := keyNameMap[cur.ApiKeyMasked]; ok {
@@ -331,7 +331,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 								cur := resp.ByEndpoint[key]
 								cur.Endpoint, _ = vm["endpoint"].(string)
 								cur.RawModel, _ = vm["rawModel"].(string)
-								cur.Provider, _ = vm["provider"].(string)
+								cur.Provider = displayProvider(getMapString(vm, "provider"), nodeNameMap)
 								cur.Requests += getMapInt(vm, "requests")
 								cur.PromptTokens += getMapInt64(vm, "promptTokens")
 								cur.CompletionTokens += getMapInt64(vm, "completionTokens")
@@ -594,6 +594,11 @@ func HandleRequestDetails(repo *db.Repo) http.HandlerFunc {
 }
 
 // Helper functions for map extraction
+func getMapString(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
+}
+
 func getMapInt(m map[string]any, key string) int {
 	if v, ok := m[key]; ok {
 		switch n := v.(type) {
