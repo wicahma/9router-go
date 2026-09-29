@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"github.com/samber/lo"
 )
@@ -32,10 +33,10 @@ import (
 var CurrentVersion = "1.9.1"
 
 // DefaultUpdateURL is the primary remote version manifest URL.
-var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
+var DefaultUpdateURL = constants.RepoRawURL + "/version.json"
 
 // DefaultGitHubRepo is the repository for GitHub Releases API fallback.
-var DefaultGitHubRepo = "luqman-v1/9router-go"
+var DefaultGitHubRepo = constants.RepoSlug
 
 // DefaultCheckInterval is the periodic background update check interval (6 hours).
 const DefaultCheckInterval = 6 * time.Hour

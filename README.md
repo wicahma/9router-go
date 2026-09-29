@@ -1,7 +1,7 @@
 # 9router-go
 
-[![CI](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml)
-[![Release](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml)
+[![CI](https://github.com/wicahma/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/wicahma/9router-go/actions/workflows/ci.yml)
+[![Release](https://github.com/wicahma/9router-go/actions/workflows/release.yml/badge.svg)](https://github.com/wicahma/9router-go/actions/workflows/release.yml)
 
 9router-go is a single-binary AI gateway and dashboard. The Go process serves the OpenAI-, Claude-, Gemini-, and Ollama-compatible proxy APIs on the same port as a Svelte 5 dashboard. The dashboard is built with Vite, embedded in the binary, and needs no Node.js or separate web server at runtime.
 
@@ -31,7 +31,7 @@ Detailed routing and provider behavior is documented in [`ARCHITECTURE.md`](ARCH
 
 ### Release binary
 
-Download the archive for your platform from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest), then verify it against `SHA256SUMS.txt` from that release.
+Download the archive for your platform from [GitHub Releases](https://github.com/wicahma/9router-go/releases/latest), then verify it against `SHA256SUMS.txt` from that release.
 
 Release artifacts:
 
@@ -59,7 +59,7 @@ The bundled compose file persists `/data` in the `9router-data` volume. The imag
 Prerequisites: Go 1.27 and Bun 1.x. The Go package embeds `web/dist`, so build the dashboard before compiling the binary.
 
 ```bash
-git clone https://github.com/luqman-v1/9router-go.git
+git clone https://github.com/wicahma/9router-go.git
 cd 9router-go
 
 make web-build       # bun install --frozen-lockfile && bun run build

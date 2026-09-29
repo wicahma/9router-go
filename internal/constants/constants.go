@@ -9,13 +9,13 @@ const (
 
 // HTTP Headers
 const (
-	HeaderAuthorization   = "Authorization"
-	HeaderContentType     = "Content-Type"
-	HeaderCacheControl    = "Cache-Control"
-	HeaderConnection      = "Connection"
-	HeaderAccept          = "Accept"
-	HeaderXAPIKey         = "X-API-Key"
-	HeaderUserAgent       = "User-Agent"
+	HeaderAuthorization = "Authorization"
+	HeaderContentType   = "Content-Type"
+	HeaderCacheControl  = "Cache-Control"
+	HeaderConnection    = "Connection"
+	HeaderAccept        = "Accept"
+	HeaderXAPIKey       = "X-API-Key"
+	HeaderUserAgent     = "User-Agent"
 )
 
 // Auth token prefix for header value (includes trailing space)
@@ -64,6 +64,17 @@ const (
 const (
 	MaxUpstreamBodyBytes = 10 << 20 // 10MB cap for upstream response reads
 	UpstreamErrLimit     = 1 << 20  // 1MB cap for upstream error body reads
+)
+
+// Project repository. Single source of truth: every link, badge, update
+// manifest and raw-asset URL is derived from these so a fork only edits here.
+const (
+	RepoOwner  = "wicahma"
+	RepoName   = "9router-go"
+	RepoSlug   = RepoOwner + "/" + RepoName
+	RepoURL    = "https://github.com/" + RepoSlug
+	RepoBranch = "main"
+	RepoRawURL = "https://raw.githubusercontent.com/" + RepoSlug + "/" + RepoBranch
 )
 
 // Buffer Sizes
