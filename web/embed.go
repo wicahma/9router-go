@@ -26,6 +26,11 @@ func Handler() http.Handler {
 		if path == "" {
 			path = "index.html"
 		}
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 
 		// If the file exists in the embedded asset FS, serve it directly (CSS, JS, SVG, etc.)
 		f, err := subFS.Open(path)
