@@ -23,12 +23,15 @@ func TestGetUsageTrendSinceKeepsEveryRow(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
+	// All three rows must land in the same hour bucket, otherwise the bucket's
+	// mean is a single row and the assertion measures bucket boundaries
+	// instead of the REAL-to-int scan it is meant to guard.
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
 	// The average must be fractional: a whole-number mean converts to int64
 	// losslessly and the driver accepts it, so the test would pass even with
 	// the bug present.
 	latencies := []int{1000, 1100, 1201}
-	for i, lat := range latencies {
-		ts := now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)
+	for _, lat := range latencies {
 		meta := fmt.Sprintf(`{"latencyMs":%d,"ttftMs":100}`, lat)
 		if _, err := database.Exec(
 			`INSERT INTO usageHistory (timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens, meta)

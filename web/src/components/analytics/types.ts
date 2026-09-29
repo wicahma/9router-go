@@ -61,6 +61,39 @@ export interface ErrorStatsItem {
   trend?: ErrorTrendItem[]
   attempts?: AttemptBucketItem[]
 }
+
+export interface TtftModelItem {
+  model: string
+  provider?: string
+  samples?: number
+  p5Ms?: number
+  p50Ms?: number
+  p95Ms?: number
+}
+
+export interface TtftStatsItem {
+  samples?: number
+  firstSample?: string
+  p5Ms?: number
+  p50Ms?: number
+  p95Ms?: number
+  byModel?: TtftModelItem[]
+}
+
+export interface CacheModelItem {
+  model: string
+  provider?: string
+  promptTokens?: number
+  cachedTokens?: number
+  hitRatio?: number
+}
+
+export interface CacheStatsItem {
+  promptTokens?: number
+  cachedTokens?: number
+  hitRatio?: number
+  byModel?: CacheModelItem[]
+}
 export interface RecentRequestItem {
   status?: string
   model?: string
@@ -124,6 +157,8 @@ export interface StatsData {
   byEndpoint?: Record<string, UsageItem>
   trend?: UsageTrendItem[]
   errors?: ErrorStatsItem
+  ttft?: TtftStatsItem
+  cache?: CacheStatsItem
   activeRequests?: ActiveRequestItem[]
   recentRequests?: RecentRequestItem[]
   errorProvider?: string

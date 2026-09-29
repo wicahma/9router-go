@@ -140,6 +140,8 @@ type UsageStatsResponse struct {
 	ByEndpoint            map[string]EndpointUsageItem `json:"byEndpoint"`
 	Trend                 []UsageTrendItem             `json:"trend"`
 	Errors                ErrorStatsItem               `json:"errors"`
+	Ttft                  TtftStatsItem                `json:"ttft"`
+	Cache                 CacheStatsItem               `json:"cache"`
 	ActiveRequests        []usagetracker.ActiveRequest `json:"activeRequests"`
 	RecentRequests        []usagetracker.RecentRequest `json:"recentRequests"`
 	ErrorProvider         string                       `json:"errorProvider"`
@@ -537,6 +539,9 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		}
 
 		resp.Errors = buildErrorStats(repo, period, nodeNameMap)
+
+		resp.Ttft = buildTtftStats(repo, period, nodeNameMap)
+		resp.Cache = buildCacheStats(resp.ByModel)
 
 		handlerutil.WriteJSON(w, http.StatusOK, resp)
 	}
