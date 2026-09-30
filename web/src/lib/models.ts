@@ -14,101 +14,114 @@ export interface ProviderModel {
 }
 
 export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
-  "alicode-intl": "alicode-intl",
   "alicode": "alicode",
+  "alicode-intl": "alicode-intl",
+  "alims-intl": "alims-intl",
+  "alitp-intl": "alitp-intl",
   "anthropic": "anthropic",
   "antigravity": "ag",
-  "assemblyai": "assemblyai",
+  "api-airforce": "af",
+  "assemblyai": "aai",
   "aws-polly": "aws-polly",
   "azure": "azure",
-  "blackbox": "blackbox",
-  "byteplus": "byteplus",
+  "baidu": "qianfan",
+  "bazaarlink": "bzl",
+  "black-forest-labs": "bfl",
+  "blackbox": "bb",
+  "bluesminds": "bm",
+  "byteplus": "bpm",
   "cartesia": "cartesia",
   "cerebras": "cerebras",
   "chutes": "chutes",
   "claude": "cc",
   "cline": "cl",
   "clinepass": "clinepass",
-  "cloudflare-ai": "cloudflare-ai",
+  "cloudflare-ai": "cf",
   "codebuddy-cn": "cbcn",
+  "codebuddy-intl": "cbai",
   "codex": "cx",
   "cohere": "cohere",
-  "commandcode": "commandcode",
+  "comfyui": "comfyui",
+  "commandcode": "cmc",
   "coqui": "coqui",
   "cursor": "cu",
-  "deepgram": "deepgram",
-  "deepseek": "deepseek",
+  "deepgram": "dg",
+  "deepseek": "ds",
   "devin-cli": "devin-cli",
   "elevenlabs": "elevenlabs",
-  "featherless": "featherless",
+  "fal-ai": "fal",
+  "featherless": "fl",
   "fireworks": "fireworks",
   "fish-audio": "fish-audio",
   "freebuff": "fb",
-  "gemini-cli": "gc",
   "gemini": "gemini",
+  "gemini-cli": "gc",
   "github": "gh",
   "gitlab": "gitlab",
-  "glm-cn": "glm-cn",
   "glm": "glm",
+  "glm-cn": "glm-cn",
   "grok-cli": "gcli",
-  "grok-web": "grok-web",
+  "grok-web": "gw",
   "groq": "groq",
-  "hyperbolic": "hyperbolic",
+  "huggingface": "hf",
+  "hyperbolic": "hyp",
   "iflow": "if",
   "inworld": "inworld",
   "jina-ai": "jina-ai",
+  "kilo-gateway": "kgw",
   "kilocode": "kc",
   "kimchi": "kimchi",
   "kimi": "kimi",
   "kiro": "kr",
+  "llm7": "llm7",
   "mimo-free": "mmf",
-  "minimax-cn": "minimax-cn",
   "minimax": "minimax",
+  "minimax-cn": "minimax-cn",
   "mistral": "mistral",
   "mmf": "mmf",
-  "nanobanana": "nanobanana",
+  "morph": "morph",
+  "nanobanana": "nb",
   "nebius": "nebius",
   "nvidia": "nvidia",
-  "ollama-local": "ollama-local",
   "ollama": "ollama",
+  "ollama-local": "ollama-local",
   "openai": "openai",
-  "opencode-go": "opencode-go",
   "opencode": "oc",
+  "opencode-go": "ocg",
   "opencode-zen": "ocz",
   "openrouter": "openrouter",
-  "perplexity-web": "perplexity-web",
-  "perplexity": "perplexity",
-  "perplexity-agent": "perplexity-agent",
+  "perplexity": "pplx",
+  "perplexity-agent": "pa",
+  "perplexity-web": "pw",
   "playht": "playht",
+  "poolside": "ps",
   "qoder": "qd",
+  "qoder-cn": "qdcn",
+  "recraft": "recraft",
+  "runwayml": "runway",
+  "sambanova": "samba",
+  "sdwebui": "sdwebui",
+  "selfhosted-embedding": "selfhosted-embedding",
+  "selfhosted-stt": "selfhosted-stt",
+  "selfhosted-tts": "selfhosted-tts",
   "siliconflow": "siliconflow",
+  "stability-ai": "stability",
+  "tencent": "hunyuan",
   "together": "together",
+  "tokenrouter": "tokenrouter",
+  "tortoise": "tortoise",
   "trae": "trae",
   "venice": "venice",
   "vercel-ai-gateway": "vercel-ai-gateway",
-  "vertex-partner": "vertex-partner",
-  "vertex": "vertex",
-  "volcengine-ark": "volcengine-ark",
+  "vertex": "vx",
+  "vertex-partner": "vxp",
+  "volcengine-ark": "ark",
+  "voyage-ai": "voyage",
   "windsurf": "windsurf",
   "xai": "xai",
-  "xiaomi-mimo": "xiaomi-mimo",
-  "xiaomi-tokenplan": "xiaomi-tokenplan",
-  "alims-intl": "alims-intl",
-  "codebuddy-intl": "cbai",
+  "xiaomi-mimo": "mimo",
+  "xiaomi-tokenplan": "xmtp",
   "zed": "zd",
-  "api-airforce": "af",
-  "baidu": "qianfan",
-  "bazaarlink": "bzl",
-  "bluesminds": "bm",
-  "kilo-gateway": "kgw",
-  "llm7": "llm7",
-  "sambanova": "samba",
-  "tencent": "hunyuan",
-  "morph": "morph",
-  "poolside": "poolside",
-  "tokenrouter": "tokenrouter",
-  "tortoise": "tortoise",
-  "alitp-intl": "alitp-intl"
 };
 
 const FREEBUFF_MODELS: ProviderModel[] = [
@@ -1206,12 +1219,28 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "DeepSeek V4 Flash"
     },
     {
+      "id": "moonshotai/Kimi-K2.7-Code",
+      "name": "Kimi K2.7 Code"
+    },
+    {
+      "id": "moonshotai/Kimi-K2.7-Code-Highspeed",
+      "name": "Kimi K2.7 Code HighSpeed"
+    },
+    {
       "id": "moonshotai/Kimi-K2.6",
       "name": "Kimi K2.6"
     },
     {
       "id": "moonshotai/Kimi-K2.5",
       "name": "Kimi K2.5"
+    },
+    {
+      "id": "zai-org/GLM-5.2",
+      "name": "GLM 5.2"
+    },
+    {
+      "id": "zai-org/GLM-5.2-Fast",
+      "name": "GLM 5.2 Fast"
     },
     {
       "id": "zai-org/GLM-5.1",
@@ -1222,12 +1251,24 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "GLM 5"
     },
     {
+      "id": "MiniMaxAI/MiniMax-M3",
+      "name": "MiniMax M3"
+    },
+    {
       "id": "MiniMaxAI/MiniMax-M2.7",
       "name": "MiniMax M2.7"
     },
     {
       "id": "MiniMaxAI/MiniMax-M2.5",
       "name": "MiniMax M2.5"
+    },
+    {
+      "id": "xiaomi/mimo-v2.5-pro",
+      "name": "MiMo V2.5 Pro"
+    },
+    {
+      "id": "xiaomi/mimo-v2.5",
+      "name": "MiMo V2.5"
     },
     {
       "id": "Qwen/Qwen3.6-Max-Preview",
@@ -1238,9 +1279,25 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Qwen 3.6 Plus"
     },
     {
+      "id": "Qwen/Qwen3.7-Max",
+      "name": "Qwen 3.7 Max"
+    },
+    {
+      "id": "Qwen/Qwen3.7-Plus",
+      "name": "Qwen 3.7 Plus"
+    },
+    {
+      "id": "stepfun/Step-3.7-Flash",
+      "name": "Step 3.7 Flash"
+    },
+    {
       "id": "stepfun/Step-3.5-Flash",
       "name": "Step 3.5 Flash"
-    }
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "name": "Nemotron 3 Ultra"
+    },
   ],
   "cu": [
     {
@@ -1345,6 +1402,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "deepseek-v4-pro-none",
       "name": "DeepSeek V4 Pro No Thinking",
       "upstreamModelId": "deepseek-v4-pro"
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash"
     },
     {
       "id": "deepseek-v4-flash",
@@ -1972,6 +2033,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "gcli": [
     {
+      "id": "grok-build",
+      "name": "Grok Build"
+    },
+    {
       "id": "grok-4.5",
       "name": "Grok 4.5"
     },
@@ -2120,7 +2185,117 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
         "language"
       ],
       "kind": "stt"
-    }
+    },
+    {
+      "id": "black-forest-labs/FLUX.1-dev",
+      "name": "FLUX.1 Dev",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.1-Krea-dev",
+      "name": "FLUX.1 Krea",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.1-Kontext-dev",
+      "name": "FLUX.1 Kontext",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.2-dev",
+      "name": "FLUX.2 Dev",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.2-klein-9B",
+      "name": "FLUX.2 Klein 9B",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.2-klein-4B",
+      "name": "FLUX.2 Klein 4B",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.2-klein-base-9B",
+      "name": "FLUX.2 Klein Base 9B",
+      "kind": "image"
+    },
+    {
+      "id": "black-forest-labs/FLUX.2-klein-base-4B",
+      "name": "FLUX.2 Klein Base 4B",
+      "kind": "image"
+    },
+    {
+      "id": "stabilityai/stable-diffusion-3.5-large",
+      "name": "Stable Diffusion 3.5 Large",
+      "kind": "image"
+    },
+    {
+      "id": "stabilityai/stable-diffusion-3.5-large-turbo",
+      "name": "Stable Diffusion 3.5 Large Turbo",
+      "kind": "image"
+    },
+    {
+      "id": "Qwen/Qwen-Image",
+      "name": "Qwen Image",
+      "kind": "image"
+    },
+    {
+      "id": "Qwen/Qwen-Image-2512",
+      "name": "Qwen Image 2512",
+      "kind": "image"
+    },
+    {
+      "id": "Qwen/Qwen-Image-Edit",
+      "name": "Qwen Image Edit",
+      "kind": "image"
+    },
+    {
+      "id": "Qwen/Qwen-Image-Edit-2509",
+      "name": "Qwen Image Edit 2509",
+      "kind": "image"
+    },
+    {
+      "id": "Qwen/Qwen-Image-Edit-2511",
+      "name": "Qwen Image Edit 2511",
+      "kind": "image"
+    },
+    {
+      "id": "ideogram-ai/ideogram-4-fp8",
+      "name": "Ideogram 4",
+      "kind": "image"
+    },
+    {
+      "id": "tencent/HunyuanImage-3.0",
+      "name": "HunyuanImage 3.0",
+      "kind": "image"
+    },
+    {
+      "id": "Tongyi-MAI/Z-Image-Turbo",
+      "name": "Z-Image Turbo",
+      "kind": "image"
+    },
+    {
+      "id": "krea/Krea-2-Turbo",
+      "name": "Krea 2 Turbo",
+      "kind": "image"
+    },
+    {
+      "id": "HiDream-ai/HiDream-I1-Fast",
+      "name": "HiDream I1 Fast",
+      "kind": "image"
+    },
+    {
+      "id": "playgroundai/playground-v2.5-1024px-aesthetic",
+      "name": "Playground v2.5",
+      "kind": "image"
+    },
+    {
+      "id": "openai/whisper-large-v3-turbo",
+      "name": "Whisper Large v3 Turbo (HF)",
+      "kind": "stt"
+    },
   ],
   "hyperbolic": [
     {
@@ -2868,6 +3043,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "openai": [
     {
+      "id": "gpt-5.5",
+      "name": "GPT-5.5"
+    },
+    {
       "id": "gpt-5.4",
       "name": "GPT-5.4"
     },
@@ -3332,9 +3511,301 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "jev-1.13-free",
       "name": "Jev 1.13 Free",
       "kind": "systemone"
-    }
+    },
+    {
+      "id": "union-alpha",
+      "name": "Union Alpha Free"
+    },
   ],
   "ocz": [
+    {
+      "id": "claude-fable-5",
+      "name": "Claude Fable 5"
+    },
+    {
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1"
+    },
+    {
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "name": "Claude Opus 4.8"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "name": "Claude Opus 4.7"
+    },
+    {
+      "id": "claude-opus-4-6",
+      "name": "Claude Opus 4.6"
+    },
+    {
+      "id": "claude-opus-4-5",
+      "name": "Claude Opus 4.5"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "name": "Claude Sonnet 5"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "name": "Claude Sonnet 4.5"
+    },
+    {
+      "id": "claude-sonnet-4",
+      "name": "Claude Sonnet 4"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5"
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "name": "Gemini 3.6 Flash"
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash"
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash"
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "name": "Gemini 3.5 Flash Lite"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "name": "Gemini 3.5 Flash"
+    },
+    {
+      "id": "gemini-3.1-pro",
+      "name": "Gemini 3.1 Pro"
+    },
+    {
+      "id": "gemini-3-flash",
+      "name": "Gemini 3 Flash"
+    },
+    {
+      "id": "gpt-6-astra",
+      "name": "GPT 6 Astra"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "name": "GPT 5.6 Sol"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "name": "GPT 5.6 Terra"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "name": "GPT 5.6 Luna"
+    },
+    {
+      "id": "gpt-5.5",
+      "name": "GPT 5.5"
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "name": "GPT 5.5 Pro"
+    },
+    {
+      "id": "gpt-5.4",
+      "name": "GPT 5.4"
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "name": "GPT 5.4 Pro"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "name": "GPT 5.4 Mini"
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "name": "GPT 5.4 Nano"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "name": "GPT 5.3 Codex Spark"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "name": "GPT 5.3 Codex"
+    },
+    {
+      "id": "gpt-5.2",
+      "name": "GPT 5.2"
+    },
+    {
+      "id": "gpt-5.2-codex",
+      "name": "GPT 5.2 Codex"
+    },
+    {
+      "id": "gpt-5.1",
+      "name": "GPT 5.1"
+    },
+    {
+      "id": "gpt-5.1-codex-max",
+      "name": "GPT 5.1 Codex Max"
+    },
+    {
+      "id": "gpt-5.1-codex",
+      "name": "GPT 5.1 Codex"
+    },
+    {
+      "id": "gpt-5.1-codex-mini",
+      "name": "GPT 5.1 Codex Mini"
+    },
+    {
+      "id": "gpt-5",
+      "name": "GPT 5"
+    },
+    {
+      "id": "gpt-5-codex",
+      "name": "GPT 5 Codex"
+    },
+    {
+      "id": "gpt-5-nano",
+      "name": "GPT 5 Nano"
+    },
+    {
+      "id": "grok-build-0.1",
+      "name": "Grok Build 0.1"
+    },
+    {
+      "id": "grok-4.6",
+      "name": "Grok 4.6"
+    },
+    {
+      "id": "grok-4.5",
+      "name": "Grok 4.5"
+    },
+    {
+      "id": "muse-spark-1.3",
+      "name": "Muse Spark 1.3"
+    },
+    {
+      "id": "muse-spark-1.2",
+      "name": "Muse Spark 1.2"
+    },
+    {
+      "id": "qwen3.6-plus",
+      "name": "Qwen 3.6 Plus"
+    },
+    {
+      "id": "qwen3.5-plus",
+      "name": "Qwen 3.5 Plus"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "DeepSeek V4 Pro"
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash"
+    },
+    {
+      "id": "deepseek-v4-flash-vision-exp",
+      "name": "DeepSeek V4 Flash Vision Exp"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM 5.3 Flash (Vision)"
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM 5.3"
+    },
+    {
+      "id": "glm-5.2",
+      "name": "GLM 5.2"
+    },
+    {
+      "id": "glm-5.1",
+      "name": "GLM 5.1"
+    },
+    {
+      "id": "glm-5",
+      "name": "GLM 5"
+    },
+    {
+      "id": "minimax-m3",
+      "name": "MiniMax M3"
+    },
+    {
+      "id": "minimax-m2.7",
+      "name": "MiniMax M2.7"
+    },
+    {
+      "id": "minimax-m2.5",
+      "name": "MiniMax M2.5"
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3"
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "name": "Kimi K2.7 Code"
+    },
+    {
+      "id": "kimi-k2.6",
+      "name": "Kimi K2.6"
+    },
+    {
+      "id": "kimi-k2.5",
+      "name": "Kimi K2.5"
+    },
+    {
+      "id": "big-pickle",
+      "name": "Big Pickle"
+    },
+    {
+      "id": "union-alpha",
+      "name": "Union Alpha"
+    },
+    {
+      "id": "deepseek-v4-flash-free",
+      "name": "DeepSeek V4 Flash Free"
+    },
+    {
+      "id": "mimo-v2.6-flash-free",
+      "name": "MiMo V2.6 Flash Free"
+    },
+    {
+      "id": "mimo-v2.5-free",
+      "name": "MiMo V2.5 Free"
+    },
+    {
+      "id": "ling-3.0-flash-fin-free",
+      "name": "Ling 3.0 Flash Fin Free"
+    },
+    {
+      "id": "nemotron-3-ultra-free",
+      "name": "Nemotron 3 Ultra Free"
+    },
+    {
+      "id": "nemotron-3.5-lightning-free",
+      "name": "Nemotron 3.5 Lightning Free"
+    },
+    {
+      "id": "muse-spark-1.3-contributor-free",
+      "name": "Muse Spark 1.3 Contributor Free"
+    },
+    {
+      "id": "muse-spark-1.2-contributor-free",
+      "name": "Muse Spark 1.2 Contributor Free"
+    },
     {
       "id": "jev-1.13",
       "name": "Jev 1.13",
@@ -3570,6 +4041,72 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Play3.0 Mini",
       "kind": "tts"
     }
+  ],
+  "qoder-cn": [
+    {
+      "id": "ultimate",
+      "name": "Ultimate"
+    },
+    {
+      "id": "auto",
+      "name": "Auto"
+    },
+    {
+      "id": "performance",
+      "name": "Performance"
+    },
+    {
+      "id": "efficient",
+      "name": "Efficient"
+    },
+    {
+      "id": "lite",
+      "name": "Lite"
+    },
+    {
+      "id": "qmodel_38max",
+      "name": "Qwen3.8-Max"
+    },
+    {
+      "id": "qmodel_latest",
+      "name": "Qwen3.7-Max"
+    },
+    {
+      "id": "qmodel",
+      "name": "Qwen3.7-Plus"
+    },
+    {
+      "id": "qfmodel",
+      "name": "Qwen3.8-Flash"
+    },
+    {
+      "id": "kmodel_latest",
+      "name": "Kimi-K3"
+    },
+    {
+      "id": "kmodel",
+      "name": "Kimi-K2.7-Code"
+    },
+    {
+      "id": "gmodel",
+      "name": "GLM-5.3"
+    },
+    {
+      "id": "gfmodel",
+      "name": "GLM-5.3-Flash"
+    },
+    {
+      "id": "dmodel",
+      "name": "DeepSeek-V4-Pro"
+    },
+    {
+      "id": "dfmodel",
+      "name": "DeepSeek-V4-Flash"
+    },
+    {
+      "id": "mmodel",
+      "name": "MiniMax-M3"
+    },
   ],
   "qd": [
     {
@@ -5912,13 +6449,18 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "MiMo V2.5 TTS",
       "type": "tts"
     }
-  ]
+  ],
 };
 export const PROVIDER_MODELS = BUILTIN_MODELS_BY_PROVIDER;
 
 export function getModelsByProviderId(providerId: string): ProviderModel[] {
   const alias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
-  return PROVIDER_MODELS[alias] || [];
+  // PROVIDER_MODELS is keyed by the provider id (upstream keys it by the registry
+  // `alias || id`, which equals the id for every non-OAuth entry), while
+  // PROVIDER_ID_TO_ALIAS holds the short *display* prefix (uiAlias) used to render
+  // `cmc/<model>`. The two only coincide for some providers, so resolve by id first
+  // and fall back to the alias instead of returning an empty catalog.
+  return PROVIDER_MODELS[providerId] || PROVIDER_MODELS[alias] || [];
 }
 
 export function getModelKind(m: unknown, fallback = "llm"): string {
