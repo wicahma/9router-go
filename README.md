@@ -19,6 +19,7 @@ Open `http://localhost:20130` after starting an existing, initialized 9router da
 ## Features
 
 - Native Svelte 5 dashboard for providers, OAuth connections, provider nodes, combos, proxy pools, API keys, models, usage, quota, and settings
+- Live dashboard panels: today's mini-stats in the top bar (input / cached / est. cost / requests), per-provider model labels on the provider topology, a live request card in the sidebar (in-flight provider/model + last completed tokens), and an error-log card listing recent failed requests with status, provider, model, tokens, and attempt count
 - OpenAI Chat Completions, Claude Messages, Gemini, Ollama-compatible, Responses, embeddings, media, search, and web-tool paths
 - Combos with fallback, round-robin, sticky routing, fusion, capability-aware reordering, and account fallback
 - Per-provider executors plus OpenAI-compatible and Gemini-native defaults; OAuth refresh and reactive 401 retry
@@ -133,6 +134,8 @@ For Claude Messages clients, use `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 | `AUTO_UPDATE` | `false` | Background self-update |
 | `INJECTION_GUARD_DISABLED` | `false` | Disable prompt-injection detection |
 | `LOG_FILE` | standard error | Append server logs to a file |
+| `LOG_LEVEL` | `debug` | Log level: `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `text` | Log output format: `text` or `json` |
 | `HTTP_PROXY` / `HTTPS_PROXY` | Go proxy defaults | Optional upstream egress proxy |
 | `FX_LOGGING` | `false` | Emit Fx lifecycle events |
 | `PPROF_ENABLED` | `false` | Expose `/debug/pprof/*`; keep disabled on untrusted networks |
@@ -160,7 +163,7 @@ POST /v1/responses              Responses API
 POST /v1/responses/compact      Compact Responses API
 POST /v1/embeddings             Embeddings
 POST /api/chat                  Ollama-compatible chat
-GET  /v1/models                 Model catalog
+GET  /v1/models                 Model catalog (?connected=1 = only models behind active connections; ?all=1 = include entries the default view hides)
 GET  /v1/models/info            Model capabilities and limits
 GET  /v1/models/{kind}          Models filtered by kind
 
@@ -173,6 +176,7 @@ POST /v1/scrape                 Web scrape
 
 GET  /api/usage/stream          Live usage SSE
 GET  /api/usage/stats           Current usage statistics
+GET  /api/usage/request-details Paged recorded request details (?status= filters rows, e.g. ?status=error)
 GET  /translator/console-logs/stream
                                Live console log SSE
 GET  /health                    Liveness

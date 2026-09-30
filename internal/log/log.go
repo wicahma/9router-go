@@ -7,7 +7,7 @@
 //	log.Warn("auth", "Invalid key", "key", log.MaskSecret(key))
 //	log.Error("stream", "Connection error", "err", err)
 //
-// Levels are controlled via LOG_LEVEL env var: debug, info (default), warn, error.
+// Levels are controlled via LOG_LEVEL env var: debug (default), info, warn, error.
 // Format is controlled via LOG_FORMAT env var: text (default), json.
 package log
 
