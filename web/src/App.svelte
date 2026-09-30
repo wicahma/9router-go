@@ -47,6 +47,7 @@
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
   let requireLogin = $state(false)
+  let sessionNotice = $state('')
   let isCreateComboOpen = $state(false)
   let isMobileMenuOpen = $state(false)
   let selectedProviderId = $state<string | null>(
@@ -127,9 +128,23 @@
     try {
       const authStatus = await api.checkRequireLogin()
       requireLogin = !!authStatus.requireLogin
-      // Trust the server session (auth_token cookie) first; the localStorage
-      // flag is only a hint because the cookie is httpOnly and unreadable by JS.
-      isAuthenticatedState = !!authStatus.authenticated || isAuthenticated() || !requireLogin
+      // Server session (auth_token cookie) is authoritative when it answered;
+      // the localStorage/sessionStorage flag is only a hint (cookie is
+      // httpOnly). A stale hint must never keep a rejected session logged in.
+      if (!requireLogin) {
+        isAuthenticatedState = true
+      } else if (typeof authStatus.authenticated === 'boolean') {
+        isAuthenticatedState = authStatus.authenticated
+        if (!isAuthenticatedState && isAuthenticated()) {
+          sessionNotice = 'Your session has expired. Please sign in again.'
+        }
+        if (!isAuthenticatedState) {
+          sessionStorage.removeItem('9router_auth')
+          localStorage.removeItem('9router_auth')
+        }
+      } else {
+        isAuthenticatedState = isAuthenticated()
+      }
     } catch {
       requireLogin = false
       isAuthenticatedState = true
@@ -158,6 +173,17 @@
     }
     window.addEventListener('popstate', handlePopState)
 
+    // Mid-session expiry: any API call answered 401 with the session gate's
+    // message bounces the user to login with an explanation instead of
+    // leaving the dashboard silently stuck.
+    function handleSessionExpired() {
+      if (!isAuthenticatedState) return
+      isAuthenticatedState = false
+      sessionNotice = 'Your session has expired. Please sign in again.'
+      navigate('login', true)
+    }
+    window.addEventListener('9router-session-expired', handleSessionExpired)
+
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return
       try {
@@ -175,6 +201,7 @@
     return () => {
       clearInterval(interval)
       window.removeEventListener('popstate', handlePopState)
+      window.removeEventListener('9router-session-expired', handleSessionExpired)
     }
   })
 
@@ -240,8 +267,10 @@
   </div>
 {:else if (requireLogin && !isAuthenticatedState) || activeTab === 'login'}
   <LoginView
+    notice={sessionNotice}
     onSuccess={() => {
       isAuthenticatedState = true
+      sessionNotice = ''
       loadData()
       if (activeTab === 'login') {
         navigate('endpoint')

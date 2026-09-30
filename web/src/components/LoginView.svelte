@@ -4,8 +4,10 @@
 
   let {
     onSuccess,
+    notice,
   }: {
     onSuccess?: () => void
+    notice?: string
   } = $props()
 
   let password = $state('')
@@ -178,6 +180,15 @@
           {/if}
         </p>
       </div>
+
+      {#if notice}
+        <div
+          class="mb-4 rounded-[10px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 text-center"
+          role="status"
+        >
+          {notice}
+        </div>
+      {/if}
 
       <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
         {#if mustChange}

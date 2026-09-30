@@ -82,11 +82,18 @@
   }
 
   $effect(() => { loadSettings() })
+  // Reset create-modal state when it opens. wasCreateOpen is a plain
+  // (non-reactive) var on purpose: edge-detecting by reading modalNameResetKey
+  // inside this effect would register it as a dependency, and the += write
+  // would then re-trigger the effect forever (stuck modal, dead buttons).
+  let wasCreateOpen = false
   $effect(() => {
-    if (isCreatingOpen && !editingCombo) {
+    const open = isCreatingOpen
+    if (open && !editingCombo && !wasCreateOpen) {
       modalModels = []
       modalNameResetKey += 1
     }
+    wasCreateOpen = open
   })
 
   function copyName(name: string, id: string) {

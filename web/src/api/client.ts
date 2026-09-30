@@ -395,6 +395,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...(options.headers as Record<string, string> || {}),
   }
   const res = await fetch(path, { ...options, headers })
+  if (res.status === 401) {
+    // The session gate answers 401 with this exact message; every other 401
+    // (e.g. a key being managed) must not log the user out.
+    try {
+      const body = await res.clone().text()
+      if (body.includes('dashboard session required')) {
+        sessionStorage.removeItem('9router_auth')
+        localStorage.removeItem('9router_auth')
+        window.dispatchEvent(new Event('9router-session-expired'))
+      }
+    } catch {}
+  }
   if (!res.ok) throw new Error(await responseErrorMessage(res))
   return res.json()
 }
