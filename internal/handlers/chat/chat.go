@@ -93,7 +93,16 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 		return
 	}
-	upstreamBody["model"] = modelInfo.Model
+	// A "(level)" suffix appended to a copied model id is consumed here: the
+	// bare model is forwarded and the thinking level is written into the wire
+	// (reasoning_effort for OpenAI shape, thinking/output_config for Claude).
+	baseModel, err := applyThinkingLevel(upstreamBody, modelInfo.Provider, modelInfo.Model, false)
+	if err != nil {
+		handlerutil.WriteJSONError(cw, http.StatusBadRequest, err.Error())
+		return
+	}
+	modelInfo.Model = baseModel
+	upstreamBody["model"] = baseModel
 	repairToolCallIDsInMap(upstreamBody)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
@@ -225,7 +234,17 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
-	translatedReq["model"] = modelInfo.Model
+	// Consume the copy/paste (level) suffix before forwarding. claudeWire is
+	// exactly the passthrough case: /v1/messages for claude/anthropic keeps the
+	// Claude wire shape (thinking/output_config); every other provider there was
+	// translated to OpenAI (reasoning_effort).
+	baseModel, err := applyThinkingLevel(translatedReq, modelInfo.Provider, modelInfo.Model, !translateResponse)
+	if err != nil {
+		handlerutil.WriteJSONError(cw, http.StatusBadRequest, err.Error())
+		return
+	}
+	modelInfo.Model = baseModel
+	translatedReq["model"] = baseModel
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal translated request")
