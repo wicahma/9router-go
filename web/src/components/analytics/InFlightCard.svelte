@@ -1,11 +1,18 @@
 <script lang="ts">
   import type { FlightItem } from './types'
+  import { loadProviderNames, resolveProviderName } from '../../lib/providerNames'
 
   interface Props {
     flights?: FlightItem[]
   }
 
   let { flights = [] }: Props = $props()
+
+  let providerNames = $state<Record<string, string>>({})
+
+  $effect(() => {
+    loadProviderNames().then((n) => (providerNames = n))
+  })
 
   // Phase order drives both the colour ramp and the sort, so a row's position
   // in the list reads as "how far along" without a legend to decode.
@@ -99,10 +106,10 @@
               {secs(phaseMs)}
             </span>
           </div>
-          <div class="mt-0.5 truncate text-[11px] font-mono" title="{f.provider || ''}/{f.model || ''}">
-            <span class="text-text-muted">{f.provider || '—'}</span>
-            <span class="text-text-muted">/</span>
+          <div class="mt-0.5 truncate text-[11px] font-mono" title="{f.model || ''} · {resolveProviderName(f.provider, providerNames)}">
             <span>{f.model || '—'}</span>
+            <span class="text-text-muted"> · </span>
+            <span class="text-text-muted">{resolveProviderName(f.provider, providerNames)}</span>
           </div>
           <div class="mt-0.5 flex items-center justify-between gap-2 text-[10px] font-mono text-text-muted min-w-0">
             <span class="truncate" title={f.detail || f.account || ''}>{f.detail || f.account || f.id || ''}</span>

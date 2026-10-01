@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api } from '../../api/client'
+  import { loadProviderNames, resolveProviderName } from '../../lib/providerNames'
   import { fmt, timeAgo } from './types'
 
   interface ErrorRow {
@@ -20,6 +21,10 @@
   let busy = $state(false)
   let nodeNames = $state<Record<string, string>>({})
 
+  $effect(() => {
+    loadProviderNames().then((n) => (nodeNames = n))
+  })
+
   async function load() {
     if (busy) return
     busy = true
@@ -29,10 +34,6 @@
       const res = await api.getRequestDetails(15, 0, 'error')
       rows = (res?.details || []) as ErrorRow[]
       total = res?.total || 0
-      // Map providerNodes.id -> display name so rows show "Groq"/"Kenari.id"
-      // instead of the raw "openai-compatible-chat-<uuid>" id.
-      const nodes = await api.getProviderNodes().catch(() => [])
-      nodeNames = Object.fromEntries(nodes.map(n => [n.id, n.name]))
     } catch {
       // Keep the last good rows so a transient failure doesn't blank the log;
       // surface it honestly rather than pretending there are no errors.
@@ -50,14 +51,7 @@
   })
 
   function providerLabel(p?: string): string {
-    if (!p) return '—'
-    // Row `provider` is a providerNodes.id (e.g. "openai-compatible-chat-<uuid>").
-    // Show the node's display name (Groq, Kenari.id, …) when resolvable; fall back
-    // to the shortened raw id for ids with no node entry.
-    if (nodeNames[p]) return nodeNames[p]
-    const kind = p.split('-chat')[0].split('-')[0]
-    const uuid = p.match(/[0-9a-f]{8}-[0-9a-f]{4}/)
-    return uuid ? `${kind}…${p.slice(-4)}` : p
+    return resolveProviderName(p, nodeNames)
   }
 </script>
 

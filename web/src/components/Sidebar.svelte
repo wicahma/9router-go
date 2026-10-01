@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, type SystemVersionInfo } from '../api/client'
+  import { loadProviderNames, resolveProviderName } from '../lib/providerNames'
   import { TAB_ROUTES, type ActiveTab } from '../lib/router'
 
   export type { ActiveTab }
@@ -43,6 +44,13 @@
     promptTokens: number
     completionTokens: number
   } | null>(null)
+
+  // providerNodes.id -> display name, loaded once (shared across components).
+  let providerNames = $state<Record<string, string>>({})
+
+  $effect(() => {
+    loadProviderNames().then((n) => (providerNames = n))
+  })
 
   function abbrevNum(n: number): string {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
@@ -224,8 +232,8 @@
           {:else}
             <span class="h-2 w-2 rounded-full bg-text-muted shrink-0"></span>
           {/if}
-          <span class="text-[11px] font-semibold text-text-main truncate">{liveReq.provider || 'idle'}</span>
-          <span class="text-[10px] font-mono text-text-muted truncate">{liveReq.model}</span>
+          <span class="text-[11px] font-semibold text-text-main truncate">{liveReq.model || 'idle'}</span>
+          <span class="text-[10px] text-text-muted truncate" title={liveReq.provider}>{resolveProviderName(liveReq.provider, providerNames)}</span>
         </div>
         <div class="flex items-center gap-3 text-[11px] font-mono">
           <span class="text-text-muted">in <span class="text-text-main font-semibold">{abbrevNum(liveReq.promptTokens)}</span></span>
