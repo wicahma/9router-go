@@ -237,12 +237,137 @@
       seen.add(full)
       rows.push({ id, source: 'legacyAlias', alias })
     }
-    // Display-only A–Z sort (case-insensitive) so the list order is stable
-    // instead of following the API response object's key order, which varies
-    // between requests. rows is created above on every evaluation, so the
-    // in-place sort is safe.
     return rows.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
   })
+
+  // Pagination & Search for compatible rows
+  let compatibleSearchTerm = $state('')
+  let compatiblePage = $state(1)
+  let compatiblePageSize = $state(50)
+  let compatiblePageSizeOptions = [10, 20, 50, 100, 200, 0] // 0 = all
+
+  let compatibleAllFiltered = $derived(
+    compatibleSearchTerm
+      ? compatibleRows.filter(r => r.id.toLowerCase().includes(compatibleSearchTerm.toLowerCase()))
+      : compatibleRows
+  )
+  let compatibleActiveModels = $derived(compatibleAllFiltered.filter(r => !disabledModelIds.includes(r.id)))
+  let compatibleDisabledModels = $derived(compatibleAllFiltered.filter(r => disabledModelIds.includes(r.id)))
+  let compatibleTotalCount = $derived(compatibleActiveModels.length)
+  let compatibleTotalPages = $derived(
+    compatiblePageSize > 0
+      ? Math.max(1, Math.ceil(compatibleTotalCount / compatiblePageSize))
+      : 1
+  )
+  let compatiblePaginatedRows = $derived(
+    compatiblePageSize > 0
+      ? compatibleActiveModels.slice((compatiblePage - 1) * compatiblePageSize, compatiblePage * compatiblePageSize)
+      : compatibleActiveModels
+  )
+
+  // Reset page when search changes or page exceeds max
+  let _prevCompatSearch = $state('')
+  let _prevCompatCount = $state(0)
+  $effect(() => {
+    if (compatibleSearchTerm !== _prevCompatSearch || compatibleTotalCount !== _prevCompatCount) {
+      if (compatiblePage > compatibleTotalPages) compatiblePage = 1
+      _prevCompatSearch = compatibleSearchTerm
+      _prevCompatCount = compatibleTotalCount
+    }
+  })
+
+  // Bulk selection (pagination-proof — uses Set of all selected IDs)
+  let selectedModelIds = $state<Set<string>>(new Set())
+  let isAllModelPageSelected = $derived(
+    compatiblePaginatedRows.length > 0 && compatiblePaginatedRows.every(r => selectedModelIds.has(r.id))
+  )
+  function toggleModelSelectAll() {
+    const next = new Set(selectedModelIds)
+    if (isAllModelPageSelected) {
+      for (const r of compatiblePaginatedRows) next.delete(r.id)
+    } else {
+      for (const r of compatiblePaginatedRows) next.add(r.id)
+    }
+    selectedModelIds = next
+  }
+  function toggleSelectOne(id: string) {
+    const next = new Set(selectedModelIds)
+    if (next.has(id)) { next.delete(id) } else { next.add(id) }
+    selectedModelIds = next
+  }
+
+  // Bulk actions
+  async function handleBulkCopy() {
+    if (selectedModelIds.size === 0) { alert('No models selected'); return }
+    const prefix = displayAlias()
+    const texts = [...selectedModelIds].map(id => `${prefix}/${id}`).join('\n')
+    await navigator.clipboard.writeText(texts)
+    alert(`Copied ${selectedModelIds.size} model(s)`)
+  }
+  async function handleBulkDelete() {
+    if (selectedModelIds.size === 0) { alert('No models selected'); return }
+    if (!confirm(`Delete ${selectedModelIds.size} model(s)? This cannot be undone.`)) return
+    for (const id of [...selectedModelIds]) {
+      try { await api.deleteCustomModel(`${storageAlias}|${id}|llm`) }
+      catch (e) { console.error('Delete failed:', id, e) }
+    }
+    selectedModelIds = new Set()
+    await refreshCompatibleModels()
+  }
+  async function handleBulkTest() {
+    if (selectedModelIds.size === 0) { alert('No models selected'); return }
+    const ids = [...selectedModelIds]
+    activeModelTestError = null
+    for (const id of ids) {
+      compatibleTestResults[id] = 'ok'
+      compatibleTestErrors[id] = null
+      try {
+        const res = await api.testModel(`${storageAlias}/${id}`)
+        if (!res.ok) {
+          compatibleTestResults[id] = 'error'
+          compatibleTestErrors[id] = res.error || 'Test failed'
+          activeModelTestError = `${id}: ${res.error || 'Test failed'}`
+        }
+      } catch (e) {
+        compatibleTestResults[id] = 'error'
+        const msg = e instanceof Error ? e.message : 'Test failed'
+        compatibleTestErrors[id] = msg
+        activeModelTestError = `${id}: ${msg}`
+      }
+    }
+  }
+  async function handleBulkDisable() {
+    if (selectedModelIds.size === 0) { alert('No models selected'); return }
+    const updated = Array.from(new Set([...disabledModelIds, ...selectedModelIds]))
+    disabledModelIds = updated
+    try { await api.saveDisabledModels(storageAlias, updated) }
+    catch (err) { console.error('Failed to disable models:', err) }
+    selectedModelIds = new Set()
+  }
+
+  // Bulk add via comma-separated
+  let bulkAddInput = $state('')
+  let isBulkAdding = $state(false)
+  async function handleBulkAddModels() {
+    if (!bulkAddInput.trim() || isBulkAdding) return
+    isBulkAdding = true
+    try {
+      const ids = bulkAddInput.split(',')
+        .map(s => s.trim())
+        .filter(s => s && !compatibleRows.some(r => r.id === s))
+      if (ids.length === 0) { alert('No new model IDs to add.'); return }
+      for (const id of ids) {
+        await api.saveCustomModel(`${storageAlias}|${id}|llm`, { id, providerAlias: storageAlias, type: 'llm' })
+      }
+      bulkAddInput = ''
+      await refreshCompatibleModels()
+      notifyCustomModelsChanged()
+      alert(`Added ${ids.length} model(s)`)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Bulk add failed')
+    } finally { isBulkAdding = false }
+  }
+
   let canImportCompatible = $derived(providerConnections.some((c) => c.isActive !== 0))
 
   // Settings & Strategies
@@ -2888,18 +3013,129 @@
       {#if !canImportCompatible}
         <p class="text-xs text-text-muted">Add a connection to enable importing models.</p>
       {/if}
-      {#if compatibleRows.length > 0}
+      {#if compatibleAllFiltered.length > 0}
+        <!-- Search & Page size controls -->
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-center gap-2">
+            <div class="relative flex-1 min-w-[180px] sm:flex-initial">
+              <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-text-muted pointer-events-none">search</span>
+              <input
+                type="text"
+                bind:value={compatibleSearchTerm}
+                placeholder="Search models…"
+                class="w-full pl-8 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+              />
+            </div>
+            <select
+              bind:value={compatiblePageSize}
+              class="rounded-md border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:border-primary cursor-pointer"
+              title="Items per page"
+            >
+              {#each compatiblePageSizeOptions as opt}
+                <option value={opt}>{opt === 0 ? 'All' : opt}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-text-muted">
+            <span>{compatibleTotalCount} model(s)</span>
+            {#if compatiblePageSize > 0}
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  onclick={() => { if (compatiblePage > 1) compatiblePage-- }}
+                  disabled={compatiblePage <= 1}
+                  class="p-1 rounded hover:bg-sidebar disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                ><span class="material-symbols-outlined text-sm">chevron_left</span></button>
+                <span class="tabular-nums min-w-[5ch] text-center">{compatiblePage} / {compatibleTotalPages}</span>
+                <button
+                  type="button"
+                  onclick={() => { if (compatiblePage < compatibleTotalPages) compatiblePage++ }}
+                  disabled={compatiblePage >= compatibleTotalPages}
+                  class="p-1 rounded hover:bg-sidebar disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                ><span class="material-symbols-outlined text-sm">chevron_right</span></button>
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Bulk add row -->
+        <div class="flex items-end gap-2 flex-wrap">
+          <div class="flex-1 min-w-[240px]">
+            <label for="bulk-add-input" class="text-xs text-text-muted mb-1 block">Bulk Add (comma-separated)</label>
+            <input
+              id="bulk-add-input"
+              type="text"
+              bind:value={bulkAddInput}
+              onkeydown={(e) => { if (e.key === 'Enter') handleBulkAddModels() }}
+              placeholder="model-1, model-2, model-3"
+              class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+            />
+          </div>
+          <button
+            type="button"
+            onclick={handleBulkAddModels}
+            disabled={!bulkAddInput.trim() || isBulkAdding}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span class="material-symbols-outlined text-[18px]">add</span>
+            {isBulkAdding ? 'Adding...' : 'Bulk Add'}
+          </button>
+        </div>
+
+        <!-- Bulk action bar -->
+        {#if selectedModelIds.size > 0}
+          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-brand-500/10 border border-brand-500/20">
+            <span class="text-xs font-medium text-brand-500">{selectedModelIds.size} selected</span>
+            <div class="flex items-center gap-1 ml-auto">
+              <button type="button" onclick={handleBulkCopy} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
+                <span class="material-symbols-outlined text-sm">content_copy</span> Copy
+              </button>
+              <button type="button" onclick={handleBulkDelete} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 cursor-pointer">
+                <span class="material-symbols-outlined text-sm">delete</span> Delete
+              </button>
+              <button type="button" onclick={handleBulkTest} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
+                <span class="material-symbols-outlined text-sm">science</span> Test
+              </button>
+              <button type="button" onclick={handleBulkDisable} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
+                <span class="material-symbols-outlined text-sm">block</span> Disable
+              </button>
+            </div>
+          </div>
+        {/if}
+
         <div class="flex flex-col gap-3">
-          {#each compatibleRows as row (row.source + ':' + row.id)}
+          <!-- Active model rows -->
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">Active Models ({compatibleActiveModels.length})</span>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                onclick={toggleModelSelectAll}
+                class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer"
+              >
+                <span class="material-symbols-outlined text-sm">{isAllModelPageSelected ? 'deselect' : 'select_all'}</span>
+                {isAllModelPageSelected ? 'Deselect Page' : 'Select Page'}
+              </button>
+            </div>
+          </div>
+          {#each compatiblePaginatedRows as row (row.source + ':' + row.id)}
             {@const tStatus = compatibleTestResults[row.id]}
             {@const tError = compatibleTestErrors[row.id]}
             {@const isTestingRow = compatibleTestId === row.id}
-            <div class="flex items-start gap-3 p-3 rounded-lg border {tStatus === 'ok' ? 'border-green-500/40' : tStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50">
+            {@const isSelected = selectedModelIds.has(row.id)}
+            <div
+              class="flex items-start gap-3 p-3 rounded-lg border {tStatus === 'ok' ? 'border-green-500/40' : tStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 {isSelected ? 'ring-2 ring-primary/30' : ''} cursor-pointer"
+              onclick={() => toggleSelectOne(row.id)}
+              role="checkbox"
+              aria-checked={isSelected}
+              tabindex="0"
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelectOne(row.id) }}}
+            >
               <span
-                class="material-symbols-outlined text-base text-text-muted mt-0.5"
-                style={tStatus === 'ok' ? 'color:#22c55e' : tStatus === 'error' ? 'color:#ef4444' : undefined}
+                class="material-symbols-outlined text-base shrink-0 mt-0.5"
+                style={isSelected ? 'color:#e56a4a' : tStatus === 'ok' ? 'color:#22c55e' : tStatus === 'error' ? 'color:#ef4444' : undefined}
               >
-                {tStatus === 'ok' ? 'check_circle' : tStatus === 'error' ? 'cancel' : 'smart_toy'}
+                {isSelected ? 'check_box' : tStatus === 'ok' ? 'check_circle' : tStatus === 'error' ? 'cancel' : 'check_box_outline_blank'}
               </span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
@@ -2908,7 +3144,7 @@
                   <div class="relative group/btn">
                     <button
                       type="button"
-                      onclick={() => copyCompatibleModel(row.id)}
+                      onclick={(e) => { e.stopPropagation(); copyCompatibleModel(row.id) }}
                       class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary cursor-pointer"
                     >
                       <span class="material-symbols-outlined text-sm">{copiedModelId === row.id ? 'check' : 'content_copy'}</span>
@@ -2921,7 +3157,7 @@
                     <div class="relative group/btn">
                       <button
                         type="button"
-                        onclick={() => handleTestCompatibleModel(row.id)}
+                        onclick={(e) => { e.stopPropagation(); handleTestCompatibleModel(row.id) }}
                         disabled={isTestingRow}
                         class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-colors cursor-pointer"
                       >
@@ -2944,7 +3180,7 @@
               </div>
               <button
                 type="button"
-                onclick={() => handleDeleteCompatibleModel(row)}
+                onclick={(e) => { e.stopPropagation(); handleDeleteCompatibleModel(row) }}
                 class="p-1 hover:bg-red-50 rounded text-red-500 cursor-pointer"
                 title="Remove model"
               >
@@ -2952,6 +3188,42 @@
               </button>
             </div>
           {/each}
+
+          <!-- Disabled models section -->
+          {#if compatibleDisabledModels.length > 0}
+            <div class="mt-4 pt-4 border-t border-border-subtle">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-sm font-medium text-text-muted">Disabled Models ({compatibleDisabledModels.length})</span>
+              </div>
+              <div class="flex flex-col gap-2">
+                {#each compatibleDisabledModels as row (row.id)}
+                  <div class="flex items-center gap-3 p-2 px-3 rounded-lg border border-border bg-sidebar/30 opacity-60">
+                    <span class="material-symbols-outlined text-base text-text-muted">block</span>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-sm font-medium truncate text-text-muted">{row.id}</p>
+                      <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{displayAlias()}/{row.id}</code>
+                    </div>
+                    <button
+                      type="button"
+                      onclick={(e) => { e.stopPropagation(); handleEnableModel(row.id) }}
+                      class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer"
+                      title="Enable this model"
+                    >
+                      <span class="material-symbols-outlined text-sm">undo</span> Enable
+                    </button>
+                    <button
+                      type="button"
+                      onclick={(e) => { e.stopPropagation(); handleDeleteCompatibleModel(row) }}
+                      class="p-1 hover:bg-red-50 rounded text-red-500 cursor-pointer"
+                      title="Remove model"
+                    >
+                      <span class="material-symbols-outlined text-sm">delete</span>
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
