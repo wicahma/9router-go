@@ -16,15 +16,24 @@
   let rows = $state<ErrorRow[]>([])
   let total = $state(0)
   let loading = $state(true)
+  let failed = $state(false)
+  let busy = $state(false)
 
   async function load() {
+    if (busy) return
+    busy = true
+    loading = true
+    failed = false
     try {
       const res = await api.getRequestDetails(15, 0, 'error')
       rows = (res?.details || []) as ErrorRow[]
       total = res?.total || 0
     } catch {
-      rows = []
+      // Keep the last good rows so a transient failure doesn't blank the log;
+      // surface it honestly rather than pretending there are no errors.
+      failed = true
     } finally {
+      busy = false
       loading = false
     }
   }
@@ -52,6 +61,8 @@
 
   {#if loading}
     <div class="py-6 text-center text-xs text-text-muted">Loading…</div>
+  {:else if failed && rows.length === 0}
+    <div class="py-6 text-center text-xs text-text-muted">Error log unavailable — retrying.</div>
   {:else if rows.length === 0}
     <div class="py-6 text-center text-xs text-text-muted">No errors recorded.</div>
   {:else}

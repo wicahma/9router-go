@@ -394,7 +394,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...getAuthHeaders(),
     ...(options.headers as Record<string, string> || {}),
   }
-  const res = await fetch(path, { ...options, headers })
+  // A stalled response (per-origin connection saturation, tunnel drop, proxy
+  // stall) would otherwise pin a caller's `loading` flag forever. Bound it;
+  // SSE uses raw fetch, never request(), so the stream is unaffected.
+  const controller = new AbortController()
+  // Generous enough that upstream-probing calls (provider test/validate) that
+  // legitimately take long survive; small enough that a queued/saturated
+  // connection can't pin a `loading` flag forever. SSE uses raw fetch.
+  const timeoutMs = (options as { timeoutMs?: number }).timeoutMs ?? 60_000
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let res: Response
+  try {
+    res = await fetch(path, { ...options, headers, signal: controller.signal })
+  } catch (err) {
+    clearTimeout(timer)
+    if ((err as { name?: string })?.name === 'AbortError') {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
   if (res.status === 401) {
     // The session gate answers 401 with this exact message; every other 401
     // (e.g. a key being managed) must not log the user out.
