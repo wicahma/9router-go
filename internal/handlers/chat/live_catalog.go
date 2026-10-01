@@ -401,6 +401,9 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	headers := map[string]string{"Content-Type": "application/json"}
 	switch {
 	case strings.HasPrefix(providerID, "openai-compatible-"):
+		if !strings.HasSuffix(baseURL, "/models") {
+			baseURL += "/models"
+		}
 		headers["Authorization"] = "Bearer " + apiKey
 	case strings.HasPrefix(providerID, "anthropic-compatible-"):
 		baseURL = strings.TrimSuffix(baseURL, "/messages/models")
