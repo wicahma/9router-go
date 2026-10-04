@@ -4,11 +4,11 @@
   import {
     clearJudgeModel,
     getComboModels,
-    normalizeModelRps,
+    normalizeModelLimits,
     parseCapacityAdapterSettings,
     updateComboStrategy,
     updateJudgeModel,
-    updateModelRps,
+    updateModelLimit,
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
@@ -52,6 +52,7 @@
   })
   let copiedId = $state<string | null>(null)
   let modelRps = $state<Record<string, number>>({})
+  let modelContextLimit = $state<Record<string, number>>({})
 
   // Edit / Create Modal state
   let editingCombo = $state<Combo | null>(null)
@@ -75,7 +76,8 @@
       if (s?.capacityAdapter && typeof s.capacityAdapter === 'object') {
         capacityAdapter = parseCapacityAdapterSettings(s.capacityAdapter as Record<string, unknown>)
       }
-      modelRps = normalizeModelRps(s?.modelRps)
+      modelRps = normalizeModelLimits(s?.modelRps)
+      modelContextLimit = normalizeModelLimits(s?.modelContextLimit)
     } catch (e) {
       console.error('Failed to load settings:', e)
     }
@@ -136,17 +138,25 @@
     }
   }
 
-  async function saveModelRps(next: Record<string, number>) {
-    modelRps = next
+  async function saveModelLimit(
+    key: 'modelRps' | 'modelContextLimit',
+    next: Record<string, number>
+  ) {
+    if (key === 'modelRps') modelRps = next
+    else modelContextLimit = next
     try {
-      await api.patchSettings({ modelRps: next })
+      await api.patchSettings({ [key]: next })
     } catch (e) {
-      console.error('Failed to update model RPS limits:', e)
+      console.error(`Failed to update ${key} limits:`, e)
     }
   }
 
   async function handleSetModelRps(model: string, rps: number) {
-    await saveModelRps(updateModelRps(modelRps, model, rps))
+    await saveModelLimit('modelRps', updateModelLimit(modelRps, model, rps))
+  }
+
+  async function handleSetModelContextLimit(model: string, tokens: number) {
+    await saveModelLimit('modelContextLimit', updateModelLimit(modelContextLimit, model, tokens))
   }
 
   async function saveCapacityAdapter(next: CapacityAdapterState) {
@@ -304,12 +314,14 @@
     {editingCombo}
     models={modalModels}
     {modelRps}
+    {modelContextLimit}
     isSaving={isSavingCombo}
     onClose={closeModal}
     onSave={handleSaveCombo}
     onOpenModelPicker={() => openModelPicker('combo')}
     onUpdateModels={(newModels) => (modalModels = newModels)}
     onSetModelRps={handleSetModelRps}
+    onSetModelContextLimit={handleSetModelContextLimit}
   />
 {/key}
 

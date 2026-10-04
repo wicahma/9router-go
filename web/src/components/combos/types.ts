@@ -133,39 +133,41 @@ export function clearJudgeModel(
   return updated
 }
 
-// Per-model RPS ceilings live in settings as a plain model -> rps map, shared
-// by every combo. 0 (or a missing key) means the model is never throttled, so
-// the helpers below treat any non-positive value as "remove the limit" rather
-// than storing a zero the gateway would read as a real ceiling.
+// Per-model ceilings live in settings as a plain model -> integer map, shared by
+// every combo: `modelRps` (requests per second) and `modelContextLimit` (input
+// tokens). 0 (or a missing key) means the model has no ceiling, so the helpers
+// below treat any non-positive value as "remove the limit" rather than storing a
+// zero the gateway would read as a real ceiling. The two keys have the same
+// shape, so one set of helpers serves both.
 
-export function getModelRps(
+export function getModelLimit(
   limits: Record<string, number> | undefined,
   model: string
 ): number {
   return limits?.[model] ?? 0
 }
 
-export function updateModelRps(
+export function updateModelLimit(
   limits: Record<string, number>,
   model: string,
-  rps: number
+  value: number
 ): Record<string, number> {
   const next = { ...limits }
-  if (Number.isFinite(rps) && rps > 0) next[model] = Math.floor(rps)
+  if (Number.isFinite(value) && value > 0) next[model] = Math.floor(value)
   else delete next[model]
   return next
 }
 
-export function parseRpsInput(value: string): number {
+export function parseLimitInput(value: string): number {
   return Number.parseInt(value, 10)
 }
 
-export function normalizeModelRps(raw: unknown): Record<string, number> {
+export function normalizeModelLimits(raw: unknown): Record<string, number> {
   if (!raw || typeof raw !== 'object') return {}
   const out: Record<string, number> = {}
   for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
-    const nps = Number(value)
-    if (Number.isFinite(nps) && nps > 0) out[model] = Math.floor(nps)
+    const n = Number(value)
+    if (Number.isFinite(n) && n > 0) out[model] = Math.floor(n)
   }
   return out
 }

@@ -78,6 +78,15 @@
   sees `rate_limit_exceeded` when the whole chain is spent. A local denial uses
   its own sentinel rather than a 429-shaped error, so it can never trip the
   connection lock that a genuine upstream 429 does.
+- **Per-model input context ceilings** — the combo editor takes a token ceiling
+  next to the RPS field (`modelContextLimit`, same model → integer shape, 0 or
+  blank = the provider default). Before each upstream forward the gateway trims
+  the request to fit: system messages and the newest turn are always kept, the
+  oldest optional ones are dropped until the estimated input fits, and a
+  client-supplied `max_tokens` / `max_completion_tokens` is lowered so input +
+  output cannot exceed the ceiling. Estimation is the existing
+  4-chars-per-token heuristic, so this is a guard rail against upstream
+  "context length exceeded" errors, not a tokenizer.
 - **Upstream attempt count per request** — `usageHistory.meta.attempts` records how many upstream forwards a client request burned before it landed, so a success that barely survived a fallback chain is distinguishable from one that never retried. Counted at the single `tryForwardWithConnection` call site via a per-request `atomic.Int64` in the context; rendered on the Details tab, highlighted when retries happened.
 
 ### ✨ Filter the console log

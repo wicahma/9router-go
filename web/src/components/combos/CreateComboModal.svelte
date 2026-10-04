@@ -14,19 +14,21 @@
   import Button from '../../lib/ui/Button.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
-  import { getModelRps, parseRpsInput } from './types'
+  import { getModelLimit, parseLimitInput } from './types'
 
   interface Props {
     isOpen: boolean
     editingCombo: Combo | null
     models: string[]
     modelRps?: Record<string, number>
+    modelContextLimit?: Record<string, number>
     isSaving?: boolean
     onClose: () => void
     onSave: (name: string, models: string[]) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
     onSetModelRps: (model: string, rps: number) => void
+    onSetModelContextLimit: (model: string, tokens: number) => void
   }
 
   let {
@@ -34,12 +36,14 @@
     editingCombo,
     models,
     modelRps = {},
+    modelContextLimit = {},
     isSaving = false,
     onClose,
     onSave,
     onOpenModelPicker,
     onUpdateModels,
     onSetModelRps,
+    onSetModelContextLimit,
   }: Props = $props()
 
   let modalName = $state(editingCombo?.name || '')
@@ -67,18 +71,21 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
-    flushPendingRps()
+    flushPendingLimits()
     onSave(modalName.trim(), models)
   }
 
-  // The rps input commits on change (blur/Enter). Clicking Save blurs the field
-  // only after the click lands on some browsers, so commit any pending edit here
-  // too or a typed-but-not-blurred value is silently dropped.
-  function flushPendingRps() {
+  // The limit inputs commit on change (blur/Enter). Clicking Save blurs the
+  // field only after the click lands on some browsers, so commit any pending
+  // edit here too or a typed-but-not-blurred value is silently dropped.
+  function flushPendingLimits() {
     if (!listEl) return
     for (const el of listEl.querySelectorAll<HTMLInputElement>('input[data-model]')) {
       const model = el.dataset.model
-      if (model) onSetModelRps(model, parseRpsInput(el.value))
+      if (!model) continue
+      const value = parseLimitInput(el.value)
+      if (el.dataset.limit === 'ctx') onSetModelContextLimit(model, value)
+      else onSetModelRps(model, value)
     }
   }
 
@@ -264,12 +271,29 @@
                   inputmode="numeric"
                   placeholder="∞"
                   data-model={model}
-                  value={getModelRps(modelRps, model) || ''}
-                  onchange={(e) => onSetModelRps(model, parseRpsInput(e.currentTarget.value))}
+                  data-limit="rps"
+                  value={getModelLimit(modelRps, model) || ''}
+                  onchange={(e) => onSetModelRps(model, parseLimitInput(e.currentTarget.value))}
                   aria-label={`Requests per second limit for ${model}`}
                   class="w-14 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
                 <span class="text-[10px] text-text-muted">rps</span>
+              </label>
+              <label class="flex shrink-0 items-center gap-1" title="Input context ceiling in tokens. 0 = whatever the provider allows. Applies to this model in every combo — older messages are dropped to fit.">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputmode="numeric"
+                  placeholder="auto"
+                  data-model={model}
+                  data-limit="ctx"
+                  value={getModelLimit(modelContextLimit, model) || ''}
+                  onchange={(e) => onSetModelContextLimit(model, parseLimitInput(e.currentTarget.value))}
+                  aria-label={`Input context token limit for ${model}`}
+                  class="w-16 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <span class="text-[10px] text-text-muted">ctx</span>
               </label>
               <div class="flex shrink-0 items-center gap-0.5">
                 <button

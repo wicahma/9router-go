@@ -1,49 +1,63 @@
 import { describe, expect, it } from 'vitest'
-import { COMBO_STRATEGIES, getModelRps, normalizeModelRps, resolveComboStrategy, updateModelRps } from './types'
+import {
+  COMBO_STRATEGIES,
+  getModelLimit,
+  normalizeModelLimits,
+  resolveComboStrategy,
+  updateModelLimit
+} from './types'
 
 const OPTION_VALUES = COMBO_STRATEGIES.map((s) => s.value)
 
-describe('model rps limits', () => {
-  it('defaults to unlimited', () => {
-    expect(getModelRps(undefined, 'openai/gpt-4o')).toBe(0)
-    expect(getModelRps({}, 'openai/gpt-4o')).toBe(0)
+// One set of helpers backs both settings keys (modelRps, modelContextLimit),
+// so the cases below are written against the shape rather than either name.
+describe('per-model limits', () => {
+  it('defaults to uncapped', () => {
+    expect(getModelLimit(undefined, 'openai/gpt-4o')).toBe(0)
+    expect(getModelLimit({}, 'openai/gpt-4o')).toBe(0)
   })
 
   it('reads a configured limit', () => {
-    expect(getModelRps({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o')).toBe(10)
+    expect(getModelLimit({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o')).toBe(10)
   })
 
   it('sets a limit', () => {
-    expect(updateModelRps({}, 'openai/gpt-4o', 10)).toEqual({ 'openai/gpt-4o': 10 })
+    expect(updateModelLimit({}, 'openai/gpt-4o', 10)).toEqual({ 'openai/gpt-4o': 10 })
   })
 
   it('replaces an existing limit', () => {
-    expect(updateModelRps({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', 20)).toEqual({
+    expect(updateModelLimit({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', 20)).toEqual({
       'openai/gpt-4o': 20,
     })
   })
 
   it('removes the key when set to zero or below', () => {
-    expect(updateModelRps({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', 0)).toEqual({})
-    expect(updateModelRps({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', -5)).toEqual({})
+    expect(updateModelLimit({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', 0)).toEqual({})
+    expect(updateModelLimit({ 'openai/gpt-4o': 10 }, 'openai/gpt-4o', -5)).toEqual({})
   })
 
   it('does not mutate the input', () => {
     const before = { 'openai/gpt-4o': 10 }
-    updateModelRps(before, 'openai/gpt-4o', 20)
+    updateModelLimit(before, 'openai/gpt-4o', 20)
     expect(before).toEqual({ 'openai/gpt-4o': 10 })
   })
 
   it('floors fractional input and drops non-numbers', () => {
-    expect(updateModelRps({}, 'a', 12.9)).toEqual({ a: 12 })
-    expect(updateModelRps({}, 'a', Number.NaN)).toEqual({})
-    expect(updateModelRps({}, 'a', Number.POSITIVE_INFINITY)).toEqual({})
+    expect(updateModelLimit({}, 'a', 12.9)).toEqual({ a: 12 })
+    expect(updateModelLimit({}, 'a', Number.NaN)).toEqual({})
+    expect(updateModelLimit({}, 'a', Number.POSITIVE_INFINITY)).toEqual({})
+  })
+
+  it('keeps a token-scale context value intact', () => {
+    const ctx = updateModelLimit({}, 'custom/local-llama', 200_000)
+    expect(ctx).toEqual({ 'custom/local-llama': 200_000 })
+    expect(getModelLimit(ctx, 'custom/local-llama')).toBe(200_000)
   })
 
   it('normalises a settings payload from the server', () => {
-    expect(normalizeModelRps({ 'a': 10, 'b': 0, 'c': -1, 'd': 'x' })).toEqual({ a: 10 })
-    expect(normalizeModelRps(undefined)).toEqual({})
-    expect(normalizeModelRps('nope')).toEqual({})
+    expect(normalizeModelLimits({ 'a': 10, 'b': 0, 'c': -1, 'd': 'x' })).toEqual({ a: 10 })
+    expect(normalizeModelLimits(undefined)).toEqual({})
+    expect(normalizeModelLimits('nope')).toEqual({})
   })
 })
 

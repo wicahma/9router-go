@@ -24,7 +24,7 @@ Open `http://localhost:20130` after starting an existing, initialized 9router da
 - Combos with fallback, round-robin, sticky routing, fusion, capability-aware reordering, and account fallback
 - Per-provider executors plus OpenAI-compatible and Gemini-native defaults; OAuth refresh and reactive 401 retry
 - Bidirectional request/response translation, streamed SSE handling, usage capture, live usage/console streams, and stall detection
-- SQLite WAL persistence, proxy pools, outbound proxy support, token-saver options, self-update, MITM commands, Docker, and cross-compilation
+- SQLite WAL persistence, proxy pools, outbound proxy support, per-model RPS and input-context ceilings, token-saver options, zero-downtime self-update, MITM commands, Docker, and cross-compilation
 
 Detailed routing and provider behavior is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md). Schema details and compatibility notes are in [`DATABASE.md`](DATABASE.md).
 

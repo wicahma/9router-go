@@ -353,6 +353,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	} else if err != nil {
 		log.Warn("fallback", "sanitize failed", "provider", provider, "model", model, "error", err)
 	}
+	// Last body transform before the wire — after every format conversion, so
+	// the operator's per-model context ceiling (Combo & Routing) applies to
+	// what is actually about to be sent upstream.
+	pipedBody = h.applyModelContextLimit(provider, model, pipedBody)
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error

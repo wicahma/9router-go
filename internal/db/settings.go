@@ -31,26 +31,31 @@ type CapacityAdapterEntry struct {
 
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
-	RTKEnabled                 bool                        `json:"rtkEnabled"`
-	CavemanEnabled             bool                        `json:"cavemanEnabled"`
-	CavemanLevel               string                      `json:"cavemanLevel"`
-	PonytailEnabled            bool                        `json:"ponytailEnabled"`
-	PonytailLevel              string                      `json:"ponytailLevel"`
-	HeadroomUrl                string                      `json:"headroomUrl"`
-	HeadroomCodeAware          bool                        `json:"headroomCodeAware"`
-	HeadroomKompress           bool                        `json:"headroomKompress"`
-	HeadroomTimeoutMs          int                         `json:"headroomTimeoutMs"`
-	AutoUpdate                 bool                        `json:"autoUpdate"`
-	FallbackStrategy           string                      `json:"fallbackStrategy,omitempty"`
-	StickyRoundRobinLimit      int                         `json:"stickyRoundRobinLimit,omitempty"`
-	ComboStrategy              string                      `json:"comboStrategy,omitempty"`
-	ComboStickyRoundRobinLimit int                         `json:"comboStickyRoundRobinLimit,omitempty"`
-	ComboStrategies            map[string]ComboStrategy    `json:"comboStrategies,omitempty"`
-	ProviderStrategies         map[string]ProviderStrategy    `json:"providerStrategies,omitempty"`
+	RTKEnabled                 bool                            `json:"rtkEnabled"`
+	CavemanEnabled             bool                            `json:"cavemanEnabled"`
+	CavemanLevel               string                          `json:"cavemanLevel"`
+	PonytailEnabled            bool                            `json:"ponytailEnabled"`
+	PonytailLevel              string                          `json:"ponytailLevel"`
+	HeadroomUrl                string                          `json:"headroomUrl"`
+	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
+	HeadroomKompress           bool                            `json:"headroomKompress"`
+	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
+	AutoUpdate                 bool                            `json:"autoUpdate"`
+	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
+	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
+	ComboStrategy              string                          `json:"comboStrategy,omitempty"`
+	ComboStickyRoundRobinLimit int                             `json:"comboStickyRoundRobinLimit,omitempty"`
+	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
+	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
 	// ModelRps caps requests-per-second per model key ("provider/model").
 	// Absent or zero means unlimited; there is no per-provider bucket.
 	ModelRps map[string]int `json:"modelRps,omitempty"`
+	// ModelContextLimit caps the input context per model key
+	// ("provider/model"), in tokens. Absent or zero means "use whatever the
+	// provider allows". Set from Combo & Routing for models with a smaller
+	// window than the catalog advertises (custom/self-hosted nodes above all).
+	ModelContextLimit map[string]int `json:"modelContextLimit,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -191,6 +196,13 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	// counts as a valid limit.
 	if mr, present := raw["modelRps"]; present {
 		s.ModelRps = ratelimit.FromRaw(mr)
+	}
+
+	// Per-model context ceilings. Same decoding rules as modelRps (see
+	// ratelimit.FromRaw) — both are "positive integers keyed by model, absent
+	// means uncapped", so a second parser would only be a place to drift.
+	if mc, present := raw["modelContextLimit"]; present {
+		s.ModelContextLimit = ratelimit.FromRaw(mc)
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)

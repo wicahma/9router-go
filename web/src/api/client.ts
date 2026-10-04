@@ -96,6 +96,8 @@ export interface Settings {
   outboundNoProxy?: string
   /** Per-model requests-per-second ceiling. Missing or 0 = unlimited. */
   modelRps?: Record<string, number>
+  /** Per-model input context ceiling in tokens. Missing or 0 = provider default. */
+  modelContextLimit?: Record<string, number>
   providerStrategies?: Record<string, ProviderStrategyConfig>
   [key: string]: unknown
 }
