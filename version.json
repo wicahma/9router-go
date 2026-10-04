@@ -1,5 +1,5 @@
 {
   "downloadUrl": "https://github.com/wicahma/9router-go/releases/latest",
-  "latestVersion": "1.9.3",
-  "releaseNotes": "v1.9.3: First-login fix \u2014 the password rotation on the login screen now completes when the dashboard is reached over a tunnel or LAN origin (new POST /api/auth/set-password, no session leaked); plus the date-dependent usage breakdown test repair."
+  "latestVersion": "1.9.4",
+  "releaseNotes": "v1.9.4: Fresh installs bootstrap their own database schema \u2014 the first-login password rotation no longer fails with 'no such table: settings' on an empty data directory (EnsureCoreSchema ported from upstream), covered by an end-to-end first-run test."
 }
