@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // The breakdown table's Account / API key / Endpoint tabs are backed by these
@@ -22,11 +23,14 @@ func TestUsageStatsBreakdownDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// period=today cuts off at 00:00 UTC of the current day, so the rows have to
+	// be dated relative to now — a fixed date makes this test fail the next day.
+	day := time.Now().UTC().Format("2006-01-02")
 	rows := []struct {
 		ts, model, conn, endpoint, apiKey string
 	}{
-		{"2026-09-29T10:00:00Z", "m-one", "conn-1", "/v1/chat/completions", "sk-aaaa1111bbbb2222"},
-		{"2026-09-29T11:00:00Z", "m-two", "conn-1", "/v1/chat/completions", "sk-aaaa1111bbbb2222"},
+		{day + "T10:00:00Z", "m-one", "conn-1", "/v1/chat/completions", "sk-aaaa1111bbbb2222"},
+		{day + "T11:00:00Z", "m-two", "conn-1", "/v1/chat/completions", "sk-aaaa1111bbbb2222"},
 	}
 	for _, r := range rows {
 		if _, err := database.Exec(
