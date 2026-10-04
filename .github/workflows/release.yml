@@ -46,9 +46,26 @@ jobs:
         id: changelog
         run: |
           TAG="${GITHUB_REF_NAME}"
-          # Try to extract section for this version tag from CHANGELOG.md
+          NOTES=""
           if [ -f CHANGELOG.md ]; then
-            NOTES=$(awk "/## \\[$TAG\\]/{flag=1; next} /## \\[v/{flag=0} flag" CHANGELOG.md)
+            # A section headed for this exact tag, if one exists.
+            NOTES=$(awk -v t="$TAG" '
+              $0 ~ "^## \\[" t "\\]" || $0 ~ "^## \\[v" t "\\]" {flag=1; next}
+              flag && /^## \[/ {flag=0}
+              flag' CHANGELOG.md)
+            # This changelog keeps everything under ## [Unreleased] and only
+            # files it under a version when the tag is cut, so that section is
+            # the real source. Without this the notes fall through to the
+            # git-log fallback below, which lists bare commit subjects. The
+            # entries are newest-first, so the body is the first subsection.
+            if [ -z "$NOTES" ]; then
+              NOTES=$(awk '
+                /^## \[Unreleased\]/ {flag=1; next}
+                flag && /^## \[/ {flag=0}
+                flag && /^### / && seen {flag=0}
+                flag && /^### / {seen=1}
+                flag' CHANGELOG.md)
+            fi
           fi
           if [ -n "$NOTES" ]; then
             echo "$NOTES" > /tmp/changelog.md
