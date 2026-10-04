@@ -16,6 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The changelog step falls back to `git log $PREV_TAG..$TAG`; a shallow
+          # clone has neither the tags nor the commits to answer it, which is why
+          # the v1.9.3 body came out as a single line.
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
