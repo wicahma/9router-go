@@ -7,12 +7,14 @@ This roadmap is for the current native Go gateway and its embedded Svelte dashbo
 - Go 1.27, Fx application lifecycle, Chi HTTP server, and SQLite are the runtime foundation.
 - The dashboard is a Svelte 5 + TypeScript + Vite SPA. Production serves its generated `web/dist` assets from the Go binary through `//go:embed`; no JavaScript runtime is needed at runtime.
 - `web/dist/` is intentionally generated and ignored. It is not guaranteed to exist in a checkout, and the Go package cannot compile without a matching embedded `dist/*` directory.
-- The Go database layer currently creates the `upstream_leases` table idempotently, but it does not implement the upstream application's full versioned schema migration. A completely fresh database is therefore not proven to be self-bootstrapping; using an existing upstream-compatible database is a different compatibility case.
+- The Go database layer bootstraps the core schema idempotently on startup (`db.EnsureCoreSchema`: tables, indexes, Go-only columns, `_meta`/settings seeds) plus the `upstream_leases` table, so a fresh `DATA_DIR` starts on its own. A versioned migration runner and legacy JSON import are still missing; an existing upstream-compatible database is a different compatibility case.
 - Dashboard login, session cookies, API-key access, and local CLI-token access exist, but they are not a full RBAC/scope system. Management routes must be reviewed against the current middleware rather than assumed to have granular scopes.
 
 ## Near-term hardening (priority)
 
 ### 1. Schema bootstrap and migrations
+
+**Done (2026-10-04):** a fresh `DATA_DIR` starts the gateway without a copied upstream file — `db.EnsureCoreSchema` creates the core tables/indexes, backfills Go-only columns, and seeds `_meta` plus the empty settings row, and `internal/e2e/TestFreshInstallPasswordRotation` drives first-run login → password rotation → session through the real fx wiring on an empty data directory.
 
 **Acceptance criteria**
 

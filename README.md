@@ -53,7 +53,7 @@ curl http://localhost:20130/health
 
 The bundled compose file persists `/data` in the `9router-data` volume. The image also contains the embedded dashboard; JavaScript is only needed while building the image.
 
-> A new Docker volume is an empty SQLite file, not a complete schema. See [Database compatibility](#database-compatibility-and-bootstrap-limit) before first use.
+> A new Docker volume starts as an empty SQLite file; startup creates the core schema in it. See [Database compatibility](#database-compatibility-and-bootstrap-limit) for what is and is not bootstrapped.
 
 ### Build from source
 
@@ -189,7 +189,9 @@ The request middleware repeatedly removes leading `/v1/` segments before routing
 
 The Go runtime opens the configured SQLite database in WAL mode with a five-second busy timeout and enforces private file permissions. It reads and writes the upstream 9router table/JSON shapes and adds the Go-only `upstream_leases` table for cross-process Freebuff session coordination.
 
-**Current limitation:** `internal/db.OpenDatabase` creates directories and the SQLite file, but it does not create the upstream schema, seed API keys/settings, import legacy JSON, or run migrations. Only `upstream_leases` is created idempotently. Therefore, a truly fresh DB is not a supported standalone bootstrap path. Start with an existing schema-compatible 9router database; opening an empty file is not equivalent to a successful migration.
+**Bootstrap:** startup calls `db.EnsureCoreSchema`, which creates the core tables and indexes when they are absent (`settings`, `_meta`, `providerConnections`, `providerNodes`, `proxyPools`, `apiKeys`, `combos`, `kv`, `usageHistory`, `usageDaily`, `requestDetails`), backfills the Go-only columns on older tables, and seeds the `_meta` row plus the empty settings row. Every statement is `IF NOT EXISTS` or column-presence-checked, so an existing database is never modified destructively and a fresh `DATA_DIR` is a supported standalone start. Previously this was "leases only", and a fresh install died on its first settings write with `no such table: settings`.
+
+**Still not bootstrapped:** legacy JSON import, a versioned migration runner, and API-key seeding — a fresh database starts with no keys, no connections, and no dashboard password (the default `123456` is rotated on first login).
 
 The `DB_PATH` resolver recognizes a directory containing `db/data.sqlite`, `data.sqlite`, or `9router.db`, which is useful for common upstream layouts. Back up the database before sharing it between processes or deployments. Provider secrets are stored in the database and files/directories are chmodded private where supported.
 
@@ -218,7 +220,7 @@ The web package currently has no frontend unit/component test script. Validate d
 ## Operational caveats
 
 - Compatibility with upstream means selected data shapes, routes, and behaviors are ported; it is not a blanket 100% parity guarantee.
-- A clean database requires bootstrap by a schema-capable upstream/runtime path; Go currently does not perform that bootstrap.
+- A clean database is bootstrapped on startup (core tables, Go-only columns, `_meta`/settings seeds); legacy JSON import and a versioned migration runner are still missing.
 - The production dashboard is fully embedded, but building it still requires Bun and the committed lockfile.
 - The API server defaults to all interfaces. Bind to localhost or protect the port when exposing it outside a trusted machine.
 - `PPROF_ENABLED` exposes sensitive profiling endpoints and is disabled by default.

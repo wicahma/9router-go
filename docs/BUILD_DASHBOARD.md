@@ -87,7 +87,7 @@ curl -I http://127.0.0.1:20130/
 
 With a fresh, valid embedded bundle, `/` and client-side dashboard routes return the SPA; missing asset paths return 404 rather than silently becoming HTML. Browser dashboard routes may redirect to `/login` when login is required. The login/session API is separate from the client API-key routes; do not infer authorization from the fact that a page loads.
 
-Before using an existing SQLite file, verify that its schema is compatible with the current Go handlers. The Go database layer currently has an idempotent `upstream_leases` table bootstrap, not the full upstream versioned migration runner. Fresh-database schema bootstrap and legacy migration are therefore explicit hardening work in `ROADMAP.md`; this guide does not promise a no-action migration.
+Before using an existing SQLite file, verify that its schema is compatible with the current Go handlers. Startup bootstraps the core schema idempotently (`db.EnsureCoreSchema`: tables, indexes, Go-only columns, `_meta`/settings seeds) plus the `upstream_leases` table, so a fresh `DATA_DIR` no longer needs a copied upstream file. What is still missing is the upstream versioned migration runner and legacy JSON import; see `ROADMAP.md`.
 
 ## Docker build
 

@@ -1,7 +1,6 @@
 package db
 
 import (
-	"9router/proxy/internal/dbtest"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -13,7 +12,7 @@ import (
 // successful row here to prove the error queries ignore it.
 func seedErrors(t *testing.T, database *sql.DB) {
 	t.Helper()
-	if err := dbtest.CreateTables(database); err != nil {
+	if err := EnsureCoreSchema(database); err != nil {
 		t.Fatal(err)
 	}
 	// succeeded request, must never be counted as a failure
@@ -75,7 +74,7 @@ func TestGetAttemptDistributionSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := NewRepo(database)
-	if err := dbtest.CreateTables(database); err != nil {
+	if err := EnsureCoreSchema(database); err != nil {
 		t.Fatal(err)
 	}
 
