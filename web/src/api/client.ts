@@ -998,6 +998,14 @@ export const api = {
     err.mustChangePassword = mustChangePassword
     throw err
   },
+  // Rotates the compatibility default password from the login screen, where
+  // the caller has no session yet (the server refuses one until this rotation
+  // happens). Only valid while no dashboard password hash is stored.
+  setPassword: (currentPassword: string, newPassword: string) =>
+    request<{ success: boolean }>('/api/auth/set-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
   logout: async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })

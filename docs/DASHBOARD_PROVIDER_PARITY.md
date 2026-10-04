@@ -509,6 +509,31 @@ valid + cookie, status round-trip, require-login, logout) — plus
 `router_test.go` (SPA `/dashboard*` 302 ke `/login`, `/login` 200) dan
 `bun test` + `tsc -b` + `oxlint` untuk frontend.
 
+### Lanjutan 2026-10-04 — rotasi password login pertama (`POST /api/auth/set-password`, beda dari upstream)
+
+Fresh install diakses lewat domain/tunnel (origin non-loopback): `HandleAuthLogin`
+menerima default `123456` tapi sengaja **tidak** memberi cookie sampai password
+diganti, sementara form di `LoginView` mengganti password via
+`PATCH /api/settings` yang ada di grup `RequireDashboardAuth` → selalu 401
+`dashboard session required`. Pemilik terkunci dari dashboard-nya sendiri di
+origin itu, dan cabang "first-time set" di `changeDashboardPassword` (yang
+memang menerima `currentPassword` kosong/`123456`) tidak pernah tercapai di
+server sungguhan.
+
+- Endpoint publik baru `POST /api/auth/set-password` (didaftarkan bersama
+  login/logout/status): verifikasi `currentPassword` lewat
+  `verifyDashboardPassword`, gate tunnel + SSO-password sama seperti login,
+  rotasi lewat `changeDashboardPassword`, tanpa memberi session.
+- **Beda dari upstream**: Next tidak punya endpoint ini. Ditambahkan karena
+  jalur rotasi pre-session yang didokumentasikan (README/ARCHITECTURE) tidak
+  punya route-nya di Go.
+- Ditolak (403) begitu hash password sudah tersimpan, jadi tidak bisa dipakai
+  sebagai jalur ganti-password tanpa session di kemudian hari.
+- Frontend: `api.setPassword()` lalu `api.login(newPassword)` — login kedua
+  inilah yang mengembalikan cookie.
+- Verifikasi: `go test ./internal/handlers/ -run 'TestFirstLoginRemoteRotation|TestAuthSetPasswordRejectsWrongCurrentPassword'`
+  (alur penuh lewat `SetupServerRouter`, termasuk 401 → 200 → cookie → 403 setelah hash ada).
+
 ### Lanjutan 2026-09-23 — Media Providers parity (`/dashboard/media-providers/*`)
 
 Audit live upstream `:20128` (v0.5.86) vs Go `:20130` per kind + detail pages:

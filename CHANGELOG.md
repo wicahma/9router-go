@@ -1,7 +1,14 @@
 # Changelog
 
-
 ## [Unreleased]
+
+### 🔐 First-login password rotation no longer dead-ends
+
+- **The login screen's "set a new password" form could never succeed.** On a fresh install reached over a tunnel or LAN origin, `HandleAuthLogin` accepts the compatibility default `123456` but deliberately issues no session until the password is rotated (`mustChangeDefaultPassword`, CVE-2026-56679 class). The form rotated through `PATCH /api/settings`, which sits in the `RequireDashboardAuth` group and therefore always answered `401 Unauthorized: dashboard session required` — the very cookie the login had just refused to hand out. The owner was locked out of their own dashboard from that origin, with `changeDashboardPassword`'s first-time branch (which explicitly accepts an empty or default `currentPassword`) unreachable in a real server.
+- **`POST /api/auth/set-password` (new, public like login)** closes the gap: it verifies `currentPassword` with `verifyDashboardPassword`, shares the login lockout so it cannot be brute-forced, applies the same tunnel and SSO-password gates as login, and rotates through the existing `changeDashboardPassword`. It refuses once a password hash is stored, so it can never be used later as a session-less password change — the session-gated `PATCH /api/settings` stays the only path then. It issues no session; the login screen calls `api.setPassword(...)` and then signs in again with the new password, which is what actually returns the cookie.
+- The dead-end comment in `LoginView.svelte` claimed the password had to be rotated "from the local host"; that guidance is gone, since the page now completes the rotation itself.
+- Tests: `TestFirstLoginRemoteRotation` drives the whole flow through the real `SetupServerRouter` stack (default password refused a session → rotation → cookie → dashboard API reachable → default stops working → endpoint refused once a hash exists) and `TestAuthSetPasswordRejectsWrongCurrentPassword` covers the wrong-password path and the shared lockout.
+
 
 ### ✨ Provider detail parity for `/dashboard/providers/<id>` (CommandCode audit against upstream `:20128`)
 

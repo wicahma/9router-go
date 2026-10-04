@@ -100,9 +100,8 @@
     } catch (err: unknown) {
       const failure = err as LoginFailure
       if (failure?.mustChangePassword) {
-        // Remote fresh install on the well-known default: rotate first. The
-        // login attempt never issues a session, so set the new password from
-        // the local host (or set INITIAL_PASSWORD) before retrying.
+        // Remote fresh install on the well-known default: the login issued no
+        // session, so rotate the password first and then sign in again.
         mustChange = true
         errorMessage = err instanceof Error ? err.message : 'Default password must be changed before remote access.'
       } else {
@@ -124,9 +123,13 @@
     errorMessage = ''
 
     try {
-      await api.patchSettings({ currentPassword: password, newPassword })
-      sessionStorage.setItem('9router_auth', 'true')
-      localStorage.setItem('9router_auth', 'true')
+      await api.setPassword(password, newPassword)
+      // The rotation issues no session, so log in again with the new password
+      // to get the cookie before entering the dashboard.
+      const res = await api.login(newPassword)
+      if (!res.success) {
+        throw new Error(res.error || 'Password set, but signing in failed')
+      }
       if (onSuccess) {
         onSuccess()
       } else {

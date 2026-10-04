@@ -94,6 +94,72 @@ func (h *DashboardHandler) HandleAuthLogin(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleAuthSetPassword handles POST /api/auth/set-password: the rotation the
+// login page offers a caller that HandleAuthLogin just refused a session.
+// A remote caller still on the compatibility default password gets no cookie
+// until it is rotated, so this route cannot be session-gated — it verifies the
+// current password itself and shares the login lockout. It only works while no
+// password hash is stored: once one is, changing the password needs the
+// session that PATCH /api/settings requires.
+func (h *DashboardHandler) HandleAuthSetPassword(w http.ResponseWriter, r *http.Request) {
+	ip := auth.LoginClientIP(r)
+	if locked, retryAfter := auth.LoginLocked(ip); locked {
+		writeLoginLocked(w, retryAfter)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writePlainError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	var payload struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writePlainError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	raw := settingsOrEmpty(h)
+	if auth.TunnelLoginBlocked(r, raw) {
+		writePlainError(w, http.StatusForbidden, "Dashboard access via tunnel is disabled")
+		return
+	}
+	if msg, disabled := ssoPasswordDisabled(raw); disabled {
+		writePlainError(w, http.StatusForbidden, msg)
+		return
+	}
+	if hasStoredPassword(raw) {
+		writePlainError(w, http.StatusForbidden,
+			"Dashboard password is already set. Change it from the dashboard settings.")
+		return
+	}
+	if strings.TrimSpace(payload.NewPassword) == "" {
+		writePlainError(w, http.StatusBadRequest, "newPassword is required")
+		return
+	}
+	if !h.verifyDashboardPassword(payload.CurrentPassword) {
+		auth.RecordLoginFail(ip)
+		if locked, retryAfter := auth.LoginLocked(ip); locked {
+			writeLoginLocked(w, retryAfter)
+			return
+		}
+		writePlainError(w, http.StatusUnauthorized, "Invalid current password")
+		return
+	}
+	if err := h.changeDashboardPassword(payload.CurrentPassword, payload.NewPassword); err != nil {
+		writePlainError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	auth.RecordLoginSuccess(ip)
+	noStore(w)
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
 // HandleAuthLogout handles POST /api/auth/logout: clear the session cookie.
 func (h *DashboardHandler) HandleAuthLogout(w http.ResponseWriter, _ *http.Request) {
 	auth.ClearCookie(w)
