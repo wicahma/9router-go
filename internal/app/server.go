@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.uber.org/fx"
@@ -57,6 +58,23 @@ func ProvideServer(p ServerParams) *http.Server {
 		Handler: p.Handler,
 	}
 
+	// Requests being handled right now, keyed by connection. RestartSelf's
+	// drain hook waits on this before it swaps the process image, because the
+	// exec discards this address space and would cut a streaming reply mid-body.
+	var (
+		inflightMu sync.Mutex
+		inflight   = map[net.Conn]struct{}{}
+	)
+	server.ConnState = func(c net.Conn, state http.ConnState) {
+		inflightMu.Lock()
+		defer inflightMu.Unlock()
+		if state == http.StateActive {
+			inflight[c] = struct{}{}
+		} else {
+			delete(inflight, c)
+		}
+	}
+
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			autoUpdate := p.CLIParams.AutoUpdate
@@ -94,14 +112,43 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
+			// The listener is ours, not the http.Server's, so a self-update can
+			// hand it to the next process image instead of closing and
+			// reopening the port.
+			listener, err := updater.ServeListener(addr)
+			if err != nil {
+				return fmt.Errorf("listen on %s: %w", addr, err)
+			}
+
+			updater.SetDrainHook(func(ctx context.Context) {
+				for {
+					inflightMu.Lock()
+					pending := len(inflight)
+					inflightMu.Unlock()
+					if pending == 0 {
+						return
+					}
+					select {
+					case <-ctx.Done():
+						log.Printf("[config] restart: %d request(s) still in flight, replacing the process anyway", pending)
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+			})
+
 			go func() {
-				if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("Server failed: %v", err)
+				if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+					log.Printf("Server failed: %v", err)
 				}
 			}()
 
-			fmt.Fprintf(os.Stdout, "\n  🚀 9router-go Proxy (%s) on %s\n\n", updater.CurrentVersion, addr)
-			log.Printf("Server is ready to handle requests at %s", addr)
+			// An adopted socket keeps the port the previous version was serving
+			// on, which is what the banner should name rather than the
+			// configured address.
+			serving := listener.Addr().String()
+			fmt.Fprintf(os.Stdout, "\n  🚀 9router-go Proxy (%s) on %s\n\n", updater.CurrentVersion, serving)
+			log.Printf("Server is ready to handle requests at %s", serving)
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {

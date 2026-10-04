@@ -48,6 +48,38 @@ func TestGetCachedInfo(t *testing.T) {
 	}
 }
 
+// A restart must not re-resolve its own executable after the swap. On Linux
+// os.Executable() then reports the path the replaced inode had, which has since
+// been renamed to .old and deleted, so resolution fails and the restart is
+// abandoned while the freshly installed binary sits unused on disk. This is the
+// regression from a container whose auto-update logged "resolve symlink for
+// restart failed error=lstat /usr/local/bin/9router-go.old: no such file or
+// directory" and kept serving the old version.
+func TestExecutableTargetPrefersTheInstalledPath(t *testing.T) {
+	installedPathMu.Lock()
+	before := installedPath
+	installedPath = ""
+	installedPathMu.Unlock()
+	t.Cleanup(func() { rememberInstalledPath(before) })
+
+	fallback, err := executableTarget()
+	if err != nil {
+		t.Fatalf("executableTarget before any update: %v", err)
+	}
+	if _, err := os.Stat(fallback); err != nil {
+		t.Fatalf("the path before any update must exist: %v", err)
+	}
+
+	rememberInstalledPath("/usr/local/bin/9router-go")
+	got, err := executableTarget()
+	if err != nil {
+		t.Fatalf("executableTarget after a swap: %v", err)
+	}
+	if got != "/usr/local/bin/9router-go" {
+		t.Fatalf("executableTarget after a swap = %q, want the installed path", got)
+	}
+}
+
 func TestCheckUpdate_Manifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		manifest := map[string]any{

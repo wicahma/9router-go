@@ -89,6 +89,35 @@
   "context length exceeded" errors, not a tokenizer.
 - **Upstream attempt count per request** — `usageHistory.meta.attempts` records how many upstream forwards a client request burned before it landed, so a success that barely survived a fallback chain is distinguishable from one that never retried. Counted at the single `tryForwardWithConnection` call site via a per-request `atomic.Int64` in the context; rendered on the Details tab, highlighted when retries happened.
 
+### ♻️ Zero-downtime self-update
+
+- **Auto-update now replaces the process without ever closing the port.** The
+  listener is owned by the app (`internal/app/server.go`) instead of by
+  `http.Server`, and a restart hands it to the next process image: the updater
+  clears `FD_CLOEXEC` on the listening socket, exports its number as
+  `NINE_ROUTER_LISTENER_FD`, and calls `syscall.Exec`, so the new binary starts
+  on the same PID with the same accept queue and the port never stops
+  accepting. `updater.ServeListener` adopts the inherited fd with
+  `net.FileListener` and falls back to a fresh `net.Listen` if the descriptor
+  does not survive. Requests in flight drain for up to 30s (`ConnState`-tracked)
+  before the address space is replaced; idle keep-alive connections are dropped
+  and clients redial. On Windows the build-tagged stub returns false and the old
+  spawn path still applies.
+- **The restart path could never find the binary it had just installed.** After
+  the on-disk swap, Linux `os.Executable()` keeps reporting the *replaced*
+  inode's path — by then renamed to `9router-go.old` and deleted — so
+  `EvalSymlinks` aborted with `lstat /usr/local/bin/9router-go.old: no such file
+  or directory` and the running process kept serving the old version while the
+  new one sat unused on disk. The updater now remembers where it wrote itself
+  (`installedPath` / `executableTarget`, with `os.Executable` only as a
+  fallback) and restarts from that path. An update *from* a build predating this
+  fix still installs but does not restart; recreating or restarting the container
+  once lands on the new build, after which every later update is seamless.
+- Verified in Docker against a published release manifest: 609 requests at a
+  30 ms cadence spanning the update, 0 failures, longest gap between successful
+  responses 46 ms — i.e. the probe's own interval — with `restarts=0`, an
+  unchanged container `StartedAt`, and the same PID before and after.
+
 ### ✨ Filter the console log
 
 - The console log page has a search box. It filters the buffered lines as you

@@ -143,6 +143,24 @@ For Claude Messages clients, use `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 
 `.env.example` documents the security-sensitive subset and optional OAuth client overrides.
 
+### Zero-downtime self-update
+
+With `AUTO_UPDATE=true` (or `./9router-go update`) the gateway installs the new
+release and replaces its own process image in place: the listening socket is
+handed over through an inherited, non-`CLOEXEC` descriptor, so the port never
+closes and no connection is refused during the swap. The PID does not change, so
+a container whose entrypoint is the binary itself (the shipped Dockerfile uses an
+exec-form `ENTRYPOINT`) does not restart — `docker ps` keeps the same `StartedAt`
+and `RestartCount`. Requests already in flight drain for up to 30s before the old
+address space is discarded; idle keep-alive connections are dropped and clients
+reconnect on the same port. The hand-off is Unix-only; on Windows the updater
+falls back to spawning the new binary and exiting.
+
+A build predating this mechanism installs the new binary but cannot run it
+(`os.Executable` no longer resolves once the old image has been replaced), so the
+first update *into* a build containing this feature still needs one manual
+container restart. Every update after that is seamless.
+
 ## Authentication boundaries
 
 - `GET /health`, the dashboard HTML/assets, `/login`, auth status/login/logout, and provider OAuth callback landing pages are public.

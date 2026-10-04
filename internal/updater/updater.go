@@ -49,7 +49,46 @@ var (
 	autoUpdateMu      sync.RWMutex
 	updateInProgress  bool
 	updateProgressMu  sync.Mutex
+
+	// installedPath remembers where this process last wrote itself. It matters
+	// because os.Executable() cannot be trusted after a swap: on Linux it
+	// reports the path the running inode had when it was replaced, which by
+	// then has been renamed to .old and removed, so resolving it fails and the
+	// restart never happens ("resolve symlink for restart failed error=lstat
+	// /usr/local/bin/9router-go.old: no such file or directory", seen in a
+	// container whose auto-update had just installed the new binary).
+	installedPathMu sync.Mutex
+	installedPath   string
 )
+
+func rememberInstalledPath(path string) {
+	installedPathMu.Lock()
+	defer installedPathMu.Unlock()
+	installedPath = path
+}
+
+// executableTarget is the binary an update replaces and a restart runs: the
+// path the last update installed, else this process's own executable with
+// symlinks resolved. Resolution is best-effort — a symlink must be followed so
+// the swap replaces the real file, but a path that no longer resolves (the
+// post-swap case above) is used as-is rather than aborting the operation.
+func executableTarget() (string, error) {
+	installedPathMu.Lock()
+	path := installedPath
+	installedPathMu.Unlock()
+	if path != "" {
+		return path, nil
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+		return resolved, nil
+	}
+	return execPath, nil
+}
 
 // UpdateInfo holds detailed version and asset information.
 type UpdateInfo struct {
@@ -373,13 +412,9 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		updateProgressMu.Unlock()
 	}()
 
-	execPath, err := os.Executable()
+	execPath, err := executableTarget()
 	if err != nil {
-		return fmt.Errorf("locate executable path: %w", err)
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return fmt.Errorf("resolve symlink path: %w", err)
+		return err
 	}
 
 	log.Info("updater", "downloading update asset", "url", downloadURL, "target", execPath)
@@ -450,6 +485,7 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	}
 
 	_ = os.Remove(oldPath)
+	rememberInstalledPath(execPath)
 	log.Info("updater", "self-update applied successfully!", "binary", execPath)
 	return nil
 }
@@ -691,17 +727,21 @@ func runCheckCycle(ctx context.Context) {
 	}
 }
 
-// RestartSelf safely spawns a fresh process of the updated executable and exits current instance.
+// RestartSelf runs the freshly installed binary in place of this one.
+//
+// On Unix the process image is replaced by exec, with the listening socket
+// carried across (see execWithInheritedListener): the PID — and therefore a
+// container whose PID 1 is the gateway — survives, and the port is never closed.
+// With no socket to carry, or on Windows, it falls back to spawning a child and
+// shutting this instance down, which costs the bind/window the exec avoids.
 func RestartSelf() {
-	execPath, err := os.Executable()
+	execPath, err := executableTarget()
 	if err != nil {
 		log.Error("updater", "locate binary for restart failed", "error", err)
 		return
 	}
 
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		log.Error("updater", "resolve symlink for restart failed", "error", err)
+	if execWithInheritedListener(execPath) {
 		return
 	}
 
