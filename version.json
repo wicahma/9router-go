@@ -1,1 +1,5 @@
-{"downloadUrl": "https://github.com/wicahma/9router-go/releases/latest", "latestVersion": "1.9.1", "releaseNotes": "v1.9.1: Custom-models parity fix \u2014 combo picker unwraps {models} envelope (oc/space-bunny-free visible again); shared parser + typed client; STT/media custom merge + customModelChanged reload."}
+{
+  "downloadUrl": "https://github.com/wicahma/9router-go/releases/latest",
+  "latestVersion": "1.9.3",
+  "releaseNotes": "v1.9.3: First-login fix \u2014 the password rotation on the login screen now completes when the dashboard is reached over a tunnel or LAN origin (new POST /api/auth/set-password, no session leaked); plus the date-dependent usage breakdown test repair."
+}
