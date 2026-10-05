@@ -90,6 +90,18 @@ func sseStream(o sseStreamOpts) error {
 	translate, startTime := o.Translate, o.StartTime
 	ttft, buf := o.TTFT, o.Buf
 	ctx, toolNameMap := o.Ctx, o.ToolNameMap
+
+	// Read the first upstream line before committing 200: an upstream that
+	// rejects a request often answers 200 with an error object in the body,
+	// which used to be streamed to the client as a successful empty
+	// completion. Returning the error here keeps the response uncommitted so
+	// combo/account fallback can still try the next provider.
+	peeked, perr := proxy.PeekStreamError(upstream)
+	if perr != nil {
+		return perr
+	}
+	upstream = peeked
+
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
@@ -240,6 +252,13 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 	}
 
 	body = translator.UnwrapClineEnvelope(body)
+
+	// An upstream can answer 200 with an error object (quota, auth, overload).
+	// Writing that as a successful completion silently ends fallback, so surface
+	// it as an UpstreamError before anything is committed to the client.
+	if uerr := proxy.ClassifyErrorBody(body); uerr != nil {
+		return uerr
+	}
 
 	// An SSE-only upstream ignores `stream:false` and answers with an event
 	// stream anyway. Writing that under an `application/json` header hands the

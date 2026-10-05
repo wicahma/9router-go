@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	json "encoding/json/v2"
+	"9router/proxy/internal/proxy"
 )
 
 // jsonResponse now folds an event stream into one chat.completion, so the
@@ -28,20 +28,22 @@ func TestJSONResponse_LeavesPlainJSONUntouched(t *testing.T) {
 	}
 }
 
-// An error envelope from a provider that does not speak SSE must pass through
-// as well, and must not be mistaken for a stream.
-func TestJSONResponse_LeavesErrorJSONUntouched(t *testing.T) {
+// An error envelope from a provider that does not speak SSE must fail over,
+// not pass through as a 200: the client would otherwise treat it as a
+// successful completion and the account/combo fallback would never fire.
+func TestJSONResponse_ErrorEnvelopeFailsOver(t *testing.T) {
 	const upstream = `{"error":{"message":"model not found","type":"invalid_request_error","code":404}}`
 
 	rec := httptest.NewRecorder()
-	if err := jsonResponse(t.Context(), rec, strings.NewReader(upstream), false, nil); err != nil {
-		t.Fatalf("jsonResponse: %v", err)
+	err := jsonResponse(t.Context(), rec, strings.NewReader(upstream), false, nil)
+	ue, ok := err.(*proxy.UpstreamError)
+	if !ok {
+		t.Fatalf("expected *proxy.UpstreamError, got %T (%v)", err, err)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("error body is not JSON: %v", err)
+	if ue.StatusCode != 404 {
+		t.Errorf("status: got %d want 404", ue.StatusCode)
 	}
-	if _, ok := out["error"]; !ok {
-		t.Errorf("error envelope was lost: %s", rec.Body.String())
+	if rec.Code != 200 {
+		t.Errorf("nothing may be committed before fallback: got %d", rec.Code)
 	}
 }

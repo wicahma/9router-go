@@ -364,6 +364,14 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
 // The stream drops the first SSE line (model metadata), then translates each content block SSE.
 func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
+	// Fail over before committing 200: an upstream error body sent under a 200
+	// would otherwise be piped to the client as a successful empty stream.
+	peeked, perr := proxy.PeekStreamError(upstream)
+	if perr != nil {
+		return perr
+	}
+	upstream = peeked
+
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)

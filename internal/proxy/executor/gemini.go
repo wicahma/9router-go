@@ -53,6 +53,14 @@ func ForwardGemini(w http.ResponseWriter, req *Request) error {
 }
 
 func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context) error {
+	// Fail over before committing 200: an error body sent with a 200 would
+	// otherwise reach the client as a successful empty stream.
+	peeked, perr := proxy.PeekStreamError(upstream)
+	if perr != nil {
+		return perr
+	}
+	upstream = peeked
+
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)

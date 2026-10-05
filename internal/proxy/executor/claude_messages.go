@@ -16,6 +16,15 @@ import (
 // handleClaudeMessagesStream pipes a Claude Messages SSE stream from upstream,
 // translating chunks to OpenAI SSE format when the downstream client is an OpenAI client.
 func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
+	// Fail over before committing 200: an upstream error body (often sent with
+	// a 200) would otherwise reach the client as a successful empty stream and
+	// no fallback would fire. See proxy.PeekStreamError.
+	peeked, perr := proxy.PeekStreamError(upstream)
+	if perr != nil {
+		return perr
+	}
+	upstream = peeked
+
 	if req.TranslateResp {
 		startTime := req.StartTime
 		if startTime.IsZero() {

@@ -95,6 +95,15 @@ func (h *ChatHandler) forwardRequest(
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
 func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
+	// Fail over before committing 200: an upstream error body (often under a
+	// 200) would otherwise be piped to the client as a successful empty stream
+	// and no combo/account fallback would fire. See proxy.PeekStreamError.
+	peeked, perr := internalproxy.PeekStreamError(upstream)
+	if perr != nil {
+		return perr
+	}
+	upstream = peeked
+
 	hw := internalproxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := internalproxy.WriteSSEHeaders(hw)
@@ -341,6 +350,13 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 	}
 
 	body = translator.UnwrapClineEnvelope(body)
+
+	// An upstream can answer 200 with an error object. Writing that as a
+	// successful completion silently ends combo/account fallback, so surface it
+	// as an upstream error before anything reaches the client.
+	if uerr := internalproxy.ClassifyErrorBody(body); uerr != nil {
+		return uerr
+	}
 
 	if metrics != nil {
 		metrics.ResponseBuf.Write(body)

@@ -482,6 +482,16 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 	state := &CodexStreamState{}
 
 	if req.IsStream {
+		// Fail over before committing 200: a codex upstream that rejects the
+		// request sends {"type":"error",...} (sometimes under a 200), which
+		// used to be swallowed by the committed stream. The peek returns it as
+		// an UpstreamError while the response is still uncommitted.
+		peeked, perr := proxy.PeekStreamError(upstream)
+		if perr != nil {
+			return perr
+		}
+		upstream = peeked
+
 		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 		defer hw.Close()
 
@@ -518,10 +528,10 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				}
 			})
 
-			// Headers are already committed on the stream path, so a pure
-			// upstream error (no content at all) can only be signaled by
-			// closing without useful chunks; the non-stream path below
-			// returns a proper UpstreamError instead.
+			// A leading upstream error was already converted to an
+			// UpstreamError by the peek above. What reaches here with no
+			// content is a mid-stream stall or a truncated body: headers are
+			// committed, so the only signal left is a clean finish.
 			if !doneSeen {
 				return writeSSEFinish(hw, flusher, req, state, responseID, created)
 			}
