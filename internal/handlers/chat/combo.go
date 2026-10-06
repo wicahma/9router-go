@@ -516,7 +516,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				} else {
 					usagetracker.SetFlightTarget(comboReqID, modelInfo.Model, modelInfo.Provider, "")
 					usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseDB, "connection lookup")
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					conn, cData, err := h.GetBestConnectionPerModelCooldown(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -749,7 +749,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				} else {
 					usagetracker.SetFlightTarget(comboReqID, modelInfo.Model, modelInfo.Provider, "")
 					usagetracker.SetFlightPhase(comboReqID, usagetracker.PhaseDB, "connection lookup")
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					conn, cData, err := h.GetBestConnectionPerModelCooldown(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -934,8 +934,15 @@ func comboRetryAfter(retryAfter string) time.Duration {
 // requests. The combo path iterates tryForwardWithConnection directly and used
 // to skip this entirely — so a 429 never set a lock, every request re-tried all
 // combo models on the same account, and Google rate-limited it forever. The
-// connection is also appended to excludeIDs so the remaining combo models in
-// this request skip it instead of re-hitting the same quota bucket.
+// account also gets its cross-request cooldown (applyErrorState parity) so the
+// selector skips it before spending a request.
+//
+// The in-request exclusion is scoped: only 401/403 (the credential itself is
+// dead, every model on the account will fail) exclude the connection for the
+// remaining combo models. A 429/5xx locks the failed model only — rate limits
+// metered per model are the norm, and excluding the whole connection made a
+// combo like [A/m1, B/m2, B/m3] give up before ever trying m3, surfacing m2's
+// 429 to the client as if the combo were exhausted.
 func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
 	if connID == "" {
 		return
@@ -946,6 +953,10 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	// 409/422/...) must not lock the account — the bug is in the request,
 	// not the credential. Only lock when ShouldFallback is set.
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
+		// Still exclude the connection for this request so a deterministic
+		// 4xx on one account lets the next connection for this model try,
+		// instead of the inner loop re-picking the same one ten times.
+		*excludeIDs = append(*excludeIDs, connID)
 		return
 	}
 	cooldownSec := int((cls.CooldownMs + 999) / 1000)
@@ -960,12 +971,19 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 		_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, cls.NewBackoffLevel)
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
-	// can skip this account before spending a request (upstream applyErrorState).
+	// can skip this account before spending a request on later requests
+	// (upstream applyErrorState). Within this request the cooldown is not
+	// what stops the failed model from re-firing — its own per-model lock is.
 	until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
 	if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
 		log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
 	}
-	*excludeIDs = append(*excludeIDs, connID)
+	// Auth failures are account-wide: exclude the connection for the rest of
+	// the combo. Quota/transient failures are model-scoped here (see the
+	// GetBestConnectionPerModelCooldown contract).
+	if ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusForbidden {
+		*excludeIDs = append(*excludeIDs, connID)
+	}
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 }
 

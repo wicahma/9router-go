@@ -175,7 +175,7 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 	}
 }
 
-func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T) {
+func TestHandleMessagesComboFallback_429TriesNextModelAndLocksBoth(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -196,8 +196,11 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	// Two models on the SAME provider+connection: after the first 429, the
-	// connection is locked AND excluded so the second model must not re-hit it.
+	// Two models on the SAME provider+connection. A 429 on the first is a
+	// per-model quota signal: the second model still gets its one attempt (a
+	// blanket exclusion here is what kept a 3-model combo from ever reaching
+	// its third model), and each failed model ends up locked so no later
+	// request hammers the same quota bucket.
 	comboModels := []string{"deepseek/deepseek-chat", "deepseek/deepseek-reasoner"}
 	modelsJSON, _ := json.Marshal(comboModels)
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('combo-1', 'combo-test', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(modelsJSON)); err != nil {
@@ -212,8 +215,8 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 	rec := httptest.NewRecorder()
 	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-test", 0)
 
-	if got := hits.Load(); got != 1 {
-		t.Errorf("expected 1 upstream hit (second combo model excluded), got %d", got)
+	if got := hits.Load(); got != 2 {
+		t.Errorf("expected 2 upstream hits (one per combo model), got %d", got)
 	}
 
 	locked, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-chat")
@@ -222,6 +225,16 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 	}
 	if !locked {
 		t.Error("expected conn-combo locked for deepseek-chat after 429")
+	}
+	lockedReasoner, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-reasoner")
+	if lerr != nil {
+		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
+	}
+	if !lockedReasoner {
+		t.Error("expected conn-combo locked for deepseek-reasoner after its own 429")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 to the client after both models failed, got %d", rec.Code)
 	}
 }
 

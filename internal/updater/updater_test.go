@@ -7,9 +7,12 @@ import (
 	"compress/gzip"
 	"context"
 	json "encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -84,7 +87,7 @@ func TestCheckUpdate_Manifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		manifest := map[string]any{
 			"latestVersion": "2.0.0",
-			"downloadUrl":   "https://example.com/downloads/9router-go",
+			"downloadUrl":   "https://github.com/wicahma/9router-go/releases/download/v2.0.0/9router-go.tar.gz",
 			"releaseNotes":  "Major release 2.0.0",
 			"sha256":        "abcdef123456",
 		}
@@ -107,7 +110,7 @@ func TestCheckUpdate_Manifest(t *testing.T) {
 	if info.LatestVersion != "2.0.0" {
 		t.Errorf("expected latestVersion 2.0.0, got %s", info.LatestVersion)
 	}
-	if info.DownloadURL != "https://example.com/downloads/9router-go" {
+	if info.DownloadURL != "https://github.com/wicahma/9router-go/releases/download/v2.0.0/9router-go.tar.gz" {
 		t.Errorf("expected downloadUrl, got %s", info.DownloadURL)
 	}
 }
@@ -218,10 +221,7 @@ func TestExtractExecutableBytes_Zip(t *testing.T) {
 }
 
 func TestMatchReleaseAsset(t *testing.T) {
-	assets := []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	}{
+	assets := []releaseAsset{
 		{Name: "9router-go_linux_amd64.tar.gz", BrowserDownloadURL: "url-linux-amd64"},
 		{Name: "9router-go_darwin_arm64.tar.gz", BrowserDownloadURL: "url-darwin-arm64"},
 		{Name: "9router-go_windows_amd64.zip", BrowserDownloadURL: "url-windows-amd64"},
@@ -236,6 +236,102 @@ func TestMatchReleaseAsset(t *testing.T) {
 	}
 	if url := matchReleaseAsset(assets, "windows", "amd64"); url != "url-windows-amd64" {
 		t.Errorf("expected url-windows-amd64, got %s", url)
+	}
+}
+
+func TestIsDirectBinaryURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-linux-arm64", true},
+		{"https://example.com/9router-go-windows-amd64.exe", true},
+		{"https://example.com/bundle.tar.gz", true},
+		{"https://mirror.example.com/downloads/9router-go", true},
+		{"https://github.com/wicahma/9router-go/releases/latest", false},
+		{"https://github.com/wicahma/9router-go/releases", false},
+		{"https://github.com/wicahma/9router-go/releases/tag/v1.9.5", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isDirectBinaryURL(tc.url); got != tc.want {
+			t.Errorf("isDirectBinaryURL(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+// The manifest once shipped the /releases/latest page as its downloadUrl.
+// Downloading that page yields HTML, which the old updater wrote over the
+// running binary — the update "succeeded" but nothing changed and the install
+// was bricked. The check must repair the URL from the GitHub Releases API
+// before anything is fetched.
+func TestCheckUpdate_RepairsNonAssetManifestURL(t *testing.T) {
+	assetURL := ""
+	var gh *httptest.Server
+	gh = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/wicahma/9router-go/releases/latest":
+			assetURL = gh.URL + "/downloads/v2.0.0/9router-go-" + runtime.GOOS + "-" + runtime.GOARCH
+			resp := map[string]any{
+				"tag_name": "v2.0.0",
+				"assets": []map[string]any{
+					{"name": assetNameFromURL(assetURL), "browser_download_url": assetURL},
+					{"name": "SHA256SUMS.txt", "browser_download_url": gh.URL + "/downloads/v2.0.0/SHA256SUMS.txt"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, resp)
+		case "/downloads/v2.0.0/SHA256SUMS.txt":
+			sum := strings.Repeat("ab", 32)
+			fmt.Fprintf(w, "%s  %s\n", sum, assetNameFromURL(assetURL))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"latestVersion": "2.0.0",
+			"downloadUrl":   "https://github.com/wicahma/9router-go/releases/latest",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.MarshalWrite(w, resp)
+	}))
+	defer manifest.Close()
+
+	os.Setenv("UPDATE_URL", manifest.URL)
+	defer os.Unsetenv("UPDATE_URL")
+	oldBase := githubReleasesAPIBase
+	githubReleasesAPIBase = gh.URL
+	t.Cleanup(func() { githubReleasesAPIBase = oldBase })
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate failed: %v", err)
+	}
+	if !strings.HasSuffix(info.DownloadURL, "/9router-go-"+runtime.GOOS+"-"+runtime.GOARCH) {
+		t.Errorf("expected the repaired release asset URL, got %q", info.DownloadURL)
+	}
+	if info.SHA256 != strings.Repeat("ab", 32) {
+		t.Errorf("expected the SHA256SUMS.txt checksum for the asset, got %q", info.SHA256)
+	}
+}
+
+// PerformSelfUpdate must refuse to replace the running binary with a payload
+// that cannot execute on this platform (an HTML page, a wrong-OS asset).
+func TestPerformSelfUpdate_RefusesNonExecutable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<!DOCTYPE html><html><body>releases</body></html>"))
+	}))
+	defer srv.Close()
+
+	err := PerformSelfUpdate(srv.URL, "")
+	if err == nil {
+		t.Fatal("expected PerformSelfUpdate to reject a non-executable payload")
+	}
+	if !strings.Contains(err.Error(), "not an executable") {
+		t.Fatalf("expected a not-an-executable error, got %v", err)
 	}
 }
 

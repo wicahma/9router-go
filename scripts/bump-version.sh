@@ -32,6 +32,20 @@ import json, pathlib
 p = pathlib.Path('version.json')
 data = json.loads(p.read_text())
 data['latestVersion'] = '$NEW_VER'
+# Release asset URLs must always point at the tagged binaries. A URL that
+# resolves to an HTML page (e.g. /releases/latest) gets written over the
+# running binary by older updaters, so this map is the only safe source.
+assets = {
+    'linux_amd64': '9router-go-linux-amd64',
+    'linux_arm64': '9router-go-linux-arm64',
+    'darwin_amd64': '9router-go-darwin-amd64',
+    'darwin_arm64': '9router-go-darwin-arm64',
+    'windows_amd64': '9router-go-windows-amd64.exe',
+}
+data['downloadUrls'] = {
+    k: f'https://github.com/wicahma/9router-go/releases/download/v$NEW_VER/{name}'
+    for k, name in assets.items()
+}
 # keep releaseNotes generic, user can edit
 p.write_text(json.dumps(data, indent=2) + '\n')
 "

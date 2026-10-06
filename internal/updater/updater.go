@@ -38,6 +38,10 @@ var DefaultUpdateURL = constants.RepoRawURL + "/version.json"
 // DefaultGitHubRepo is the repository for GitHub Releases API fallback.
 var DefaultGitHubRepo = constants.RepoSlug
 
+// githubReleasesAPIBase is the GitHub API root. A var so tests can point it
+// at a local server.
+var githubReleasesAPIBase = "https://api.github.com"
+
 // DefaultCheckInterval is the periodic background update check interval (6 hours).
 const DefaultCheckInterval = 6 * time.Hour
 
@@ -191,6 +195,20 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	// 1. Try manifest URL first
 	info, err := checkManifest(ctx, updateURL)
 	if err == nil && info != nil {
+		// A manifest downloadUrl that is not a direct binary asset (the
+		// /releases/latest page once shipped as one) gets downloaded and
+		// written over the running binary verbatim, so repair it from the
+		// GitHub Releases API, which knows the per-platform asset.
+		if !isDirectBinaryURL(info.DownloadURL) {
+			repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
+			ghURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubReleasesAPIBase, repo)
+			if ghInfo, ghErr := checkGitHubReleases(ctx, ghURL); ghErr == nil && isDirectBinaryURL(ghInfo.DownloadURL) {
+				log.Warn("updater", "manifest download URL is not a release asset, using GitHub Releases instead",
+					"manifestURL", info.DownloadURL, "assetURL", ghInfo.DownloadURL)
+				info.DownloadURL = ghInfo.DownloadURL
+				info.SHA256 = ghInfo.SHA256
+			}
+		}
 		cacheMu.Lock()
 		cachedInfo = info
 		lastCheckTime = time.Now()
@@ -200,7 +218,7 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 
 	// 2. Fallback to GitHub Releases API
 	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	ghURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubReleasesAPIBase, repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
 	ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
@@ -291,6 +309,12 @@ func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
 	}, nil
 }
 
+// releaseAsset is one downloadable file attached to a GitHub release.
+type releaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
 func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -311,13 +335,10 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 	}
 
 	var release struct {
-		TagName string `json:"tag_name"`
-		Name    string `json:"name"`
-		Body    string `json:"body"`
-		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+		TagName string         `json:"tag_name"`
+		Name    string         `json:"name"`
+		Body    string         `json:"body"`
+		Assets  []releaseAsset `json:"assets"`
 	}
 
 	if err := json.UnmarshalRead(resp.Body, &release); err != nil {
@@ -329,6 +350,12 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 	hasUpdate := CompareVersions(latestVersion, current) > 0
 
 	downloadURL := matchReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
+	// Verify the download against the release's SHA256SUMS.txt when both the
+	// asset and the checksum file are present.
+	var sha256Sum string
+	if downloadURL != "" {
+		sha256Sum = fetchReleaseChecksum(ctx, release.Assets, assetNameFromURL(downloadURL))
+	}
 
 	return &UpdateInfo{
 		CurrentVersion: CurrentVersion,
@@ -340,6 +367,7 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
 		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+		SHA256:         sha256Sum,
 		Source:         "github_releases",
 	}, nil
 }
@@ -359,10 +387,7 @@ func archAliases(archKey string) []string {
 }
 
 // matchReleaseAsset finds the best matching asset URL for target OS and Architecture.
-func matchReleaseAsset(assets []struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}, targetOS, targetArch string) string {
+func matchReleaseAsset(assets []releaseAsset, targetOS, targetArch string) string {
 	osKey := strings.ToLower(targetOS)
 	archNames := archAliases(targetArch)
 
@@ -388,6 +413,90 @@ func matchReleaseAsset(assets []struct {
 		}
 	}
 	return ""
+}
+
+// isDirectBinaryURL reports whether the URL points at a downloadable release
+// asset rather than an HTML page. The manifest once carried the
+// /releases/latest page as downloadUrl; downloading it produced an HTML file
+// that PerformSelfUpdate swapped over the running binary, leaving the install
+// unable to execute and later update attempts failing on the missing path.
+// Page-shaped URLs are rejected; anything else (release assets, mirrors) is
+// allowed through.
+func isDirectBinaryURL(u string) bool {
+	if u == "" {
+		return false
+	}
+	lower := strings.ToLower(u)
+	if strings.HasSuffix(lower, "/latest") || strings.HasSuffix(lower, "/releases") || strings.Contains(lower, "/releases/tag/") {
+		return false
+	}
+	return true
+}
+
+// assetNameFromURL returns the file name a release asset URL points at.
+func assetNameFromURL(u string) string {
+	if i := strings.LastIndexByte(u, '/'); i >= 0 {
+		return u[i+1:]
+	}
+	return u
+}
+
+// fetchReleaseChecksum downloads the release's SHA256SUMS.txt and returns the
+// checksum recorded for assetName. Empty when the checksum file or the entry
+// is missing — verification is then skipped rather than failed.
+func fetchReleaseChecksum(ctx context.Context, assets []releaseAsset, assetName string) string {
+	if assetName == "" {
+		return ""
+	}
+	var sumsURL string
+	for _, a := range assets {
+		if strings.EqualFold(a.Name, "SHA256SUMS.txt") {
+			sumsURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	if sumsURL == "" {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
+	if err != nil {
+		return ""
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 2 && strings.EqualFold(strings.TrimPrefix(fields[1], "*"), assetName) {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+// isExecutableForPlatform checks the magic bytes against the platform the
+// updater is running on. It is the last line of defense before an update
+// replaces the running binary: a wrong-platform asset (or an HTML page) must
+// abort the update, not leave an install that cannot start.
+func isExecutableForPlatform(data []byte) bool {
+	switch runtime.GOOS {
+	case "windows":
+		return isPE(data)
+	case "darwin":
+		return isMachO(data)
+	default:
+		return isELF(data)
+	}
 }
 
 // PerformSelfUpdate downloads, decompresses (tar.gz/zip if needed), verifies, and safely replaces the active binary.
@@ -439,6 +548,13 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	binaryBytes, err := extractExecutableBytes(rawBytes, downloadURL)
 	if err != nil {
 		return fmt.Errorf("extract executable: %w", err)
+	}
+
+	// Refuse to swap in anything that could not execute on this platform: a
+	// wrong-OS asset or an HTML page must abort here, not brick the install
+	// and make every later update attempt fail on the missing binary path.
+	if !isExecutableForPlatform(binaryBytes) {
+		return fmt.Errorf("downloaded asset is not an executable for %s/%s (%d bytes) — refusing to replace the running binary", runtime.GOOS, runtime.GOARCH, len(binaryBytes))
 	}
 
 	// Verify SHA256 checksum when the manifest provides one

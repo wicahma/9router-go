@@ -1,5 +1,11 @@
 {
-  "downloadUrl": "https://github.com/wicahma/9router-go/releases/latest",
+  "downloadUrls": {
+    "linux_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-linux-amd64",
+    "linux_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-linux-arm64",
+    "darwin_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-darwin-amd64",
+    "darwin_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-darwin-arm64",
+    "windows_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-windows-amd64.exe"
+  },
   "latestVersion": "1.9.5",
   "releaseNotes": "v1.9.5: A streaming error sent under HTTP 200 now fails over instead of silently ending the fallback \u2014 the first upstream line is peeked before the SSE headers commit, so a quota/key/overload rejection reaches the provider below exactly as a non-200 already did. Also ships zero-downtime self-update and per-model input context ceilings."
 }

@@ -11,6 +11,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -59,10 +60,58 @@ func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
 // GetBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
 func (h *ChatHandler) GetBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnection(provider, connectionID, excludeIDs, model)
+	return h.getBestConnectionForModel(provider, connectionID, excludeIDs, model, false)
 }
 
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionForModel(provider, connectionID, excludeIDs, model, false)
+}
+
+// GetBestConnectionPerModelCooldown is the combo-failover lookup. A 429
+// cooldown written for one model must not hide the account from a different
+// model in the same combo: rate limits are metered per model on several
+// plans (per-model RPM), so the model below in the combo gets its one
+// attempt even though an earlier model just got rejected. Auth cooldowns
+// (401/403) and a model that is itself locked stay account-wide. See
+// comboLockRetryable for the write side of this contract.
+func (h *ChatHandler) GetBestConnectionPerModelCooldown(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionForModel(provider, connectionID, excludeIDs, model, true)
+}
+
+// connectionModelLocked reports whether the connection carries an active
+// per-model lock for model (canonical alias or the raw id).
+func (h *ChatHandler) connectionModelLocked(connID, provider, model string) bool {
+	if model == "" {
+		return false
+	}
+	lockKey := canonicalLockModel(provider, model)
+	if locked, _ := h.Repo.IsConnectionModelLocked(connID, lockKey); locked {
+		return true
+	}
+	if lockKey != model {
+		if locked, _ := h.Repo.IsConnectionModelLocked(connID, model); locked {
+			return true
+		}
+	}
+	return false
+}
+
+// cooldownHidesModel decides whether an account cooldown must skip this
+// connection for the requested model. With cooldownPerModel the skip is
+// lifted for a 429-origin cooldown when the model itself carries no lock —
+// the one attempt the combo owes the next model on this account.
+func (h *ChatHandler) cooldownHidesModel(c *models.ProviderConnection, provider, model string, cooldownPerModel bool) bool {
+	until, status, ok := db.ConnectionCooldownStatus(c.Data)
+	if !ok || !until.After(time.Now()) {
+		return false
+	}
+	if cooldownPerModel && status == http.StatusTooManyRequests && model != "" && !h.connectionModelLocked(c.ID, provider, model) {
+		return false
+	}
+	return true
+}
+
+func (h *ChatHandler) getBestConnectionForModel(provider string, connectionID string, excludeIDs []string, model string, cooldownPerModel bool) (*models.ProviderConnection, *ConnectionData, error) {
 	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
@@ -89,8 +138,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		// A pin must not force the request onto a known-dead account: a
 		// cooling pin falls through to the rotation below, matching how
 		// upstream resolves the pin inside its availability filter.
-		if until, ok := db.ConnectionCooldownUntil(conn.Data); ok && until.After(time.Now()) {
-			log.Warn("health", "pinned connection in cooldown, falling through", "conn", connectionID, "reset", until.UTC().Format(time.RFC3339))
+		if h.cooldownHidesModel(conn, provider, model, cooldownPerModel) {
+			log.Warn("health", "pinned connection in cooldown, falling through", "conn", connectionID, "reset", func() string {
+				if until, _, ok := db.ConnectionCooldownStatus(conn.Data); ok {
+					return until.UTC().Format(time.RFC3339)
+				}
+				return ""
+			}())
 			connectionID = ""
 			conn = nil
 		}
@@ -161,7 +215,6 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 		conn = nil
 		var cooldownUntil time.Time
-		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
 				continue
@@ -171,23 +224,19 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			// the request does not have to be spent on a call that is going
 			// to fail — round-robin otherwise kept handing out dead
 			// accounts until a live 429/401 locked them. Upstream parity:
-			// filterAvailableAccounts.
-			if until, ok := db.ConnectionCooldownUntil(c.Data); ok && until.After(now) {
-				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+			// filterAvailableAccounts. In the combo lookups a 429 cooldown
+			// lifts for a model that carries no lock of its own — a per-model
+			// rate limit says nothing about the account's other models.
+			if h.cooldownHidesModel(c, provider, model, cooldownPerModel) {
+				if until, _, ok := db.ConnectionCooldownStatus(c.Data); ok && (cooldownUntil.IsZero() || until.Before(cooldownUntil)) {
 					cooldownUntil = until
 				}
 				continue
 			}
 			// Skip connections that have an active per-connection model lock
 			if model != "" {
-				lockKey := canonicalLockModel(provider, model)
-				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
+				if h.connectionModelLocked(c.ID, provider, model) {
 					continue
-				}
-				if lockKey != model {
-					if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
-						continue
-					}
 				}
 				if provider == "antigravity" && IsAntigravityModelBlocked(c.ID, model) {
 					continue

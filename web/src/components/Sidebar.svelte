@@ -179,6 +179,20 @@
     onClose?.()
   }
 
+  // position:fixed overlays must not render under the sidebar wrapper in
+  // App.svelte: its responsive translate utilities leave a non-none `translate`
+  // on that element even on desktop, which makes it the containing block for
+  // fixed descendants and clips the modal to the 18rem sidebar box. Reparent
+  // the overlay to <body>, where fixed positioning is viewport-relative.
+  function portalToBody(node: HTMLElement) {
+    document.body.appendChild(node)
+    return {
+      destroy() {
+        node.remove()
+      },
+    }
+  }
+
   const mainNavLinks = [
     { tab: 'endpoint' as ActiveTab, label: 'Endpoint & Key', icon: 'api' },
     { tab: 'connections' as ActiveTab, label: 'Providers', icon: 'dns' },
@@ -437,7 +451,7 @@
 
 <!-- Update Modal -->
 {#if showUpdateModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div use:portalToBody class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div
       class="absolute inset-0 bg-black/50 backdrop-blur-sm"
       onclick={() => (showUpdateModal = false)}
@@ -550,7 +564,7 @@
 
 <!-- Disconnected Overlay -->
 {#if isDisconnected}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+  <div use:portalToBody class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
     <div class="text-center p-8 bg-surface border border-border-subtle rounded-2xl shadow-2xl max-w-sm w-full animate-in fade-in">
       <div class="flex items-center justify-center size-14 rounded-full bg-red-500/20 text-red-500 mx-auto mb-4">
         <span class="material-symbols-outlined text-[28px]">power_off</span>
