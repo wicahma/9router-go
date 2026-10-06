@@ -1,5 +1,5 @@
 {
   "downloadUrl": "https://github.com/wicahma/9router-go/releases/latest",
-  "latestVersion": "1.9.4",
-  "releaseNotes": "v1.9.4: Fresh installs bootstrap their own database schema \u2014 the first-login password rotation no longer fails with 'no such table: settings' on an empty data directory (EnsureCoreSchema ported from upstream), covered by an end-to-end first-run test."
+  "latestVersion": "1.9.5",
+  "releaseNotes": "v1.9.5: A streaming error sent under HTTP 200 now fails over instead of silently ending the fallback \u2014 the first upstream line is peeked before the SSE headers commit, so a quota/key/overload rejection reaches the provider below exactly as a non-200 already did. Also ships zero-downtime self-update and per-model input context ceilings."
 }
