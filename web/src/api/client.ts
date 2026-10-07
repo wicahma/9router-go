@@ -545,22 +545,25 @@ export const api = {
     request<{ success: boolean }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-  /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
+/** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
     request<{
       provider: string;
       connectionId: string;
-      models: Array<{
-        id?: string;
-        name?: string;
-        model?: string;
-        inputCostPer1M?: number;
-        outputCostPer1M?: number;
-        cacheCostPer1M?: number;
-        contextWindow?: number;
-        maxOutputTokens?: number;
-      } | string>
-    >(
+      models: Array<(
+        | {
+            id?: string;
+            name?: string;
+            model?: string;
+            inputCostPer1M?: number;
+            outputCostPer1M?: number;
+            cacheCostPer1M?: number;
+            contextWindow?: number;
+            maxOutputTokens?: number;
+          }
+        | string
+      )>
+    }>(
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 
