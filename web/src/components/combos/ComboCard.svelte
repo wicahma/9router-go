@@ -24,6 +24,7 @@
   interface Props {
     combo: Combo
     strategyInfo?: ComboStrategyInfo
+    hasDisabledModels?: boolean
     copiedId?: string | null
     onSetStrategy: (combo: Combo, strategy: string) => void
     onOpenJudgePicker: (combo: Combo) => void
@@ -36,6 +37,7 @@
   let {
     combo,
     strategyInfo = {},
+    hasDisabledModels = false,
     copiedId = null,
     onSetStrategy,
     onOpenJudgePicker,
@@ -51,7 +53,7 @@
   let isFusion = $derived(currentStrategy === 'fusion')
 </script>
 
-<Card padding="sm" class="group">
+<Card padding="sm" class={hasDisabledModels ? 'group opacity-50' : 'group'}>
   <div class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <!-- Left: Icon, Name, Model Badges & Fusion Judge -->
     <div class="flex min-w-0 flex-1 items-start gap-3 sm:items-center">

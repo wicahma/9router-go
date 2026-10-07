@@ -190,10 +190,41 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	if err := walk(models); err != nil {
 		return nil, err
 	}
+	out = h.pruneDisabledModels(out)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("combo has no valid leaf models")
 	}
 	return out, nil
+}
+
+func (h *ChatHandler) pruneDisabledModels(models []string) []string {
+	disabled := h.disabledModelIndex()
+	if len(disabled) == 0 {
+		return models
+	}
+	out := make([]string, 0, len(models))
+	for _, entry := range models {
+		if h.entryDisabled(entry, disabled) {
+			log.Warn("combo", "skip disabled model", "entry", entry)
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func (h *ChatHandler) entryDisabled(entry string, disabled map[string]map[string]bool) bool {
+	if info := h.resolveModelEntry(entry); info != nil {
+		if disabled[info.Provider][info.Model] {
+			return true
+		}
+	}
+	if prefix, model, ok := strings.Cut(entry, "/"); ok {
+		if disabled[prefix][model] {
+			return true
+		}
+	}
+	return false
 }
 
 // stripModelContextMarker strips trailing [1m] marker that Claude Code appends for 1M context beta.

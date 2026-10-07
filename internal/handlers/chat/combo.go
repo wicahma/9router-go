@@ -363,6 +363,7 @@ func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, combo
 // index advances only on a new turn (newTurn=true), so a mid-turn tool-use
 // sequence stays on the same provider/model.
 func (h *ChatHandler) applyComboStrategy(strategy string, models []string, comboName string, stickyLimit int, newTurn bool) []string {
+	models = h.pruneDisabledModels(models)
 	if len(models) <= 1 {
 		return models
 	}

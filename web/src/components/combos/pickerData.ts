@@ -194,9 +194,17 @@ export function resolveModelPickerGroups(
     const seen = new Set(nodeModels.map((m) => m.value))
     const mergedModels = [...nodeModels, ...registeredCustom.filter((m) => !seen.has(m.value))]
 
+    // Same disabled strip-out as catalog loop above (keyed by node id OR display prefix).
+    const nodeDisabled = new Set([
+      ...((extras.disabledModels || {})[node.id] || []),
+      ...((extras.disabledModels || {})[nodePrefix] || []),
+    ])
+    const visibleNodeModels =
+      nodeDisabled.size > 0 ? mergedModels.filter((m) => !nodeDisabled.has(m.id)) : mergedModels
+
     const modelsToShow =
-      mergedModels.length > 0
-        ? mergedModels
+      visibleNodeModels.length > 0
+        ? visibleNodeModels
         : [
             {
               id: `__placeholder__${node.id}`,

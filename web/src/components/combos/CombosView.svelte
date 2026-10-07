@@ -14,6 +14,7 @@
   } from './types'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
+  import { parseDisabledModelsMap } from '../../lib/customModels'
   import ComboCard from './ComboCard.svelte'
   import CombosHeader from './CombosHeader.svelte'
   import CreateComboModal from './CreateComboModal.svelte'
@@ -45,12 +46,26 @@
   }
   let llmCombos = $derived(combos.filter(isLlmCombo))
 
+  function comboHasDisabled(combo: Combo): boolean {
+    return getComboModels(combo).some((entry) => {
+      const slash = entry.indexOf('/')
+      if (slash < 0) return false
+      const prefix = entry.slice(0, slash)
+      const model = entry.slice(slash + 1)
+      return (
+        (disabledModels[prefix] || []).includes(model) ||
+        Object.values(disabledModels).some((ids) => ids.includes(entry))
+      )
+    })
+  }
+
   let comboStrategies = $state<Record<string, ComboStrategyInfo>>({})
   let capacityAdapter = $state<CapacityAdapterState>({
     vision: { enabled: true, roundRobin: false, models: ['ag/gemini-3.8-flash-high'] },
     audioInput: { enabled: true, roundRobin: false, models: [] },
   })
   let copiedId = $state<string | null>(null)
+  let disabledModels = $state<Record<string, string[]>>({})
   let modelRps = $state<Record<string, number>>({})
   let modelContextLimit = $state<Record<string, number>>({})
 
@@ -80,6 +95,11 @@
       modelContextLimit = normalizeModelLimits(s?.modelContextLimit)
     } catch (e) {
       console.error('Failed to load settings:', e)
+    }
+    try {
+      disabledModels = parseDisabledModelsMap(await api.getDisabledModels())
+    } catch {
+      disabledModels = {}
     }
   }
 
@@ -287,6 +307,7 @@
         <ComboCard
           {combo}
           strategyInfo={comboStrategies[combo.name]}
+          hasDisabledModels={comboHasDisabled(combo)}
           {copiedId}
           onSetStrategy={handleSetStrategy}
           onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}

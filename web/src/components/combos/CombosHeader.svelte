@@ -25,6 +25,14 @@
         synthesizes one answer. Best quality, but costs the most: every request bills all panel models + the judge
         (N+1 calls)
       </li>
+      <li>
+        <span class="font-medium text-text-main">Sticky</span> — pins a model for N consecutive requests, then
+        rotates. Same-model follow-ups keep cache warm; lower latency than round robin
+      </li>
+      <li>
+        <span class="font-medium text-text-main">Capacity</span> — prefers models with free-tier headroom, falling
+        back in order when quota is exhausted. Disabled models are skipped in every strategy
+      </li>
     </ul>
   </div>
   <div class="flex w-full flex-col gap-2 sm:w-auto sm:items-stretch">
