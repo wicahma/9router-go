@@ -209,6 +209,7 @@
                   value={model.value}
                   isAdded={addedModelValues.includes(model.value)}
                   caps={model.caps}
+                  contextSize={model.contextSize}
                   onClick={() => handleToggle(model.value)}
                 />
               {/each}

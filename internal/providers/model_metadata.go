@@ -1,0 +1,81 @@
+package providers
+
+// ModelMetadata holds additional model information from the synced catalog
+type ModelMetadata struct {
+	InputCostPer1M  float64 `json:"inputCostPer1M,omitempty"`
+	OutputCostPer1M float64 `json:"outputCostPer1M,omitempty"`
+	CacheCostPer1M  float64 `json:"cacheCostPer1M,omitempty"`
+	ContextWindow   int     `json:"contextWindow,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+}
+
+// GetModelMetadata returns additional metadata for a model from the synced catalog
+func GetModelMetadata(provider, model string) (*ModelMetadata, error) {
+	if model == "" {
+		return nil, nil
+	}
+	base := baseModelID(model)
+
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	if globalCatalog == nil {
+		return nil, nil
+	}
+
+	metadata := &ModelMetadata{}
+
+	// Get pricing information
+	if price, ok := globalCatalog.Prices[base]; ok {
+		metadata.InputCostPer1M = price.InputPer1M
+		metadata.OutputCostPer1M = price.OutputPer1M
+		// Cache cost is not directly available in the current schema, default to 0
+		metadata.CacheCostPer1M = 0.0
+	} else {
+		// Try provider-specific pricing with aliases
+		providerKeys := []string{strings.ToLower(provider)}
+		if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
+			providerKeys = append(providerKeys, mapped)
+		}
+		for _, key := range providerKeys {
+			if providerPrices, ok := globalCatalog.Prices[key]; ok {
+				if price, ok := providerPrices[base]; ok {
+					metadata.InputCostPer1M = price.InputPer1M
+					metadata.OutputCostPer1M = price.OutputPer1M
+					metadata.CacheCostPer1M = 0.0
+					break
+				}
+			}
+		}
+	}
+
+	// Get token limits
+	if limits, ok := globalCatalog.Providers[strings.ToLower(provider)]; ok {
+		if limit, ok := limits[base]; ok {
+			metadata.ContextWindow = limit.ContextWindow
+			metadata.MaxOutputTokens = limit.MaxOutput
+		}
+	} else {
+		// Try provider aliases for limits
+		providerKeys := []string{strings.ToLower(provider)}
+		if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
+			providerKeys = append(providerKeys, mapped)
+		}
+		for _, key := range providerKeys {
+			if limits, ok := globalCatalog.Providers[key]; ok {
+				if limit, ok := limits[base]; ok {
+					metadata.ContextWindow = limit.ContextWindow
+					metadata.MaxOutputTokens = limit.MaxOutput
+					break
+				}
+			}
+		}
+	}
+
+	// Only return metadata if we found some useful information
+	if metadata.ContextWindow == 0 && metadata.MaxOutputTokens == 0 &&
+		metadata.InputCostPer1M == 0 && metadata.OutputCostPer1M == 0 {
+		return nil, nil
+	}
+
+	return metadata, nil
+}

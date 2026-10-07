@@ -108,6 +108,12 @@
             {/if}
           </div>
         {/if}
+
+        {#if combo.contextSize}
+          <div class="mt-2 text-[11px] text-text-muted">
+            Context size: {combo.contextSize / 1000 | 0}k
+          </div>
+        {/if}
       </div>
     </div>
 

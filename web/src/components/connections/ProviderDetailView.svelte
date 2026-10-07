@@ -3328,6 +3328,25 @@
               </div>
               <span class="flex min-w-0 items-center text-[9px] gap-1 pl-1">
                 <span class="truncate text-[9px] italic text-text-muted/70">{model.name}</span>
+                {#if model.inputCostPer1M || model.outputCostPer1M || model.cacheCostPer1M || model.contextWindow || model.maxOutputTokens}
+                  <span class="block text-[8px] text-text-muted/60 mt-0.5">
+                    {#if model.inputCostPer1M}
+                      ${model.inputCostPer1M.toFixed(2)}/1M in
+                    {/if}
+                    {#if model.outputCostPer1M}
+                      ${model.outputCostPer1M.toFixed(2)}/1M out
+                    {/if}
+                    {#if model.cacheCostPer1M}
+                      ${model.cacheCostPer1M.toFixed(2)}/1M cache
+                    {/if}
+                    {#if model.contextWindow}
+                      {(model.contextWindow / 1000 | 0)}K ctx
+                    {/if}
+                    {#if model.maxOutputTokens}
+                      {(model.maxOutputTokens / 1000 | 0)}K max out
+                    {/if}
+                  </span>
+                {/if}
                 <span class="inline-flex items-center gap-0.5">
                   {#if rowCaps?.vision}
                     <div class="relative inline-flex group/tt">

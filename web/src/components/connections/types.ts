@@ -35,6 +35,12 @@ export interface ModelItem {
   isCustom?: boolean
   caps: { vision: boolean; reasoning: boolean }
   kind?: string
+  // Additional model metadata from synced catalog
+  inputCostPer1M?: number
+  outputCostPer1M?: number
+  cacheCostPer1M?: number
+  contextWindow?: number
+  maxOutputTokens?: number
 }
 
 export interface CustomModelData {

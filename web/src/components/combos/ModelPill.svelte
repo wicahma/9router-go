@@ -1,13 +1,14 @@
 <script lang="ts">
   import { Brain, Check, Eye } from 'lucide-svelte'
 
-  interface Props {
-    label: string
-    value: string
-    isAdded: boolean
-    caps?: { vision?: boolean; reasoning?: boolean }
-    onClick: () => void
-  }
+interface Props {
+  label: string
+  value: string
+  isAdded: boolean
+  caps?: { vision?: boolean; reasoning?: boolean }
+  contextSize?: number // in tokens
+  onClick: () => void
+}
 
   let { label, value, isAdded, caps, onClick }: Props = $props()
 </script>
@@ -26,6 +27,9 @@
     <Check class="w-3 h-3 shrink-0" />
   {/if}
   <span class="truncate">{label}</span>
+  {#if contextSize}
+    <span class="ml-1 text-[9px] text-text-muted/60">{contextSize / 1000 | 0}k</span>
+  {/if}
   {#if caps?.vision}
     <Eye
       class={isAdded ? 'w-3 h-3 text-white/90 shrink-0' : 'w-3 h-3 text-blue-500 shrink-0'}

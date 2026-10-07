@@ -24,6 +24,7 @@ export interface PickerModel {
   name: string
   value: string
   caps: { vision: boolean; audioInput: boolean; reasoning: boolean }
+  contextSize?: number // in tokens
 }
 
 export interface PickerGroup {
@@ -107,22 +108,26 @@ export function resolveModelPickerGroups(
     for (const m of rawModels || []) {
       if (!m.id || seenModelIds.has(m.id) || !isChatModel(m)) continue
       seenModelIds.add(m.id)
+      const contextSize = m.contextLength ?? 0
       models.push({
         id: m.id,
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id, m),
+        contextSize: contextSize > 0 ? contextSize : undefined,
       })
     }
 
     for (const m of visibleCustoms) {
       if (seenModelIds.has(m.id)) continue
       seenModelIds.add(m.id)
+      const contextSize = 0 // Custom models don't have context length in upstream data
       models.push({
         id: m.id,
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id),
+        contextSize: contextSize > 0 ? contextSize : undefined,
       })
     }
 
@@ -130,11 +135,20 @@ export function resolveModelPickerGroups(
       const modelId = (fullModel as string).replace(`${alias}/`, '')
       if (!modelId || seenModelIds.has(modelId)) continue
       seenModelIds.add(modelId)
+      // Find context length from rawModels or default to 0
+      let contextSize = 0
+      for (const rm of rawModels || []) {
+        if (rm.id === modelId) {
+          contextSize = rm.contextLength ?? 0
+          break
+        }
+      }
       models.push({
         id: modelId,
         name: aliasName,
         value: fullModel as string,
         caps: getModelCaps(modelId),
+        contextSize: contextSize > 0 ? contextSize : undefined,
       })
     }
 

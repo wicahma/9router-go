@@ -63,6 +63,7 @@ type Combo struct {
 	Kind      *string `json:"kind,omitempty"`
 	Models    string  `json:"models"`    // JSON string representing model selection details
 	Strategy  string  `json:"strategy"`  // routing strategy: "fallback", "round-robin", "capacity", "fusion"
+	ContextSize int     `json:"contextSize,omitempty"` // Minimum context length among models in combo
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
 }

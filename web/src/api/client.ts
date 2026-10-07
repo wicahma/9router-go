@@ -25,6 +25,7 @@ export interface Combo {
   kind: string | null
   models: string // JSON array string
   strategy: string
+  contextSize?: number // Minimum context length among models in combo
   createdAt: string
   updatedAt: string
 }
@@ -546,7 +547,20 @@ export const api = {
     }),
   /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
-    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
+    request<{
+      provider: string;
+      connectionId: string;
+      models: Array<{
+        id?: string;
+        name?: string;
+        model?: string;
+        inputCostPer1M?: number;
+        outputCostPer1M?: number;
+        cacheCostPer1M?: number;
+        contextWindow?: number;
+        maxOutputTokens?: number;
+      } | string>
+    >(
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 
