@@ -57,15 +57,16 @@ func setupTestDB(t *testing.T) (*db.Repo, func()) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);`,
-		`CREATE TABLE combos (
-			id TEXT PRIMARY KEY,
-			name TEXT UNIQUE NOT NULL,
-			kind TEXT,
-			models TEXT NOT NULL,
-			strategy TEXT DEFAULT 'fallback',
-			createdAt TEXT NOT NULL,
-			updatedAt TEXT NOT NULL
-		);`,
+`CREATE TABLE combos (
+				id TEXT PRIMARY KEY,
+				name TEXT UNIQUE NOT NULL,
+				kind TEXT,
+				models TEXT NOT NULL,
+				strategy TEXT NOT NULL DEFAULT 'fallback',
+				contextSize INTEGER DEFAULT 0,
+				createdAt TEXT NOT NULL,
+				updatedAt TEXT NOT NULL
+			);`,
 		`CREATE TABLE kv (
 			scope TEXT NOT NULL,
 			key TEXT NOT NULL,

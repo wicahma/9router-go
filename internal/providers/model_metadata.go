@@ -1,5 +1,9 @@
 package providers
 
+import (
+	"strings"
+)
+
 // ModelMetadata holds additional model information from the synced catalog
 type ModelMetadata struct {
 	InputCostPer1M  float64 `json:"inputCostPer1M,omitempty"`
@@ -24,50 +28,23 @@ func GetModelMetadata(provider, model string) (*ModelMetadata, error) {
 
 	metadata := &ModelMetadata{}
 
-	// Get pricing information
+	// Get pricing information (consensus price per model, not per provider)
 	if price, ok := globalCatalog.Prices[base]; ok {
 		metadata.InputCostPer1M = price.InputPer1M
 		metadata.OutputCostPer1M = price.OutputPer1M
 		// Cache cost is not directly available in the current schema, default to 0
 		metadata.CacheCostPer1M = 0.0
-	} else {
-		// Try provider-specific pricing with aliases
-		providerKeys := []string{strings.ToLower(provider)}
-		if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
-			providerKeys = append(providerKeys, mapped)
-		}
-		for _, key := range providerKeys {
-			if providerPrices, ok := globalCatalog.Prices[key]; ok {
-				if price, ok := providerPrices[base]; ok {
-					metadata.InputCostPer1M = price.InputPer1M
-					metadata.OutputCostPer1M = price.OutputPer1M
-					metadata.CacheCostPer1M = 0.0
-					break
-				}
-			}
-		}
 	}
 
-	// Get token limits
-	if limits, ok := globalCatalog.Providers[strings.ToLower(provider)]; ok {
+	// Get token limits (per provider)
+	providerKey := strings.ToLower(provider)
+	if mapped, ok := ProviderAliases[providerKey]; ok {
+		providerKey = mapped
+	}
+	if limits, ok := globalCatalog.Providers[providerKey]; ok {
 		if limit, ok := limits[base]; ok {
 			metadata.ContextWindow = limit.ContextWindow
 			metadata.MaxOutputTokens = limit.MaxOutput
-		}
-	} else {
-		// Try provider aliases for limits
-		providerKeys := []string{strings.ToLower(provider)}
-		if mapped, ok := ProviderAliases[strings.ToLower(provider)]; ok {
-			providerKeys = append(providerKeys, mapped)
-		}
-		for _, key := range providerKeys {
-			if limits, ok := globalCatalog.Providers[key]; ok {
-				if limit, ok := limits[base]; ok {
-					metadata.ContextWindow = limit.ContextWindow
-					metadata.MaxOutputTokens = limit.MaxOutput
-					break
-				}
-			}
 		}
 	}
 
