@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### 🎛 Model yang di-disable dilewati saat runtime, disingkirkan dari picker, kartu combo redup
+
+- **Combo tetap memilih model yang sudah dimatikan.** `disabledModelIndex` hanya memfilter di listing `/v1/models`; `flattenComboModels` dan `applyComboStrategy` mengembalikan daftar mentah, jadi fallback/round-robin/sticky/capacity/fusion tetap mengantarkan request ke model yang sudah dimatikan di halaman Connections.
+- **Prune di dua titik.** `pruneDisabledModels` dipanggil setelah `walk` di `flattenComboModels` (menutup `handleComboFallback`, `handleMessagesComboFallback`, dan `handleFusion`) serta di kepala `applyComboStrategy`. Bila semua leaf ter-disable, request gagal dengan `combo has no valid leaf models` alih-alih diam-diam memakai model mati. Direct-use `provider/model` tetap lolos — bypass eksplisit yang disengaja.
+- **Picker custom-node ikut memfilter.** Loop catalog sudah menyaring disabled; loop custom-node kini membaca `extras.disabledModels` dengan key `node.id` ATAU prefix display, sehingga pill model mati tidak muncul di modal pemilihan combo.
+- **Kartu combo yang berisi model mati redup** (`opacity-50`), dan legend header kini menyebut Sticky + Capacity di samping Fallback/RR/Fusion — dua mode yang tadinya tidak tercatat.
+
 ### 🔒 Proteksi pprof di balik `RequireAdminAuth` saat `PPROF_ENABLED=true` — issue #126
 
 Endpoint profiling `/debug/pprof/*` sebelumnya diregistrasikan langsung di root router tanpa auth group, sehingga saat flag `PPROF_ENABLED=true` diaktifkan, debug surface (heap, cmdline, cpu profile, goroutine trace) dapat diakses publik tanpa kredensial. Route pprof kini dipindahkan ke dalam admin tier (`middleware.RequireAdminAuth()`), mewajibkan admin session cookie atau local CLI token (`x-9r-cli-token`), serta menolak request publik maupun standard client API key (`401 Unauthorized`).

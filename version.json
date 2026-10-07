@@ -1,11 +1,11 @@
 {
   "downloadUrls": {
-    "linux_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.6/9router-go-linux-amd64",
-    "linux_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.6/9router-go-linux-arm64",
-    "darwin_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.6/9router-go-darwin-amd64",
-    "darwin_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.6/9router-go-darwin-arm64",
-    "windows_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.6/9router-go-windows-amd64.exe"
+    "linux_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.7/9router-go-linux-amd64",
+    "linux_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.7/9router-go-linux-arm64",
+    "darwin_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.7/9router-go-darwin-amd64",
+    "darwin_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.9.7/9router-go-darwin-arm64",
+    "windows_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.9.7/9router-go-windows-amd64.exe"
   },
-  "latestVersion": "1.9.6",
-  "releaseNotes": "v1.9.6: Self-update actually installs and restarts now \u2014 the manifest points at the real per-platform binaries instead of the releases page, the update aborts rather than overwriting the binary with a non-executable, and the restart no longer loses the binary path after the swap. A combo of three models across two providers reaches its third model instead of surfacing the second model's 429, and the dashboard update dialog is no longer clipped to the sidebar."
+  "latestVersion": "1.9.7",
+  "releaseNotes": "v1.9.7: A disabled model is now skipped at runtime instead of only hidden from the listing \u2014 combos strip it from the flattened leaf list and from every strategy (fallback, round-robin, sticky, capacity, fusion), the model picker drops it from custom nodes, and a combo card holding a disabled model fades out. Also gates /debug/pprof behind admin auth and sets http.Server connection limits (Slowloris)."
 }
