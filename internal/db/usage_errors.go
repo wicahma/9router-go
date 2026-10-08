@@ -151,14 +151,21 @@ func (r *Repo) GetAttemptDistributionSince(cutoff string) ([]AttemptBucket, erro
 }
 
 // topBuckets flattens a count map into descending order, capped at limit.
+// Ties are broken by key (ascending) for stable ordering.
 func topBuckets(counts map[string]int, limit int) []ErrorBucket {
 	out := make([]ErrorBucket, 0, len(counts))
 	for key, count := range counts {
 		out = append(out, ErrorBucket{Key: key, Count: count})
 	}
 	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].Count > out[j-1].Count; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
+		for j := i; j > 0; j-- {
+			if out[j].Count > out[j-1].Count {
+				out[j], out[j-1] = out[j-1], out[j]
+			} else if out[j].Count == out[j-1].Count && out[j].Key < out[j-1].Key {
+				out[j], out[j-1] = out[j-1], out[j]
+			} else {
+				break
+			}
 		}
 	}
 	if len(out) > limit {
