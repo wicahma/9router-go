@@ -53,8 +53,17 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		projectID = pid
 	}
 
+	// The dashboard stores the project ID under providerSpecificData while OAuth
+	// flows write it at the top level; honour a project saved on the connection
+	// before probing Google's onboarding RPCs.
+	if projectID == "" && (provider == "antigravity" || provider == "gemini-cli") {
+		projectID = h.connectionProjectID(connectionID)
+	}
+
+	userDefined := false
 	if (provider == "antigravity" || provider == "gemini-cli") && projectID == "" && !projectProbeCached(connectionID) {
-		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, h.Client, apiKey)
+		pid, authFailed, noProject, ud := fetchAntigravityProjectID(ctx, h.Client, apiKey)
+		userDefined = ud
 		switch {
 		case pid != "":
 			projectID = pid
@@ -70,15 +79,19 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 				if pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
-				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid2 != "" {
+				} else if pid2, _, _, _ := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
 				}
 			}
 		case noProject:
-			// Google definitively said this token has no project. Cache it so
-			// client retries stop re-probing the onboarding RPCs.
-			cacheProjectMissing(connectionID)
+			// A user-defined tier supplies its own project — nothing to onboard,
+			// so never poison the cache with a "missing project" verdict.
+			if userDefined {
+				log.Info("gemini", "antigravity needs a project ID", "conn", connectionID)
+			} else {
+				cacheProjectMissing(connectionID)
+			}
 		}
 	}
 
@@ -88,6 +101,9 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		// an error so the fallback chain moves on instead of burning a request on
 		// a dead lane.
 		if provider == "antigravity" {
+			if userDefined {
+				return fmt.Errorf("antigravity: this account needs a project ID — set it on the connection (providerSpecificData.projectId) or onboard at antigravity.google then re-login")
+			}
 			return fmt.Errorf("antigravity: no project ID — onboard the account in Antigravity (antigravity.google) then re-login")
 		}
 		// gemini-cli keeps its OpenAI-style fallback.
@@ -146,6 +162,23 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 // connection so later requests skip the onboarding RPCs entirely.
 func (h *ChatHandler) StoreAntigravityProjectID(connectionID, pid string) {
 	h.storeAntigravityProjectID(connectionID, pid)
+}
+
+// connectionProjectID reads a project ID saved on the connection, checking the
+// locations both the dashboard and the OAuth flows write to.
+func (h *ChatHandler) connectionProjectID(connectionID string) string {
+	if connectionID == "" {
+		return ""
+	}
+	var dataStr string
+	if err := h.Repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connectionID).Scan(&dataStr); err != nil {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(dataStr), &m); err != nil {
+		return ""
+	}
+	return AntigravityProjectID(m)
 }
 
 func (h *ChatHandler) storeAntigravityProjectID(connectionID, pid string) {

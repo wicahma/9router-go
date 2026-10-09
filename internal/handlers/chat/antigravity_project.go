@@ -110,21 +110,22 @@ func cacheProjectMissing(connID string) {
 //     must NOT trigger redundant refreshes.
 //   - noProject:   Google definitively said "no project for this token" (200
 //     with nothing mapped). Safe to cache so we stop hammering the RPCs.
+//
 // FetchAntigravityProjectID probes Google's onboarding RPCs for a projectID.
-func FetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject bool) {
+func FetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject, userDefined bool) {
 	return fetchAntigravityProjectID(ctx, client, accessToken)
 }
 
-func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject bool) {
+func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject, userDefined bool) {
 	payload, err := json.Marshal(map[string]any{"metadata": lcaMetadata})
 	if err != nil {
 		log.Error("antigravity", "loadCodeAssist marshal failed", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", loadCodeAssistURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Error("antigravity", "loadCodeAssist request failed", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -134,39 +135,39 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 	clientMetadata, err := json.Marshal(lcaMetadata)
 	if err != nil {
 		log.Error("antigravity", "marshal metadata failed", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 	req.Header.Set("Client-Metadata", string(clientMetadata))
 
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Error("antigravity", "loadCodeAssist HTTP error", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Error("antigravity", "loadCodeAssist read failed", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("antigravity", "loadCodeAssist returned", "status", resp.StatusCode)
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return "", true, false
+			return "", true, false, userDefined
 		}
-		return "", false, false // transient (429/5xx): DO NOT cache as "no project"
+		return "", false, false, userDefined // transient (429/5xx): DO NOT cache as "no project"
 	}
 
 	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
 		log.Error("antigravity", "unmarshal error", "error", err)
-		return "", false, false
+		return "", false, false, userDefined
 	}
 
 	pid = extractProjectID(data["cloudaicompanionProject"])
 	if pid != "" {
-		return pid, false, false
+		return pid, false, false, userDefined
 	}
 
 	// No project from loadCodeAssist — default tier exists, so this token has
@@ -179,6 +180,9 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		for _, t := range allowed {
 			if tm, ok := t.(map[string]any); ok {
 				if isDef, _ := tm["isDefault"].(bool); isDef {
+					if ud, _ := tm["userDefinedCloudaicompanionProject"].(bool); ud {
+						userDefined = true
+					}
 					if id, _ := tm["id"].(string); id != "" {
 						tierID = strings.TrimSpace(id)
 						break
@@ -188,17 +192,24 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		}
 	}
 
-	pid, authFailed, onboardNoProject := onboardAntigravityUser(ctx, client, accessToken, tierID)
-	return pid, authFailed, noProject || onboardNoProject
+	pid, authFailed, onboardNoProject := onboardAntigravityUser(ctx, client, accessToken, tierID, "")
+	return pid, authFailed, noProject || onboardNoProject, userDefined
 }
 
-func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID string) (pid string, authFailed, noProject bool) {
+func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID, projectID string) (pid string, authFailed, noProject bool) {
 	maxAttempts := getOnboardMaxAttempts()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		payload, err := json.Marshal(map[string]any{
+		payloadMap := map[string]any{
 			"tierId":   tierID,
 			"metadata": lcaMetadata,
-		})
+		}
+		// A user-defined tier requires the caller's own project in the payload;
+		// sending an empty cloudaicompanionProject is what yields the empty
+		// {"cloudaicompanionProject":{}} response.
+		if projectID != "" {
+			payloadMap["cloudaicompanionProject"] = projectID
+		}
+		payload, err := json.Marshal(payloadMap)
 		if err != nil {
 			log.Error("antigravity", "onboardUser marshal failed", "error", err)
 			if !probeBackoffWait(ctx, attempt) {
@@ -282,6 +293,30 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		}
 	}
 	return "", false, false
+}
+
+// AntigravityProjectID resolves the Antigravity project ID from a parsed
+// connection data map. The dashboard stores it under providerSpecificData,
+// OAuth flows store it at the top level; accept both spellings.
+func AntigravityProjectID(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	if s, ok := data["projectId"].(string); ok && s != "" {
+		return s
+	}
+	if s, ok := data["project_id"].(string); ok && s != "" {
+		return s
+	}
+	if psd, ok := data["providerSpecificData"].(map[string]any); ok {
+		if s, ok := psd["projectId"].(string); ok && s != "" {
+			return s
+		}
+		if s, ok := psd["project_id"].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func extractProjectID(val any) string {

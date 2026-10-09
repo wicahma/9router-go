@@ -22,6 +22,7 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 		wantPID     string
 		wantAuth    bool
 		wantNoProj  bool
+		wantUD      bool
 	}{
 		{
 			name:       "project found",
@@ -63,6 +64,15 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			loadAssist:  503,
 			wantNoProj:  false,
 		},
+		{
+			name:        "user-defined tier without project",
+			loadAssist:  200,
+			loadBody:    `{"allowedTiers":[{"id":"standard-tier","isDefault":true,"userDefinedCloudaicompanionProject":true}]}`,
+			onboard:     200,
+			onboardBody: `{"done":true,"response":{"cloudaicompanionProject":{}}}`,
+			wantNoProj:  true,
+			wantUD:      true,
+		},
 	}
 
 	oldDelay := antigravityProbeDelay
@@ -86,7 +96,7 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			loadCodeAssistURL, onboardUserURL = srv.URL+"/loadCodeAssist", srv.URL+"/onboardUser"
 			defer func() { loadCodeAssistURL, onboardUserURL = oldL, oldO }()
 
-			pid, auth, noProj := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
+			pid, auth, noProj, ud := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
 			if pid != tc.wantPID {
 				t.Errorf("pid = %q, want %q", pid, tc.wantPID)
 			}
@@ -95,6 +105,9 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			}
 			if noProj != tc.wantNoProj {
 				t.Errorf("noProject = %v, want %v", noProj, tc.wantNoProj)
+			}
+			if ud != tc.wantUD {
+				t.Errorf("userDefined = %v, want %v", ud, tc.wantUD)
 			}
 		})
 	}
@@ -112,5 +125,27 @@ func TestProjectNoCache(t *testing.T) {
 	projectNoCache.Store("test-conn", int64(time.Now().Add(-time.Second).Unix()))
 	if projectProbeCached("test-conn") {
 		t.Fatal("expired cache entry should not report cached")
+	}
+}
+
+func TestAntigravityProjectID(t *testing.T) {
+	cases := []struct {
+		name string
+		data map[string]any
+		want string
+	}{
+		{"top level projectId", map[string]any{"projectId": "p1"}, "p1"},
+		{"top level project_id", map[string]any{"project_id": "p2"}, "p2"},
+		{"psd projectId", map[string]any{"providerSpecificData": map[string]any{"projectId": "p3"}}, "p3"},
+		{"psd project_id", map[string]any{"providerSpecificData": map[string]any{"project_id": "p4"}}, "p4"},
+		{"precedence top level wins", map[string]any{"projectId": "top", "providerSpecificData": map[string]any{"projectId": "psd"}}, "top"},
+		{"empty", map[string]any{}, ""},
+		{"wrong type", map[string]any{"projectId": 42}, ""},
+		{"nil", nil, ""},
+	}
+	for _, c := range cases {
+		if got := AntigravityProjectID(c.data); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
 	}
 }
