@@ -626,7 +626,7 @@ func extractErrorText(body []byte) string {
 	if bytes.HasPrefix(trimmed, []byte("<!DOCTYPE html")) || bytes.HasPrefix(trimmed, []byte("<html")) {
 		lower := strings.ToLower(string(trimmed))
 		if strings.Contains(lower, "cloudflare") || strings.Contains(lower, "attention required") {
-			return "Cloudflare WAF challenge (Attention Required!): check User-Agent or network proxy"
+			return "Cloudflare WAF challenge (Attention Required!) from the upstream origin, not this gateway"
 		}
 		if titleStart := strings.Index(lower, "<title>"); titleStart != -1 {
 			titleEnd := strings.Index(lower[titleStart:], "</title>")

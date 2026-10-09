@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,10 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	}
 	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
+		var ue *UpstreamError
+		if errors.As(err, &ue) && ue.URL == "" {
+			ue.URL = cfg.BaseURL
+		}
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}
 	return resp, nil

@@ -363,7 +363,7 @@ func TestExtractErrorText_CloudflareHTML(t *testing.T) {
 </html>`)
 
 	got := extractErrorText(htmlBody)
-	if !strings.Contains(got, "Cloudflare WAF challenge") {
+	if !strings.Contains(got, "Cloudflare WAF challenge (Attention Required!) from the upstream origin, not this gateway") {
 		t.Errorf("expected Cloudflare WAF challenge in error text, got %q", got)
 	}
 }
