@@ -182,6 +182,11 @@ func coreSchema() []tableDef {
 var goOnlyColumns = [][3]string{
 	{"providerConnections", "lastUsedAt", "TEXT"},
 	{"providerConnections", "consecutiveUseCount", "INTEGER DEFAULT 0"},
+	// combos.contextSize backs the combo editor's context-size display and is
+	// written by CreateCombo/UpdateCombo. Upstream's combos table has no such
+	// column, so it belongs here (Go-only) rather than in coreSchema — and
+	// addColumnIfMissing backfills it onto existing databases on startup.
+	{"combos", "contextSize", "INTEGER DEFAULT 0"},
 }
 
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,
