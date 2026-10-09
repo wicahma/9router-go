@@ -326,6 +326,8 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
+	mergeConnectionHeaders(baseCfg, connData)
+
 	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
 	if connData != nil {
 		var relayURL string
@@ -358,6 +360,30 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	}
 
 	return baseCfg, nil
+}
+
+// mergeConnectionHeaders copies per-connection providerSpecificData.headers into
+// the provider config; the provider's own fingerprint headers always win.
+func mergeConnectionHeaders(cfg *providers.ProviderConfig, connData *ConnectionData) {
+	if cfg == nil || connData == nil {
+		return
+	}
+	headers, ok := connData.ProviderSpecificData["headers"].(map[string]any)
+	if !ok || len(headers) == 0 {
+		return
+	}
+	for key, value := range headers {
+		if key == "" || value == nil {
+			continue
+		}
+		if _, exists := cfg.StaticHeaders[key]; exists {
+			continue
+		}
+		if cfg.StaticHeaders == nil {
+			cfg.StaticHeaders = make(map[string]string)
+		}
+		cfg.StaticHeaders[key] = fmt.Sprint(value)
+	}
 }
 
 // ExtractAPIKey gets the API key from a connection's data.
