@@ -10,7 +10,7 @@ interface Props {
   onClick: () => void
 }
 
-  let { label, value, isAdded, caps, onClick }: Props = $props()
+  let { label, value, isAdded, caps, contextSize, onClick }: Props = $props()
 </script>
 
 <button
