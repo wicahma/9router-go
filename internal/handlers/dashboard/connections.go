@@ -462,6 +462,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasPSD := rawBody["providerSpecificData"]
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
+	_, hasProjectID := rawBody["projectId"]
+	_, hasProjectIDSnake := rawBody["project_id"]
+	hasProject := hasProjectID || hasProjectIDSnake
 	a, hasIsActive := rawBody["isActive"].(bool)
 
 	// Upstream normalizeProxyPoolUpdate: null/""/"__none__" unbinds, anything
@@ -492,7 +495,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasProject {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -519,7 +522,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasProject {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -581,6 +584,29 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			} else {
 				dataMap["proxyPoolId"] = proxyPoolID
 				mergeMapField(dataMap, "providerSpecificData", map[string]any{"proxyPoolId": proxyPoolID})
+			}
+		}
+
+		if hasProject {
+			// Top-level projectId from the dashboard body. Write BOTH locations
+			// the chat resolver accepts, matching how proxyPoolId is handled.
+			pid := ""
+			if s, ok := rawBody["projectId"].(string); ok {
+				pid = strings.TrimSpace(s)
+			} else if s, ok := rawBody["project_id"].(string); ok {
+				pid = strings.TrimSpace(s)
+			}
+			if pid == "" {
+				delete(dataMap, "projectId")
+				delete(dataMap, "project_id")
+				if psd, ok := dataMap["providerSpecificData"].(map[string]any); ok {
+					delete(psd, "projectId")
+					delete(psd, "project_id")
+				}
+			} else {
+				dataMap["projectId"] = pid
+				delete(dataMap, "project_id")
+				mergeMapField(dataMap, "providerSpecificData", map[string]any{"projectId": pid})
 			}
 		}
 
@@ -707,33 +733,33 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid JSON from antigravity models")
 			return
 		}
-			var modelsList []modelItem
-			for k, m := range agResp.Models {
-				if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
-					continue
-				}
-				displayName := m.DisplayName
-				if displayName == "" {
-					displayName = k
-				}
-				metadata, _ := providers.GetModelMetadata(conn.Provider, k)
-				item := modelItem{
-					ID:   k,
-					Name: displayName,
-					Capabilities: map[string]bool{
-						"vision":    m.SupportsImages,
-						"reasoning": m.SupportsThinking,
-					},
-				}
-				if metadata != nil {
-					item.InputCostPer1M = metadata.InputCostPer1M
-					item.OutputCostPer1M = metadata.OutputCostPer1M
-					item.CacheCostPer1M = metadata.CacheCostPer1M
-					item.ContextWindow = metadata.ContextWindow
-					item.MaxOutputTokens = metadata.MaxOutputTokens
-				}
-				modelsList = append(modelsList, item)
+		var modelsList []modelItem
+		for k, m := range agResp.Models {
+			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
+				continue
 			}
+			displayName := m.DisplayName
+			if displayName == "" {
+				displayName = k
+			}
+			metadata, _ := providers.GetModelMetadata(conn.Provider, k)
+			item := modelItem{
+				ID:   k,
+				Name: displayName,
+				Capabilities: map[string]bool{
+					"vision":    m.SupportsImages,
+					"reasoning": m.SupportsThinking,
+				},
+			}
+			if metadata != nil {
+				item.InputCostPer1M = metadata.InputCostPer1M
+				item.OutputCostPer1M = metadata.OutputCostPer1M
+				item.CacheCostPer1M = metadata.CacheCostPer1M
+				item.ContextWindow = metadata.ContextWindow
+				item.MaxOutputTokens = metadata.MaxOutputTokens
+			}
+			modelsList = append(modelsList, item)
+		}
 		sort.Slice(modelsList, func(i, j int) bool {
 			return modelsList[i].ID < modelsList[j].ID
 		})
@@ -786,33 +812,33 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid JSON from gemini-cli models")
 			return
 		}
-			var modelsList []modelItem
-			for k, m := range resp.Models {
-				if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
-					continue
-				}
-				displayName := m.DisplayName
-				if displayName == "" {
-					displayName = k
-				}
-				metadata, _ := providers.GetModelMetadata(conn.Provider, k)
-				item := modelItem{
-					ID:   k,
-					Name: displayName,
-					Capabilities: map[string]bool{
-						"vision":    m.SupportsImages,
-						"reasoning": m.SupportsThinking,
-					},
-				}
-				if metadata != nil {
-					item.InputCostPer1M = metadata.InputCostPer1M
-					item.OutputCostPer1M = metadata.OutputCostPer1M
-					item.CacheCostPer1M = metadata.CacheCostPer1M
-					item.ContextWindow = metadata.ContextWindow
-					item.MaxOutputTokens = metadata.MaxOutputTokens
-				}
-				modelsList = append(modelsList, item)
+		var modelsList []modelItem
+		for k, m := range resp.Models {
+			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
+				continue
 			}
+			displayName := m.DisplayName
+			if displayName == "" {
+				displayName = k
+			}
+			metadata, _ := providers.GetModelMetadata(conn.Provider, k)
+			item := modelItem{
+				ID:   k,
+				Name: displayName,
+				Capabilities: map[string]bool{
+					"vision":    m.SupportsImages,
+					"reasoning": m.SupportsThinking,
+				},
+			}
+			if metadata != nil {
+				item.InputCostPer1M = metadata.InputCostPer1M
+				item.OutputCostPer1M = metadata.OutputCostPer1M
+				item.CacheCostPer1M = metadata.CacheCostPer1M
+				item.ContextWindow = metadata.ContextWindow
+				item.MaxOutputTokens = metadata.MaxOutputTokens
+			}
+			modelsList = append(modelsList, item)
+		}
 		sort.Slice(modelsList, func(i, j int) bool {
 			return modelsList[i].ID < modelsList[j].ID
 		})
@@ -854,40 +880,40 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			Data   []any `json:"data"`
 			Models []any `json:"models"`
 		}
-			_ = json.Unmarshal(body, &clineResp)
-			models := clineResp.Data
-			if len(models) == 0 {
-				models = clineResp.Models
-			}
-			// Enrich cline models with metadata if available
-			var enrichedModels []any
-			for _, m := range models {
-				if modelMap, ok := m.(map[string]any); ok {
-					if id, ok := modelMap["id"].(string); ok {
-						metadata, _ := providers.GetModelMetadata(conn.Provider, id)
-						if metadata != nil {
-							// Create a copy to avoid modifying original
-							enriched := map[string]any{}
-							for k, v := range modelMap {
-								enriched[k] = v
-							}
-							enriched["inputCostPer1M"] = metadata.InputCostPer1M
-							enriched["outputCostPer1M"] = metadata.OutputCostPer1M
-							enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
-							enriched["contextWindow"] = metadata.ContextWindow
-							enriched["maxOutputTokens"] = metadata.MaxOutputTokens
-							enrichedModels = append(enrichedModels, enriched)
-							continue
+		_ = json.Unmarshal(body, &clineResp)
+		models := clineResp.Data
+		if len(models) == 0 {
+			models = clineResp.Models
+		}
+		// Enrich cline models with metadata if available
+		var enrichedModels []any
+		for _, m := range models {
+			if modelMap, ok := m.(map[string]any); ok {
+				if id, ok := modelMap["id"].(string); ok {
+					metadata, _ := providers.GetModelMetadata(conn.Provider, id)
+					if metadata != nil {
+						// Create a copy to avoid modifying original
+						enriched := map[string]any{}
+						for k, v := range modelMap {
+							enriched[k] = v
 						}
+						enriched["inputCostPer1M"] = metadata.InputCostPer1M
+						enriched["outputCostPer1M"] = metadata.OutputCostPer1M
+						enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
+						enriched["contextWindow"] = metadata.ContextWindow
+						enriched["maxOutputTokens"] = metadata.MaxOutputTokens
+						enrichedModels = append(enrichedModels, enriched)
+						continue
 					}
 				}
-				enrichedModels = append(enrichedModels, m)
 			}
-			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-				"provider":     conn.Provider,
-				"connectionId": conn.ID,
-				"models":       enrichedModels,
-			})
+			enrichedModels = append(enrichedModels, m)
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       enrichedModels,
+		})
 		return
 	}
 
@@ -935,44 +961,44 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		Data   []any `json:"data"`
 		Models []any `json:"models"`
 	}
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid models response")
-			return
-		}
-		models := parsed.Data
-		if models == nil {
-			models = parsed.Models
-		}
-		if models == nil {
-			models = []any{}
-		}
-		// Enrich OpenAI/Anthropic compatible models with metadata if available
-		var enrichedModels []any
-		for _, m := range models {
-			if modelMap, ok := m.(map[string]any); ok {
-				if id, ok := modelMap["id"].(string); ok {
-					metadata, _ := providers.GetModelMetadata(conn.Provider, id)
-					if metadata != nil {
-						// Create a copy to avoid modifying original
-						enriched := map[string]any{}
-						for k, v := range modelMap {
-							enriched[k] = v
-						}
-						enriched["inputCostPer1M"] = metadata.InputCostPer1M
-						enriched["outputCostPer1M"] = metadata.OutputCostPer1M
-						enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
-						enriched["contextWindow"] = metadata.ContextWindow
-						enriched["maxOutputTokens"] = metadata.MaxOutputTokens
-						enrichedModels = append(enrichedModels, enriched)
-						continue
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid models response")
+		return
+	}
+	models := parsed.Data
+	if models == nil {
+		models = parsed.Models
+	}
+	if models == nil {
+		models = []any{}
+	}
+	// Enrich OpenAI/Anthropic compatible models with metadata if available
+	var enrichedModels []any
+	for _, m := range models {
+		if modelMap, ok := m.(map[string]any); ok {
+			if id, ok := modelMap["id"].(string); ok {
+				metadata, _ := providers.GetModelMetadata(conn.Provider, id)
+				if metadata != nil {
+					// Create a copy to avoid modifying original
+					enriched := map[string]any{}
+					for k, v := range modelMap {
+						enriched[k] = v
 					}
+					enriched["inputCostPer1M"] = metadata.InputCostPer1M
+					enriched["outputCostPer1M"] = metadata.OutputCostPer1M
+					enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
+					enriched["contextWindow"] = metadata.ContextWindow
+					enriched["maxOutputTokens"] = metadata.MaxOutputTokens
+					enrichedModels = append(enrichedModels, enriched)
+					continue
 				}
 			}
-			enrichedModels = append(enrichedModels, m)
 		}
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"provider":     conn.Provider,
-			"connectionId": conn.ID,
-			"models":       enrichedModels,
-		})
+		enrichedModels = append(enrichedModels, m)
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"provider":     conn.Provider,
+		"connectionId": conn.ID,
+		"models":       enrichedModels,
+	})
 }
