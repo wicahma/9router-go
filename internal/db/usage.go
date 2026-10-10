@@ -326,3 +326,39 @@ func (r *Repo) GetRequestDetailsPaged(limit, offset int, status string) ([]strin
 	}
 	return res, total, nil
 }
+
+func (r *Repo) PruneRequestDetailsBefore(cutoff string) (int64, error) {
+	res, err := r.db.Exec(`DELETE FROM requestDetails WHERE timestamp < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune request details before %s: %w", cutoff, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune request details before %s rows affected: %w", cutoff, err)
+	}
+	return n, nil
+}
+
+func (r *Repo) PruneRequestDetailsKeepNewest(limit int) (int64, error) {
+	res, err := r.db.Exec(`DELETE FROM requestDetails WHERE id NOT IN (SELECT id FROM requestDetails ORDER BY timestamp DESC LIMIT ?)`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune request details keep newest %d: %w", limit, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune request details keep newest %d rows affected: %w", limit, err)
+	}
+	return n, nil
+}
+
+func (r *Repo) PruneUsageHistoryBefore(cutoff string) (int64, error) {
+	res, err := r.db.Exec(`DELETE FROM usageHistory WHERE timestamp < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune usage history before %s: %w", cutoff, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune usage history before %s rows affected: %w", cutoff, err)
+	}
+	return n, nil
+}

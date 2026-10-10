@@ -13,6 +13,7 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/retention"
 )
 
 // Config holds the proxy gateway configuration.
@@ -27,6 +28,7 @@ type Config struct {
 	RTKEnabled      bool
 	CavemanEnabled  bool
 	PonytailEnabled bool
+	Retention       *retention.Config
 }
 
 // NewViper creates and configures a new Viper instance reading from .env with standard defaults.
@@ -107,7 +109,6 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		host = strings.TrimSpace(v.GetString("BIND_ADDR"))
 	}
 
-
 	port := v.GetInt("PORT")
 	if port <= 0 {
 		port = 20130 // Default port (unified port)
@@ -156,6 +157,7 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 	rtkEnabled := v.GetBool("RTK_ENABLED")
 	cavemanEnabled := v.GetBool("CAVEMAN_ENABLED")
 	ponytailEnabled := v.GetBool("PONYTAIL_ENABLED")
+	retentionCfg := retention.LoadConfig(v)
 
 	return &Config{
 		Host:            host,
@@ -168,6 +170,7 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		RTKEnabled:      rtkEnabled,
 		CavemanEnabled:  cavemanEnabled,
 		PonytailEnabled: ponytailEnabled,
+		Retention:       retentionCfg,
 	}
 }
 

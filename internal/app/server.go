@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/ratelimit"
+	"9router/proxy/internal/retention"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -135,6 +136,10 @@ func ProvideServer(p ServerParams) *http.Server {
 				return p.InputPer1M, p.OutputPer1M, ok
 			}
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+			retention.StartBackground(shutdown.Context(), p.Repo, p.Config.Retention)
+			if p.Config.Retention != nil {
+				log.Printf("[config] retention enabled=%v interval=%v", p.Config.Retention.Enabled, p.Config.Retention.Interval)
+			}
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 

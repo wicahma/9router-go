@@ -15,6 +15,22 @@ services:
       # - PONYTAIL_ENABLED=false
       # Or use DB_PATH for custom SQLite location:
       # - DB_PATH=/data/custom/data.sqlite
+      # Data retention (applies in containers too — it prunes the SQLite file):
+      # - RETENTION_ENABLED=true
+      # - RETENTION_INTERVAL=15m
+      # - RETENTION_DB_MAX_MB=256
+      # - RETENTION_USAGE_HISTORY_MAX_AGE_HOURS=720
+      # - RETENTION_REQUEST_DETAILS_MAX_AGE_HOURS=72
+      # - RETENTION_REQUEST_DETAILS_MAX_ROWS=20000
+      # Log rotation is NOT handled by the app in a container: the process writes
+      # to stdout, which the runtime owns. RETENTION_LOG_FILES therefore matches
+      # nothing and rotation is a no-op. Rotate container logs with the driver
+      # options below instead.
+    logging:
+      driver: json-file
+      options:
+        max-size: "16m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:
