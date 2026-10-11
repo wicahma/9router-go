@@ -1,13 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { api } from '../api/client'
 
   let {
     onSuccess,
-    notice,
   }: {
     onSuccess?: () => void
-    notice?: string
   } = $props()
 
   let password = $state('')
@@ -44,9 +42,11 @@
     fetch('/api/auth/status', { signal: controller.signal })
       .then(async (res) => {
         clearTimeout(timeoutId)
+
         if (!res.ok) {
           // Safe fallback to avoid an infinite loading state.
           hasPassword = true
+          tick().then(focusPasswordField)
           return
         }
         const data = await res.json()
@@ -65,12 +65,29 @@
         oidcLoginLabel = data.oidcLoginLabel || 'Sign in with OIDC'
         samlConfigured = data.samlConfigured === true
         samlLoginLabel = data.samlLoginLabel || 'Sign in with SAML SSO'
+        // The form only exists once hasPassword has left null, so focus it as
+        // soon as the state that reveals it has been applied.
+        tick().then(focusPasswordField)
       })
       .catch(() => {
         clearTimeout(timeoutId)
         hasPassword = true
+        tick().then(focusPasswordField)
       })
   })
+
+  // Focus the field the user has to type into, once the form is on screen.
+  //
+  // The `autofocus` attribute was the obvious way to do this and it warned in
+  // the console: "Autofocus processing was blocked because a document already
+  // has a focused element." Reached from /dashboard without a session the app
+  // mounts this view beside the page it was already showing, and the browser
+  // resolves autofocus per document — the body had already taken focus, so the
+  // attribute was refused. Asking for focus after mount gets the same result
+  // without asking the browser to arbitrate.
+  function focusPasswordField() {
+    document.querySelector<HTMLElement>('#login-password')?.focus()
+  }
 
   type LoginFailure = Error & {
     retryAfter?: number
@@ -100,8 +117,9 @@
     } catch (err: unknown) {
       const failure = err as LoginFailure
       if (failure?.mustChangePassword) {
-        // Remote fresh install on the well-known default: the login issued no
-        // session, so rotate the password first and then sign in again.
+        // Remote fresh install on the well-known default: rotate first. The
+        // login attempt never issues a session, so set the new password from
+        // the local host (or set INITIAL_PASSWORD) before retrying.
         mustChange = true
         errorMessage = err instanceof Error ? err.message : 'Default password must be changed before remote access.'
       } else {
@@ -123,17 +141,15 @@
     errorMessage = ''
 
     try {
-      await api.setPassword(password, newPassword)
-      // The rotation issues no session, so log in again with the new password
-      // to get the cookie before entering the dashboard.
-      const res = await api.login(newPassword)
-      if (!res.success) {
-        throw new Error(res.error || 'Password set, but signing in failed')
-      }
-      if (onSuccess) {
-        onSuccess()
+      const res = await api.login(password, newPassword)
+      if (res.success) {
+        if (onSuccess) {
+          onSuccess()
+        } else {
+          window.location.assign('/dashboard')
+        }
       } else {
-        window.location.assign('/dashboard')
+        errorMessage = res.error || 'Failed to set password'
       }
     } catch (err: unknown) {
       errorMessage = err instanceof Error ? err.message : 'Failed to set password'
@@ -184,15 +200,6 @@
         </p>
       </div>
 
-      {#if notice}
-        <div
-          class="mb-4 rounded-[10px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 text-center"
-          role="status"
-        >
-          {notice}
-        </div>
-      {/if}
-
       <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
         {#if mustChange}
           <form onsubmit={handleSetNewPassword} class="flex flex-col gap-4">
@@ -207,7 +214,7 @@
                 placeholder="Enter new password"
                 bind:value={newPassword}
                 required
-                autofocus
+                data-login-focus
                 class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
               />
               {#if errorMessage}
@@ -276,7 +283,7 @@
                       placeholder="Enter password"
                       bind:value={password}
                       required
-                      autofocus={!oidcAvailable}
+                      data-login-focus
                       class="w-full py-2.5 px-3 pr-10 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
                     />
                     <button

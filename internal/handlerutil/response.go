@@ -1,11 +1,12 @@
 package handlerutil
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
-	"sync/atomic"
 
 	"9router/proxy/internal/constants"
 )
@@ -67,6 +68,40 @@ func WriteJSON(w http.ResponseWriter, status int, data any) {
 	if err := json.MarshalWrite(w, data, deterministicJSON); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
 	}
+}
+
+// WriteJSONIndented writes a JSON response indented with two spaces — the shape
+// the upstream dashboard's backup download produces with JSON.stringify(payload,
+// null, 2). A handler that hands the body to the user as a file uses it so the
+// saved backup stays human-readable.
+func WriteJSONIndented(w http.ResponseWriter, status int, data any) {
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+	if err := json.MarshalWrite(w, data, deterministicJSON, jsontext.WithIndent("  ")); err != nil {
+		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
+	}
+}
+
+func WriteModelsList(w http.ResponseWriter, status int, meta any, modelsJSON []byte) {
+	metaJSON, err := json.Marshal(meta, deterministicJSON)
+	if err != nil {
+		WriteJSONError(w, http.StatusInternalServerError, "failed to encode models")
+		return
+	}
+	trimmed := bytes.TrimRight(metaJSON, " 	\r\n")
+	if !bytes.HasSuffix(trimmed, []byte("}")) {
+		WriteJSONError(w, http.StatusInternalServerError, "failed to encode models")
+		return
+	}
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+	trimmed = trimmed[:len(trimmed)-1]
+	_, _ = w.Write(trimmed)
+	_, _ = w.Write([]byte(`,"data":`))
+	_, _ = w.Write(modelsJSON)
+	_, _ = w.Write([]byte(`,"models":`))
+	_, _ = w.Write(modelsJSON)
+	_, _ = w.Write([]byte(`}`))
 }
 
 // UpdateModelInBody returns a copy of body with the "model" field set to modelName.
@@ -154,39 +189,26 @@ func GetSessionID(ctx context.Context) string {
 	return ""
 }
 
-type attemptCountKey struct{}
+type clientBetaKey struct{}
 
-// WithAttemptCounter installs a per-request upstream attempt counter. Install it
-// where the request context is created: fallback and combo loops rebuild the
-// connection on every retry but keep the context, so the counter is the only
-// place the total number of upstream tries survives to logging time.
-func WithAttemptCounter(ctx context.Context) context.Context {
-	if ctx == nil {
+// WithClientAnthropicBeta carries the caller's own anthropic-beta flags on the
+// context. They have to be merged into the upstream request rather than dropped:
+// a client asking for a beta the gateway does not list would otherwise fail
+// without ever being told why. (Upstream mergeAnthropicBeta, v0.5.91.)
+func WithClientAnthropicBeta(ctx context.Context, beta string) context.Context {
+	if beta == "" || ctx == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, attemptCountKey{}, &atomic.Int64{})
+	return context.WithValue(ctx, clientBetaKey{}, beta)
 }
 
-// CountAttempt records one upstream forward attempt.
-func CountAttempt(ctx context.Context) {
+// GetClientAnthropicBeta returns the caller's anthropic-beta flags, or "".
+func GetClientAnthropicBeta(ctx context.Context) string {
 	if ctx == nil {
-		return
+		return ""
 	}
-	if c, ok := ctx.Value(attemptCountKey{}).(*atomic.Int64); ok {
-		c.Add(1)
+	if val, ok := ctx.Value(clientBetaKey{}).(string); ok {
+		return val
 	}
-}
-
-// GetAttempts returns the upstream attempts recorded on this context, or 1 when
-// no counter is installed — a request that reached the forward path tried at
-// least once, so 1 is the honest floor, not 0.
-func GetAttempts(ctx context.Context) int {
-	if ctx != nil {
-		if c, ok := ctx.Value(attemptCountKey{}).(*atomic.Int64); ok {
-			if n := int(c.Load()); n > 0 {
-				return n
-			}
-		}
-	}
-	return 1
+	return ""
 }

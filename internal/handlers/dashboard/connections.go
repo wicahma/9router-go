@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
@@ -138,8 +140,10 @@ const (
 var usageSupportedProviders = []string{
 	"antigravity", "claude", "codebuddy-cn", "codebuddy-intl", "codex",
 	"commandcode", "deepseek", "gemini-cli", "github", "glm", "glm-cn",
-	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"opencode-go", "qoder", "trae", "vercel-ai-gateway", "xiaomi-mimo", "zed",
+	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
+	"minimax-code-global", "ollama",
+	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
+	"vercel-ai-gateway", "xiaomi-mimo", "zed",
 }
 
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS
@@ -147,7 +151,8 @@ var usageSupportedProviders = []string{
 var usageApikeyProviders = []string{
 	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"opencode-go", "qoder", "vercel-ai-gateway", "xiaomi-mimo",
+	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "vercel-ai-gateway",
+	"xiaomi-mimo",
 }
 
 func strSliceContains(list []string, v string) bool {
@@ -230,9 +235,33 @@ func maskConnectionName(name string) string {
 	return name
 }
 
+// maskConnectionSecret renders a stored credential as a non-reversible hint for
+// the edit-connection form (issue #154): enough to confirm *which* key is on
+// file, never enough to replay it. Same shape as maskClientKey, which the
+// dashboard already uses for client API keys.
+func maskConnectionSecret(secret string) string {
+	if len(secret) <= 12 {
+		return "***"
+	}
+	return secret[:6] + "…" + secret[len(secret)-4:]
+}
+
+// connectionSecretHint returns the credential a connection actually
+// authenticates with, in the precedence the runtime uses: the OAuth access
+// token first (falling back to the mirrored apiKey), then the plain apiKey.
+func connectionSecretHint(data map[string]any) string {
+	for _, field := range []string{"accessToken", "apiKey"} {
+		if v, ok := data[field].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // sanitizeProviderConnection mirrors upstream sanitize(): only safe fields,
 // secrets in data JSON never leave the server.
 func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
+
 	safe := map[string]any{
 		"id": c.ID, "provider": c.Provider, "authType": c.AuthType,
 		"isActive": c.IsActive, "createdAt": c.CreatedAt, "updatedAt": c.UpdatedAt,
@@ -253,6 +282,15 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 	if err := json.Unmarshal([]byte(c.Data), &data); err != nil || data == nil {
 		return safe
 	}
+
+	// Issue #154: the edit-connection form needs to show which credential is on
+	// file so a blank field can mean "keep the current one". accessToken wins
+	// where present, because that is the credential an OAuth connection
+	// actually sends and usage_credentials.go falls back only the other way.
+	// Only the mask leaves the server — the raw secret stays dropped.
+	if secret := connectionSecretHint(data); secret != "" {
+		safe["apiKeyMasked"] = maskConnectionSecret(secret)
+	}
 	for _, f := range []string{
 		"displayName", "defaultModel", "testStatus", "lastError", "lastErrorAt",
 		"errorCode", "expiresAt", "lastUsedAt", "consecutiveUseCount",
@@ -264,7 +302,31 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 		"freebuffModel", "assignedModel", "freebucks",
 	} {
 		if v, ok := data[f]; ok && v != nil {
-			safe[f] = v
+			if f == "lastError" {
+				if m, isMap := v.(map[string]any); isMap {
+					if msg, ok := m["message"].(string); ok && msg != "" {
+						safe[f] = msg
+					} else if errText, ok := m["error"].(string); ok && errText != "" {
+						safe[f] = errText
+					} else if b, err := json.Marshal(m); err == nil {
+						safe[f] = string(b)
+					} else {
+						safe[f] = fmt.Sprintf("%v", v)
+					}
+					if mdl, ok := m["model"].(string); ok && mdl != "" {
+						safe["lastErrorModel"] = mdl
+					}
+					if src, ok := m["source"].(string); ok && src != "" {
+						safe["lastErrorSource"] = src
+					}
+				} else if s, isStr := v.(string); isStr {
+					safe[f] = s
+				} else {
+					safe[f] = fmt.Sprintf("%v", v)
+				}
+			} else {
+				safe[f] = v
+			}
 		}
 	}
 	for k, v := range data {
@@ -280,7 +342,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 			"connectionProxyEnabled", "connectionProxyUrl", "connectionNoProxy",
 			"githubLogin", "githubName", "githubEmail", "githubUserId",
 			"username", "firstName", "lastName", "authMethod", "authKind",
-			"profileArn",
+			"profileArn", "accessKeyId", "profile",
 		} {
 			if v, ok := psd[f]; ok && v != nil {
 				out[f] = v
@@ -310,6 +372,11 @@ type createConnectionRequest struct {
 	DefaultModel         string         `json:"defaultModel"`
 	ProviderSpecificData map[string]any `json:"providerSpecificData"`
 	Data                 any            `json:"data"`
+	// AllowOverwrite (or its legacy `overwrite` spelling) states that a
+	// name collision is intended. A request carrying an id is already an
+	// explicit edit and never needs the flag.
+	AllowOverwrite bool `json:"allowOverwrite"`
+	Overwrite      bool `json:"overwrite"`
 }
 
 // HandleCreateConnection handles POST /api/connections.
@@ -335,7 +402,11 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing provider")
 		return
 	}
-	if req.ID == "" {
+	// An id in the body means the caller is editing a known connection; its
+	// absence is what makes this a create, and a create must not quietly
+	// replace an existing one.
+	explicitID := req.ID != ""
+	if !explicitID {
 		req.ID = uuid.New().String()
 	}
 	if req.AuthType == "" {
@@ -383,6 +454,45 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 			return
 		}
 		dataStr = string(encoded)
+	}
+
+	// A create that reuses a name that is already in use used to replace the
+	// stored key without a word: a script naming rows "Key 1", "Key 2", … kept
+	// the existing pool entries and handed back a success. A caller that means
+	// "change the key behind this name" passes an id or an explicit overwrite;
+	// everyone else gets a typed 409 naming the row that would have been
+	// replaced. #4311
+	if !explicitID && req.AuthType == "apikey" && name != "" {
+		existing, err := h.Repo.GetProviderConnectionByName(req.Provider, req.AuthType, name)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if existing != nil {
+			if !req.AllowOverwrite && !req.Overwrite {
+				handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
+					"error": "A connection named \"" + name + "\" already exists for provider \"" +
+						req.Provider + "\". Pass allowOverwrite: true to replace it.",
+					"code":         "PROVIDER_NAME_CONFLICT",
+					"existingId":   existing.ID,
+					"existingName": existing.Name,
+				})
+				return
+			}
+			// Overwriting rewrites the row in place, keeping its id and its
+			// place in the rotation; adding a second row with the same name would
+			// leave the account picker with two candidates it cannot tell apart.
+			if err := h.Repo.ReplaceProviderConnectionPayload(existing.ID, name, dataStr); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"status":   "ok",
+				"id":       existing.ID,
+				"replaced": existing.ID,
+			})
+			return
+		}
 	}
 
 	if err := h.Repo.CreateProviderConnectionFull(req.ID, req.Provider, req.AuthType, name, req.Priority, dataStr); err != nil {
@@ -462,9 +572,14 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasPSD := rawBody["providerSpecificData"]
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
-	_, hasProjectID := rawBody["projectId"]
-	_, hasProjectIDSnake := rawBody["project_id"]
-	hasProject := hasProjectID || hasProjectIDSnake
+	// Issue #154: rotating the credential from the edit modal. Blank (or
+	// whitespace-only) means "keep the stored key" — the modal shows it as a
+	// mask and sends nothing when the user did not type one.
+	newAPIKey := ""
+	if s, ok := rawBody["apiKey"].(string); ok {
+		newAPIKey = strings.TrimSpace(s)
+	}
+	hasAPIKey := newAPIKey != ""
 	a, hasIsActive := rawBody["isActive"].(bool)
 
 	// Upstream normalizeProxyPoolUpdate: null/""/"__none__" unbinds, anything
@@ -495,7 +610,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasProject {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -510,11 +625,13 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	} else if existing.Name != nil {
 		name = *existing.Name
 	}
-	priority := 0
+	// A NULL priority must stay NULL. Defaulting it to 0 would sort this row
+	// ahead of every other account (0 beats every positive rank) and silently
+	// promote it to the top of the rotation on any unrelated edit — rename,
+	// proxy assignment, model assignment.
+	priority := existing.Priority
 	if p, ok := rawBody["priority"].(float64); ok {
-		priority = int(p)
-	} else if existing.Priority != nil {
-		priority = *existing.Priority
+		priority = lo.ToPtr(int(p))
 	}
 	isActive := existing.IsActive == 1
 	if hasIsActive {
@@ -522,7 +639,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasProject {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -558,6 +675,15 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			}
 		}
 
+		// Issue #154: credential rotation. Only the key itself is replaced —
+		// testStatus/lastError stay whatever the last probe decided. The modal
+		// clears them explicitly once it has validated the new key against the
+		// provider, which is the only evidence that justifies marking the row
+		// active again (upstream EditConnectionModal sends testStatus).
+		if hasAPIKey {
+			dataMap["apiKey"] = newAPIKey
+		}
+
 		if hasPSD {
 			if psd, ok := rawBody["providerSpecificData"].(map[string]any); ok {
 				mergeMapField(dataMap, "providerSpecificData", psd)
@@ -587,29 +713,6 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			}
 		}
 
-		if hasProject {
-			// Top-level projectId from the dashboard body. Write BOTH locations
-			// the chat resolver accepts, matching how proxyPoolId is handled.
-			pid := ""
-			if s, ok := rawBody["projectId"].(string); ok {
-				pid = strings.TrimSpace(s)
-			} else if s, ok := rawBody["project_id"].(string); ok {
-				pid = strings.TrimSpace(s)
-			}
-			if pid == "" {
-				delete(dataMap, "projectId")
-				delete(dataMap, "project_id")
-				if psd, ok := dataMap["providerSpecificData"].(map[string]any); ok {
-					delete(psd, "projectId")
-					delete(psd, "project_id")
-				}
-			} else {
-				dataMap["projectId"] = pid
-				delete(dataMap, "project_id")
-				mergeMapField(dataMap, "providerSpecificData", map[string]any{"projectId": pid})
-			}
-		}
-
 		if b, err := json.Marshal(dataMap); err == nil {
 			dataStr = string(b)
 		}
@@ -621,6 +724,67 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
+}
+
+// HandleReorderConnection handles POST /api/connections/{id}/reorder.
+// Body: {"direction": "up"|"down"}.
+//
+// The whole swap plus the 1..N renumbering happens in one SQLite transaction,
+// so the pool can never end up with two rows sharing a priority. See
+// Repo.ReorderProviderConnections for why the previous two-PUT client swap was
+// not safe.
+func (h *DashboardHandler) HandleReorderConnection(w http.ResponseWriter, r *http.Request) {
+	id := getURLParam(r, "id")
+	if id == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing connection id")
+		return
+	}
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	var body struct {
+		Direction string `json:"direction"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	direction := 0
+	switch strings.ToLower(strings.TrimSpace(body.Direction)) {
+	case "up":
+		direction = -1
+	case "down":
+		direction = 1
+	default:
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, `direction must be "up" or "down"`)
+		return
+	}
+
+	conn, err := h.Repo.GetProviderConnectionByID(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if conn == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "connection not found")
+		return
+	}
+
+	if err := h.Repo.ReorderProviderConnections(conn.Provider, id, direction); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	conns, err := h.Repo.GetProviderConnections(conn.Provider, false)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id, "connections": conns})
 }
 
 func mergeMapField(target map[string]any, key string, source map[string]any) {
@@ -664,6 +828,15 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
+	h.writeConnectionModels(w, r, id)
+}
+
+// writeConnectionModels is HandleGetConnectionModels with the connection id
+// already resolved. The split exists because model sync (POST
+// /api/models/sync) needs the same discovery for a connection it selected
+// itself, and a second copy of this provider-by-provider chain would be free
+// to drift from the one the dashboard imports models with (#179).
+func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.Request, id string) {
 	conn, err := h.Repo.GetProviderConnectionByID(id)
 	if err != nil || conn == nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, "connection not found")
@@ -683,12 +856,6 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		ID           string          `json:"id"`
 		Name         string          `json:"name"`
 		Capabilities map[string]bool `json:"capabilities,omitempty"`
-		// Additional model metadata from synced catalog
-		InputCostPer1M  float64 `json:"inputCostPer1M,omitempty"`
-		OutputCostPer1M float64 `json:"outputCostPer1M,omitempty"`
-		CacheCostPer1M  float64 `json:"cacheCostPer1M,omitempty"`
-		ContextWindow   int     `json:"contextWindow,omitempty"`
-		MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
 	}
 
 	if conn.Provider == "antigravity" {
@@ -742,23 +909,14 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			if displayName == "" {
 				displayName = k
 			}
-			metadata, _ := providers.GetModelMetadata(conn.Provider, k)
-			item := modelItem{
+			modelsList = append(modelsList, modelItem{
 				ID:   k,
 				Name: displayName,
 				Capabilities: map[string]bool{
 					"vision":    m.SupportsImages,
 					"reasoning": m.SupportsThinking,
 				},
-			}
-			if metadata != nil {
-				item.InputCostPer1M = metadata.InputCostPer1M
-				item.OutputCostPer1M = metadata.OutputCostPer1M
-				item.CacheCostPer1M = metadata.CacheCostPer1M
-				item.ContextWindow = metadata.ContextWindow
-				item.MaxOutputTokens = metadata.MaxOutputTokens
-			}
-			modelsList = append(modelsList, item)
+			})
 		}
 		sort.Slice(modelsList, func(i, j int) bool {
 			return modelsList[i].ID < modelsList[j].ID
@@ -821,23 +979,14 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			if displayName == "" {
 				displayName = k
 			}
-			metadata, _ := providers.GetModelMetadata(conn.Provider, k)
-			item := modelItem{
+			modelsList = append(modelsList, modelItem{
 				ID:   k,
 				Name: displayName,
 				Capabilities: map[string]bool{
 					"vision":    m.SupportsImages,
 					"reasoning": m.SupportsThinking,
 				},
-			}
-			if metadata != nil {
-				item.InputCostPer1M = metadata.InputCostPer1M
-				item.OutputCostPer1M = metadata.OutputCostPer1M
-				item.CacheCostPer1M = metadata.CacheCostPer1M
-				item.ContextWindow = metadata.ContextWindow
-				item.MaxOutputTokens = metadata.MaxOutputTokens
-			}
-			modelsList = append(modelsList, item)
+			})
 		}
 		sort.Slice(modelsList, func(i, j int) bool {
 			return modelsList[i].ID < modelsList[j].ID
@@ -885,34 +1034,76 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		if len(models) == 0 {
 			models = clineResp.Models
 		}
-		// Enrich cline models with metadata if available
-		var enrichedModels []any
-		for _, m := range models {
-			if modelMap, ok := m.(map[string]any); ok {
-				if id, ok := modelMap["id"].(string); ok {
-					metadata, _ := providers.GetModelMetadata(conn.Provider, id)
-					if metadata != nil {
-						// Create a copy to avoid modifying original
-						enriched := map[string]any{}
-						for k, v := range modelMap {
-							enriched[k] = v
-						}
-						enriched["inputCostPer1M"] = metadata.InputCostPer1M
-						enriched["outputCostPer1M"] = metadata.OutputCostPer1M
-						enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
-						enriched["contextWindow"] = metadata.ContextWindow
-						enriched["maxOutputTokens"] = metadata.MaxOutputTokens
-						enrichedModels = append(enrichedModels, enriched)
-						continue
-					}
-				}
-			}
-			enrichedModels = append(enrichedModels, m)
+
+		// The free tier is published on a separate feed: /api/v1/models carries
+		// no `cline-free/*` ids at all. The feed is additive and a dead feed must
+		// never take the catalogue down with it, so ids already present win —
+		// the same "first writer wins" rule upstream uses.
+		models = mergeClineFreeTier(models, clineFreeTierModels(r.Context()))
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       models,
+		})
+		return
+	}
+	// Qoder's catalogue lives behind a COSY-signed gateway endpoint rather than
+	// a plain /models URL, so it needs its own branch.
+	if conn.Provider == "qoder" || conn.Provider == "qoder-cn" {
+		token := connData.APIKey
+		if token == "" {
+			token = connData.AccessToken
+		}
+		qoderModels, err := fetchQoderCatalogModels(r.Context(), conn.Provider, token, connData.ProviderSpecificData)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Qoder models: "+err.Error())
+			return
 		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
-			"models":       enrichedModels,
+			"models":       qoderModels,
+		})
+		return
+	}
+
+	// OpenAI-compatible aggregators with a live /v1/models catalogue. The
+	// connection's key is the only credential these need.
+	if listURL := providers.ModelsListURL(conn.Provider); listURL != "" {
+		token := connData.APIKey
+		if token == "" {
+			token = connData.AccessToken
+		}
+		if token == "" {
+			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key configured")
+			return
+		}
+		headers := map[string]string{"Authorization": "Bearer " + token}
+		for k, v := range providers.ModelsListHeaders(conn.Provider) {
+			headers[k] = v
+		}
+		status, body, err := validateProbeDo(r.Context(), http.MethodGet, listURL, headers, nil)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch models: "+err.Error())
+			return
+		}
+		if status != http.StatusOK {
+			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
+			return
+		}
+		var listResp struct {
+			Data   []any `json:"data"`
+			Models []any `json:"models"`
+		}
+		_ = json.Unmarshal(body, &listResp)
+		items := listResp.Data
+		if len(items) == 0 {
+			items = listResp.Models
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       items,
 		})
 		return
 	}
@@ -972,33 +1163,73 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 	if models == nil {
 		models = []any{}
 	}
-	// Enrich OpenAI/Anthropic compatible models with metadata if available
-	var enrichedModels []any
-	for _, m := range models {
-		if modelMap, ok := m.(map[string]any); ok {
-			if id, ok := modelMap["id"].(string); ok {
-				metadata, _ := providers.GetModelMetadata(conn.Provider, id)
-				if metadata != nil {
-					// Create a copy to avoid modifying original
-					enriched := map[string]any{}
-					for k, v := range modelMap {
-						enriched[k] = v
-					}
-					enriched["inputCostPer1M"] = metadata.InputCostPer1M
-					enriched["outputCostPer1M"] = metadata.OutputCostPer1M
-					enriched["cacheCostPer1M"] = metadata.CacheCostPer1M
-					enriched["contextWindow"] = metadata.ContextWindow
-					enriched["maxOutputTokens"] = metadata.MaxOutputTokens
-					enrichedModels = append(enrichedModels, enriched)
-					continue
-				}
-			}
-		}
-		enrichedModels = append(enrichedModels, m)
-	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"provider":     conn.Provider,
 		"connectionId": conn.ID,
-		"models":       enrichedModels,
+		"models":       models,
 	})
+}
+
+// clineFreeTierEndpoint publishes Cline's free tier. The main /api/v1/models
+// catalogue carries no `cline-free/*` ids, so the tier has to come from here.
+// Upstream: open-sse/services/clinepassModels.js (v0.5.91).
+const clineFreeTierEndpoint = "https://api.cline.bot/api/v1/ai/cline/recommended-models"
+
+// clineFreeTierModels returns the recommended-models feed's free[] tier, or nil
+// on any failure — the tier is additive, so a dead feed must not break the
+// catalogue the caller already has.
+func clineFreeTierModels(ctx context.Context) []any {
+	status, body, err := validateProbeDo(
+		ctx, http.MethodGet, clineFreeTierEndpoint,
+		map[string]string{"Accept": "application/json"}, nil,
+	)
+	if err != nil || status != http.StatusOK {
+		return nil
+	}
+	var feed struct {
+		Free []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"free"`
+	}
+	if err := json.Unmarshal(body, &feed); err != nil {
+		return nil
+	}
+	out := make([]any, 0, len(feed.Free))
+	for _, m := range feed.Free {
+		if strings.TrimSpace(m.ID) == "" {
+			continue
+		}
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		out = append(out, map[string]any{"id": m.ID, "name": name})
+	}
+	return out
+}
+
+// mergeClineFreeTier appends the free-tier entries the catalogue is missing.
+// First writer wins on a shared id, so anything the two sources agree on keeps
+// the catalogue's own entry.
+func mergeClineFreeTier(catalogue, free []any) []any {
+	if len(free) == 0 {
+		return catalogue
+	}
+	present := make(map[string]bool, len(catalogue))
+	for _, m := range catalogue {
+		if mm, ok := m.(map[string]any); ok {
+			if id, ok := mm["id"].(string); ok {
+				present[id] = true
+			}
+		}
+	}
+	for _, m := range free {
+		mm, _ := m.(map[string]any)
+		id, _ := mm["id"].(string)
+		if !present[id] {
+			catalogue = append(catalogue, m)
+		}
+	}
+	return catalogue
 }

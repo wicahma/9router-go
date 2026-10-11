@@ -2,6 +2,8 @@ package translator
 
 import (
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"fmt"
 	"time"
 )
 
@@ -108,13 +110,46 @@ type OpenAIRespMsg struct {
 	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
 }
 
+// OpenAIReasoningDetail is one entry of reasoning_details. Vendors disagree on
+// the shape: some send a bare string, others an object carrying text or content.
+type OpenAIReasoningDetail struct {
+	Text    string
+	Content string
+}
+
+// UnmarshalJSON accepts both the bare-string and the object shape.
+func (d *OpenAIReasoningDetail) UnmarshalJSON(b []byte) error {
+	var raw any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("OpenAIReasoningDetail.UnmarshalJSON: %w", err)
+	}
+	switch v := raw.(type) {
+	case string:
+		d.Text = v
+	case map[string]any:
+		d.Text, _ = v["text"].(string)
+		d.Content, _ = v["content"].(string)
+	}
+	return nil
+}
+
+// MarshalJSON emits the bare string when the entry carries nothing but text, so
+// a translated request round-trips back to the shape the vendor expects.
+func (d OpenAIReasoningDetail) MarshalJSON() ([]byte, error) {
+	if d.Content == "" {
+		return json.Marshal(d.Text)
+	}
+	return json.Marshal(map[string]string{"text": d.Text, "content": d.Content})
+}
+
 // OpenAIDelta holds the per-chunk delta in an OpenAI stream.
 type OpenAIDelta struct {
-	Role             string                 `json:"role"`
-	Content          string                 `json:"content"`
-	ReasoningContent string                 `json:"reasoning_content"`
-	Reasoning        string                 `json:"reasoning"`
-	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
+	Role             string                  `json:"role"`
+	Content          string                  `json:"content"`
+	ReasoningContent string                  `json:"reasoning_content"`
+	Reasoning        string                  `json:"reasoning"`
+	ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
+	ToolCalls        []OpenAIToolCallStream  `json:"tool_calls"`
 }
 
 // OpenAIToolCallStream holds a streaming tool call fragment.
@@ -168,11 +203,60 @@ type ClaudeTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema jsontext.Value `json:"input_schema,omitempty"`
+	// Strict is not an Anthropic-native field; it is carried through translation
+	// so a client instruction survives a Claude<->OpenAI hop (parity with
+	// decolua/9router#4607). Pointer + omitempty keeps "unset" distinguishable
+	// from an explicit false, which is a real client instruction. A non-boolean
+	// value is dropped rather than fatal — see UnmarshalStrict.
+	Strict *bool `json:"strict,omitempty"`
+}
+
+// UnmarshalStrict decodes a tool strict flag, reporting whether one was
+// actually present. Upstream reads it behind a `typeof === "boolean"` guard,
+// so a non-boolean is ignored, not an error; a plain *bool would instead fail
+// the whole request body on `"strict":"yes"`.
+func UnmarshalStrict(data []byte) (*bool, error) {
+	var v bool
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, nil //nolint:nilerr // non-boolean means "unset"
+	}
+	return &v, nil
+}
+
+// claudeToolJSON mirrors ClaudeTool with the strict field left raw, so a
+// non-boolean value can be dropped instead of aborting the decode.
+type claudeToolJSON struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema jsontext.Value `json:"input_schema,omitempty"`
+	Strict      jsontext.Value `json:"strict,omitempty"`
+}
+
+// UnmarshalJSON decodes a Claude tool, dropping a non-boolean strict.
+func (t *ClaudeTool) UnmarshalJSON(data []byte) error {
+	var raw claudeToolJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t.Name, t.Description, t.InputSchema = raw.Name, raw.Description, raw.InputSchema
+	if len(raw.Strict) > 0 {
+		strict, err := UnmarshalStrict(raw.Strict)
+		if err != nil {
+			return err
+		}
+		t.Strict = strict
+	}
+	return nil
 }
 
 // ClaudeToolChoice represents the tool_choice field.
 type ClaudeToolChoice struct {
 	Type string `json:"type"`
+	// DisableParallelToolUse is Claude's single-tool-call policy: the model may
+	// emit at most one tool call per turn. It is the counterpart of OpenAI's
+	// parallel_tool_calls:false (parity with decolua/9router#4581). Plain bool
+	// with omitempty: only an explicit true is worth putting on the wire.
+	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
@@ -209,6 +293,9 @@ type OpenAIRequest struct {
 	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice          any             `json:"tool_choice,omitempty"`
+	// ParallelToolCalls carries OpenAI's single-tool-call policy. Pointer so an
+	// absent field stays absent while an explicit false still serialises.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 }
@@ -264,4 +351,8 @@ type OpenAIFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  jsontext.Value `json:"parameters,omitempty"`
+	// Strict preserves an explicit client strict mode in both directions
+	// (parity with decolua/9router#4607/#4543/#4573). Pointer + omitempty keeps
+	// "unset" distinguishable from an explicit false.
+	Strict *bool `json:"strict,omitempty"`
 }

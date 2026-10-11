@@ -50,16 +50,14 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);`,
-`CREATE TABLE combos (
-				id TEXT PRIMARY KEY,
-				name TEXT UNIQUE NOT NULL,
-				kind TEXT,
-				models TEXT NOT NULL,
-				strategy TEXT NOT NULL DEFAULT 'fallback',
-				contextSize INTEGER DEFAULT 0,
-				createdAt TEXT NOT NULL,
-				updatedAt TEXT NOT NULL
-			);`,
+		`CREATE TABLE combos (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			kind TEXT,
+			models TEXT NOT NULL,
+			createdAt TEXT NOT NULL,
+			updatedAt TEXT NOT NULL
+		);`,
 		`CREATE TABLE kv (
 			scope TEXT NOT NULL,
 			key TEXT NOT NULL,
@@ -85,6 +83,13 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			cleanup()
 			t.Fatalf("failed to create table: %v", err)
 		}
+	}
+
+	// Production applies the Go-only columns on every startup; without them a
+	// fixture rejects any query that reads a newer column.
+	if err := EnsureAdditiveColumns(db); err != nil {
+		cleanup()
+		t.Fatalf("failed to apply additive columns: %v", err)
 	}
 
 	return db, cleanup

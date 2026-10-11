@@ -25,7 +25,7 @@ type Params struct {
 	RefreshToken string
 	AccessToken  string // current (possibly expired) token
 	// ProviderSpecificData carries per-account OAuth material stored at login
-	// time (Kiro clientId/clientSecret/region for AWS SSO OIDC refresh).
+	// time (e.g. Kiro clientId/clientSecret/region for AWS SSO OIDC refresh).
 	ProviderSpecificData map[string]string
 }
 
@@ -51,6 +51,16 @@ func Get(provider string) Refresher {
 	return registry[provider]
 }
 
+// Unregister removes the refresher for a provider, restoring the entry to
+// "none registered". Tests that register a stub under a real provider id need
+// this to put the process-wide registry back the way they found it — a leaked
+// stub silently changes what production code under test does.
+func Unregister(provider string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(registry, provider)
+}
+
 // Refresh calls the provider's refresher, or falls back to standard OAuth2.
 func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
 	if fn := Get(p.Provider); fn != nil {
@@ -60,7 +70,8 @@ func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
 }
 
 // StringMap flattens a connection providerSpecificData blob to the string
-// fields refreshers need. Non-string and empty values are dropped.
+// fields refreshers need (clientId/clientSecret/region). Non-string values
+// are dropped.
 func StringMap(m map[string]any) map[string]string {
 	if len(m) == 0 {
 		return nil

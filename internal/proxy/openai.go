@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,10 +30,6 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	}
 	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
-		var ue *UpstreamError
-		if errors.As(err, &ue) && ue.URL == "" {
-			ue.URL = cfg.BaseURL
-		}
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}
 	return resp, nil
@@ -54,7 +49,7 @@ func UpstreamBody(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: body}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
 	}
 	return body, nil
 }

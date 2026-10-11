@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	json "encoding/json/v2"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +24,6 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 		wantPID     string
 		wantAuth    bool
 		wantNoProj  bool
-		wantUD      bool
 	}{
 		{
 			name:       "project found",
@@ -52,26 +53,17 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			// loadCodeAssist already said "no project for this token" (200, tiers
 			// only) — an onboardUser 429 afterwards doesn't change that verdict,
 			// so it's still cached as no-project.
-			name:        "onboard rate-limited after clean load",
-			loadAssist:  200,
-			loadBody:    `{"allowedTiers":[{"id":"standard-tier","isDefault":true}]}`,
-			onboard:     429,
-			wantNoProj:  true,
-			wantAuth:    false,
+			name:       "onboard rate-limited after clean load",
+			loadAssist: 200,
+			loadBody:   `{"allowedTiers":[{"id":"standard-tier","isDefault":true}]}`,
+			onboard:    429,
+			wantNoProj: true,
+			wantAuth:   false,
 		},
 		{
-			name:        "concurrent connection refused is transient",
-			loadAssist:  503,
-			wantNoProj:  false,
-		},
-		{
-			name:        "user-defined tier without project",
-			loadAssist:  200,
-			loadBody:    `{"allowedTiers":[{"id":"standard-tier","isDefault":true,"userDefinedCloudaicompanionProject":true}]}`,
-			onboard:     200,
-			onboardBody: `{"done":true,"response":{"cloudaicompanionProject":{}}}`,
-			wantNoProj:  true,
-			wantUD:      true,
+			name:       "concurrent connection refused is transient",
+			loadAssist: 503,
+			wantNoProj: false,
 		},
 	}
 
@@ -96,7 +88,7 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			loadCodeAssistURL, onboardUserURL = srv.URL+"/loadCodeAssist", srv.URL+"/onboardUser"
 			defer func() { loadCodeAssistURL, onboardUserURL = oldL, oldO }()
 
-			pid, auth, noProj, ud := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
+			pid, auth, noProj := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
 			if pid != tc.wantPID {
 				t.Errorf("pid = %q, want %q", pid, tc.wantPID)
 			}
@@ -105,9 +97,6 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 			}
 			if noProj != tc.wantNoProj {
 				t.Errorf("noProject = %v, want %v", noProj, tc.wantNoProj)
-			}
-			if ud != tc.wantUD {
-				t.Errorf("userDefined = %v, want %v", ud, tc.wantUD)
 			}
 		})
 	}
@@ -128,24 +117,82 @@ func TestProjectNoCache(t *testing.T) {
 	}
 }
 
-func TestAntigravityProjectID(t *testing.T) {
-	cases := []struct {
-		name string
-		data map[string]any
-		want string
-	}{
-		{"top level projectId", map[string]any{"projectId": "p1"}, "p1"},
-		{"top level project_id", map[string]any{"project_id": "p2"}, "p2"},
-		{"psd projectId", map[string]any{"providerSpecificData": map[string]any{"projectId": "p3"}}, "p3"},
-		{"psd project_id", map[string]any{"providerSpecificData": map[string]any{"project_id": "p4"}}, "p4"},
-		{"precedence top level wins", map[string]any{"projectId": "top", "providerSpecificData": map[string]any{"projectId": "psd"}}, "top"},
-		{"empty", map[string]any{}, ""},
-		{"wrong type", map[string]any{"projectId": 42}, ""},
-		{"nil", nil, ""},
+func TestAntigravityProbe_HeadersAndMetadata(t *testing.T) {
+	var gotUA, gotGoogClient, gotClientMeta string
+	var gotBodyMeta map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotGoogClient = r.Header.Get("X-Goog-Api-Client")
+		gotClientMeta = r.Header.Get("Client-Metadata")
+
+		var body struct {
+			Metadata map[string]any `json:"metadata"`
+		}
+		_ = json.Unmarshal(mustReadAll(r.Body), &body)
+		gotBodyMeta = body.Metadata
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"cloudaicompanionProject":{"id":"test-proj"}}`))
+	}))
+	defer srv.Close()
+
+	oldL, oldO := loadCodeAssistURL, onboardUserURL
+	loadCodeAssistURL, onboardUserURL = srv.URL+"/loadCodeAssist", srv.URL+"/onboardUser"
+	defer func() { loadCodeAssistURL, onboardUserURL = oldL, oldO }()
+
+	pid, auth, noProj := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
+	if pid != "test-proj" || auth || noProj {
+		t.Fatalf("unexpected result: pid=%q, auth=%v, noProj=%v", pid, auth, noProj)
 	}
-	for _, c := range cases {
-		if got := AntigravityProjectID(c.data); got != c.want {
-			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+
+	if gotUA != "antigravity/ide/2.11.0 darwin/arm64" {
+		t.Errorf("User-Agent = %q, want %q", gotUA, "antigravity/ide/2.11.0 darwin/arm64")
+	}
+	if gotGoogClient != "" {
+		t.Errorf("X-Goog-Api-Client = %q, want empty", gotGoogClient)
+	}
+	if gotClientMeta != "" {
+		t.Errorf("Client-Metadata = %q, want empty", gotClientMeta)
+	}
+	if gotBodyMeta["ideType"] != float64(9) {
+		t.Errorf("body metadata ideType = %v, want 9", gotBodyMeta["ideType"])
+	}
+	if gotBodyMeta["platform"] != float64(2) {
+		t.Errorf("body metadata platform = %v, want 2", gotBodyMeta["platform"])
+	}
+	if gotBodyMeta["pluginType"] != float64(2) {
+		t.Errorf("body metadata pluginType = %v, want 2", gotBodyMeta["pluginType"])
+	}
+}
+
+func TestExtractProjectID(t *testing.T) {
+	cases := []struct {
+		input any
+		want  string
+	}{
+		{nil, ""},
+		{"", ""},
+		{"  ", ""},
+		{"proj-direct", "proj-direct"},
+		{"  proj-trimmed  ", "proj-trimmed"},
+		{map[string]any{"id": "proj-from-id"}, "proj-from-id"},
+		{map[string]any{"projectId": "proj-from-projectId"}, "proj-from-projectId"},
+		{map[string]any{"project_id": "proj-from-project_id"}, "proj-from-project_id"},
+		{map[string]any{"id": "", "projectId": "fallback-pid"}, "fallback-pid"},
+		{map[string]any{}, ""},
+		{123, ""},
+	}
+
+	for _, tc := range cases {
+		got := extractProjectID(tc.input)
+		if got != tc.want {
+			t.Errorf("extractProjectID(%v) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
+}
+
+func mustReadAll(r io.Reader) []byte {
+	b, _ := io.ReadAll(r)
+	return b
 }

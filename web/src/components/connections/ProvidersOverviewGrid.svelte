@@ -11,8 +11,8 @@
     providerNodes: ProviderNode[]
     onSelectProvider: (id: string) => void
     onToggleAll: (id: string, active: boolean) => void
-    onAddAnthropic: () => void
-    onAddOpenAI: () => void
+    /** Opens the unified add-custom-provider dialog; the modal owns the type. */
+    onAddCustom: () => void
   }
 
   let {
@@ -20,8 +20,7 @@
     providerNodes = [],
     onSelectProvider,
     onToggleAll,
-    onAddAnthropic,
-    onAddOpenAI,
+    onAddCustom,
   }: Props = $props()
 
   let searchQuery = $state('')
@@ -33,14 +32,14 @@
   // 1. Custom Providers
   let customNodes = $derived(
     providerNodes
-      .filter((n) => matchesSearch(n.name, searchQuery) && matchesFilter(getProviderStats(connections, n.id), statusFilter))
+      .filter((n) => matchesSearch(n.name, searchQuery, n.id) && matchesFilter(getProviderStats(connections, n.id), statusFilter))
       .map((n) => ({ ...n, stats: getProviderStats(connections, n.id) }))
   )
 
   // 2. OAuth Providers
   let oauthProviders = $derived(
     PROVIDER_CATALOG
-      .filter((p) => isChatProvider(p) && !p.hidden && p.category === 'oauth' && matchesSearch(p.name, searchQuery) && matchesFilter(getProviderStats(connections, p.id, ['oauth']), statusFilter))
+      .filter((p) => isChatProvider(p) && !p.hidden && p.category === 'oauth' && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, ['oauth']), statusFilter))
       .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, ['oauth']) }))
       .sort((a, b) => (b.stats.connected > 0 ? 1 : 0) - (a.stats.connected > 0 ? 1 : 0) || a.name.localeCompare(b.name))
   )
@@ -48,7 +47,7 @@
   // 3. Free Tier Providers
   let freeTierProviders = $derived(
     PROVIDER_CATALOG
-      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'free' || p.category === 'freeTier') && matchesSearch(p.name, searchQuery) && matchesFilter(getProviderStats(connections, p.id), statusFilter, p.noAuth))
+      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'free' || p.category === 'freeTier') && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id), statusFilter, p.noAuth))
       .map((p) => ({ ...p, stats: getProviderStats(connections, p.id) }))
       .sort((a, b) => (b.stats.connected > 0 || b.noAuth ? 1 : 0) - (a.stats.connected > 0 || a.noAuth ? 1 : 0) || a.name.localeCompare(b.name))
   )
@@ -56,7 +55,7 @@
   // 4. API Key Providers
   let apikeyProviders = $derived(
     PROVIDER_CATALOG
-      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'apikey' || p.category === 'webCookie') && matchesSearch(p.name, searchQuery) && matchesFilter(getProviderStats(connections, p.id, ['apikey', 'api_key']), statusFilter))
+      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'apikey' || p.category === 'webCookie') && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, ['apikey', 'api_key']), statusFilter))
       .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, ['apikey', 'api_key']) }))
       .sort((a, b) => (b.stats.connected > 0 ? 1 : 0) - (a.stats.connected > 0 ? 1 : 0) || a.name.localeCompare(b.name))
   )
@@ -97,22 +96,17 @@
   <div class="flex flex-col gap-4">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h2 class="text-lg sm:text-xl font-semibold leading-tight text-text-main">
-        Custom Providers (OpenAI/Anthropic Compatible)
+        Custom Providers (OpenAI, Anthropic, Embedding)
       </h2>
-      <div class="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
-        <Button size="sm" onclick={onAddAnthropic} class="w-full sm:w-auto bg-[#E56A4A] text-white hover:bg-[#D45939] border-none">
-          <Plus class="w-4 h-4 mr-1" /> Add Anthropic Compatible
-        </Button>
-        <Button size="sm" variant="secondary" onclick={onAddOpenAI} class="w-full sm:w-auto !bg-white !text-black hover:!bg-gray-100 border border-border shadow-xs">
-          <Plus class="w-4 h-4 mr-1" /> Add OpenAI Compatible
-        </Button>
-      </div>
+      <Button size="sm" onclick={onAddCustom} class="w-full sm:w-auto">
+        <Plus class="w-4 h-4 mr-1" /> Add Custom Provider
+      </Button>
     </div>
 
     {#if customNodes.length === 0}
       <div class="flex items-center justify-center gap-2 py-4 border border-dashed border-border rounded-xl text-text-muted text-xs">
         <Server class="w-4 h-4" />
-        <span>No custom providers — use buttons above to add OpenAI/Anthropic compatible endpoints</span>
+        <span>No custom providers — use “Add Custom Provider” to register an OpenAI, Anthropic, or embedding endpoint</span>
       </div>
     {:else}
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">

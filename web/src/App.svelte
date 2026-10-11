@@ -3,7 +3,8 @@
   import { Loader2 } from 'lucide-svelte'
   import {
     api,
-    isAuthenticated,
+    getStoredAPIKey,
+    onUnauthorized,
     type APIKey,
     type Combo,
     type ProviderConnection,
@@ -11,7 +12,6 @@
     type Settings
   } from './api/client'
   import AnalyticsView from './components/analytics/AnalyticsView.svelte'
-  import ApiKeysView from './components/ApiKeysView.svelte'
   import CliToolsView from './components/CliToolsView.svelte'
   import CombosView from './components/combos/CombosView.svelte'
   import ConnectionsView from './components/connections/ConnectionsView.svelte'
@@ -26,7 +26,10 @@
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import SecurityPanel from './components/security/SecurityPanel.svelte'
   import Sidebar from './components/Sidebar.svelte'
+  import UpdateModal from './components/UpdateModal.svelte'
+  import type { SystemVersionInfo } from './api/client'
   import Toasts from './lib/ui/Toasts.svelte'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
@@ -47,7 +50,6 @@
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
   let requireLogin = $state(false)
-  let sessionNotice = $state('')
   let isCreateComboOpen = $state(false)
   let isMobileMenuOpen = $state(false)
   let selectedProviderId = $state<string | null>(
@@ -128,22 +130,15 @@
     try {
       const authStatus = await api.checkRequireLogin()
       requireLogin = !!authStatus.requireLogin
-      // Server session (auth_token cookie) is authoritative when it answered;
-      // the localStorage/sessionStorage flag is only a hint (cookie is
-      // httpOnly). A stale hint must never keep a rejected session logged in.
-      if (!requireLogin) {
-        isAuthenticatedState = true
-      } else if (typeof authStatus.authenticated === 'boolean') {
-        isAuthenticatedState = authStatus.authenticated
-        if (!isAuthenticatedState && isAuthenticated()) {
-          sessionNotice = 'Your session has expired. Please sign in again.'
-        }
+      if (requireLogin) {
+        // When login is required, only the server-verified session cookie is authoritative.
+        isAuthenticatedState = !!authStatus.authenticated
         if (!isAuthenticatedState) {
           sessionStorage.removeItem('9router_auth')
           localStorage.removeItem('9router_auth')
         }
       } else {
-        isAuthenticatedState = isAuthenticated()
+        isAuthenticatedState = true
       }
     } catch {
       requireLogin = false
@@ -154,15 +149,29 @@
   }
 
   onMount(() => {
-    checkAuth().then(() => {
-      if (isAuthenticatedState && activeTab === 'login') {
-        navigate('endpoint', true)
+    const unsubscribeUnauthorized = onUnauthorized(() => {
+      isAuthenticatedState = false
+      requireLogin = true
+      if (activeTab !== 'login') {
+        navigate('login', true)
       }
     })
-    loadData()
+
+    checkAuth().then(() => {
+      if (requireLogin && !isAuthenticatedState) {
+        if (activeTab !== 'login') {
+          navigate('login', true)
+        }
+      } else {
+        if (activeTab === 'login') {
+          navigate('endpoint', true)
+        }
+        loadData()
+      }
+    })
 
     const rawPath = window.location.pathname.replace(/\/+$/, '') || '/'
-    if (rawPath === '/' || rawPath === '/dashboard') {
+    if (isAuthenticatedState && (rawPath === '/' || rawPath === '/dashboard')) {
       window.history.replaceState({ tab: activeTab }, '', TAB_ROUTES[activeTab])
     }
 
@@ -173,19 +182,9 @@
     }
     window.addEventListener('popstate', handlePopState)
 
-    // Mid-session expiry: any API call answered 401 with the session gate's
-    // message bounces the user to login with an explanation instead of
-    // leaving the dashboard silently stuck.
-    function handleSessionExpired() {
-      if (!isAuthenticatedState) return
-      isAuthenticatedState = false
-      sessionNotice = 'Your session has expired. Please sign in again.'
-      navigate('login', true)
-    }
-    window.addEventListener('9router-session-expired', handleSessionExpired)
-
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return
+      if (requireLogin && !isAuthenticatedState) return
       try {
         const [connsRes, nodesRes] = await Promise.all([
           api.getConnections().catch(() => null),
@@ -201,7 +200,7 @@
     return () => {
       clearInterval(interval)
       window.removeEventListener('popstate', handlePopState)
-      window.removeEventListener('9router-session-expired', handleSessionExpired)
+      unsubscribeUnauthorized()
     }
   })
 
@@ -232,6 +231,10 @@
     endpoint: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
     connections: { title: 'Providers & Endpoints', description: 'Manage your AI provider connections' },
     combos: { title: 'Combo & Routing', description: 'Model combos and failover strategies' },
+    // The two moved tabs are sections of the Usage page, so the TopBar keeps
+    // the Usage title and the section's own header below it names the section.
+    'usage-cache': { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
+    'usage-compression': { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
     analytics: { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
     quota: { title: 'Quota Tracker', description: 'Track and manage your API quota limits' },
     'token-saver': { title: 'Token Saver', description: 'Compress prompts and outputs to save tokens' },
@@ -247,13 +250,15 @@
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
     settings: { title: 'Settings', description: 'Manage your preferences and configuration' },
-    keys: { title: 'CLI & Remote Access', description: 'API keys for your CLI tools' },
   }
 
   function handleOpenNewCombo() {
     navigate('combos')
     isCreateComboOpen = true
   }
+  let isUpdateModalOpen = $state(false)
+  let systemUpdateInfo = $state<SystemVersionInfo | null>(null)
+  let systemVersion = $state('')
 </script>
 
 {#if isOAuthCallback}
@@ -267,10 +272,8 @@
   </div>
 {:else if (requireLogin && !isAuthenticatedState) || activeTab === 'login'}
   <LoginView
-    notice={sessionNotice}
     onSuccess={() => {
       isAuthenticatedState = true
-      sessionNotice = ''
       loadData()
       if (activeTab === 'login') {
         navigate('endpoint')
@@ -306,8 +309,18 @@
         activeConnections={activeConnectionsCount}
         totalConnections={connections.length}
         onClose={() => (isMobileMenuOpen = false)}
+        bind:showUpdateModal={isUpdateModalOpen}
+        bind:updateInfo={systemUpdateInfo}
+        bind:version={systemVersion}
       />
     </div>
+
+    <!-- Global Update Modal & Disconnected Overlay outside of transform containers -->
+    <UpdateModal
+      bind:isOpen={isUpdateModalOpen}
+      updateInfo={systemUpdateInfo}
+      currentVersion={systemVersion}
+    />
 
     <!-- Main Viewport (TopBar + Scrollable Canvas) -->
     <div class="flex-1 flex flex-col min-w-0 h-full relative isolate">
@@ -332,7 +345,7 @@
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">
               <Loader2 class="w-7 h-7 animate-spin text-brand-500" />
-              <span class="font-code text-xs">Connecting to 9router-go Localhost Gateway (:20128)...</span>
+              <span class="font-code text-xs">Connecting to 9router-go Localhost Gateway (:20130)...</span>
             </div>
           {:else}
             {#if activeTab === 'endpoint'}
@@ -348,16 +361,16 @@
               />
             {:else if activeTab === 'combos'}
               <CombosView {combos} {connections} {providerNodes} onRefresh={loadData} bind:isCreatingOpen={isCreateComboOpen} />
-            {:else if activeTab === 'analytics'}
-              <AnalyticsView {connections} {providerNodes} />
+            {:else if activeTab === 'analytics' || activeTab === 'usage-cache' || activeTab === 'usage-compression'}
+              <!-- Cache and Compression Analytics are Usage sections (#200);
+                   AnalyticsView renders all four sections under one header. -->
+              <AnalyticsView {connections} {providerNodes} tab={activeTab} onNavigate={(next) => navigate(next)} />
             {:else if activeTab === 'quota'}
               <QuotaTrackerView {connections} />
             {:else if activeTab === 'token-saver'}
               <TokenSaverView {settings} onRefresh={loadData} />
             {:else if activeTab === 'cli-tools'}
               <CliToolsView {apiKeys} onRefresh={loadData} />
-            {:else if activeTab === 'keys'}
-              <ApiKeysView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail
@@ -538,6 +551,8 @@
               <TerminalView />
             {:else if activeTab === 'settings'}
               <ProfileSettingsView {settings} onRefresh={loadData} />
+            {:else if activeTab === 'security'}
+              <SecurityPanel />
             {/if}
           {/if}
         </div>

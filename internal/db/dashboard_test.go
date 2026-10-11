@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 func setupDashboardTestDB(t *testing.T) (*Repo, func()) {
@@ -48,16 +50,14 @@ func setupDashboardTestDB(t *testing.T) (*Repo, func()) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);`,
-`CREATE TABLE combos (
-				id TEXT PRIMARY KEY,
-				name TEXT UNIQUE NOT NULL,
-				kind TEXT,
-				models TEXT NOT NULL,
-				strategy TEXT NOT NULL DEFAULT 'fallback',
-				contextSize INTEGER DEFAULT 0,
-				createdAt TEXT NOT NULL,
-				updatedAt TEXT NOT NULL
-			);`,
+		`CREATE TABLE combos (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			kind TEXT,
+			models TEXT NOT NULL,
+			createdAt TEXT NOT NULL,
+			updatedAt TEXT NOT NULL
+		);`,
 		`CREATE TABLE kv (
 			scope TEXT NOT NULL,
 			key TEXT NOT NULL,
@@ -75,6 +75,13 @@ func setupDashboardTestDB(t *testing.T) (*Repo, func()) {
 			cleanup()
 			t.Fatalf("failed to create table: %v", err)
 		}
+	}
+
+	// Production adds the Go-only columns on every startup; a fixture that
+	// skips this fails on any query that reads them.
+	if err := EnsureAdditiveColumns(db); err != nil {
+		cleanup()
+		t.Fatalf("failed to apply additive columns: %v", err)
 	}
 
 	return NewRepo(db), cleanup
@@ -96,7 +103,7 @@ func TestProviderConnectionsCRUD(t *testing.T) {
 	}
 
 	// Test UpdateProviderConnection
-	err = repo.UpdateProviderConnection("conn-1", "OpenAI Updated", 5, false, `{"apiKey":"sk-2"}`)
+	err = repo.UpdateProviderConnection("conn-1", "OpenAI Updated", lo.ToPtr(5), false, `{"apiKey":"sk-2"}`)
 	if err != nil {
 		t.Fatalf("UpdateProviderConnection failed: %v", err)
 	}
@@ -336,9 +343,9 @@ func TestSettingsRaw(t *testing.T) {
 
 	// UpdateSettingsRaw initial insert
 	initial := map[string]any{
-		"password":     "hashed_pwd",
+		"password":      "hashed_pwd",
 		"requireApiKey": true,
-		"rtkEnabled":   true,
+		"rtkEnabled":    true,
 	}
 	err = repo.UpdateSettingsRaw(initial)
 	if err != nil {

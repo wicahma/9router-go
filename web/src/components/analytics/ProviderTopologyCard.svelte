@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { ActiveRequestItem } from './types'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
 
   interface ProviderNodeItem {
     id: string
     name: string
     color?: string
     type?: string
+    alias?: string
   }
 
   interface Props {
@@ -28,51 +29,24 @@
     onRefresh
   }: Props = $props()
 
-  // Default fallback providers if none connected
-  const FALLBACK_PROVIDERS: ProviderNodeItem[] = [
-    { id: 'antigravity', name: 'Antigravity', color: '#F59E0B' },
-    { id: 'opencode', name: 'OpenCode Free', color: '#3B82F6' },
-    { id: 'nvidia', name: 'NVIDIA NIM', color: '#76B900' },
-    { id: 'freebuff', name: 'Freebuff', color: '#10B981' },
-    { id: 'openrouter', name: 'OpenRouter', color: '#6366F1' },
-    { id: 'clinepass', name: 'ClinePass', color: '#8B5CF6' }
-  ]
+  // Upstream parity (#4615): an empty list renders an empty state, it does not
+  // fall back to a hardcoded free-provider roster. Those nodes have no
+  // connection behind them, and upstream #4615 exists precisely because
+  // drawing them unconditionally made an idle map look busy — so a catalog
+  // fallback here would re-introduce the very bug that PR removed, on the one
+  // screen where nothing is actually in use.
+  let displayProviders = $derived(providers)
 
-  let displayProviders = $derived(
-    providers.length > 0 ? providers.slice(0, 14) : FALLBACK_PROVIDERS
-  )
-
-  let activeProviderIds = $derived(
-    new Set(
-      activeRequests
-        .map((r) => r.provider?.toLowerCase())
-        .filter((p): p is string => Boolean(p))
-    )
-  )
-
-  let hasPulse = $derived(Boolean(pulseProvider))
-
-  // Model yang sedang aktif per provider, dari stream live activeRequests.
-  let modelsByProvider = $derived.by(() => {
-    const m = new Map<string, { model: string; count: number }[]>()
+  let activeProviderIds = $derived.by(() => {
+    const set = new Set<string>()
     for (const r of activeRequests) {
-      const key = (r.provider || '').toLowerCase()
-      if (!key || !r.model) continue
-      const list = m.get(key) || []
-      const hit = list.find((x) => x.model === r.model)
-      if (hit) hit.count += r.count || 1
-      else list.push({ model: r.model, count: r.count || 1 })
-      m.set(key, list)
+      const p = r.provider?.toLowerCase().trim()
+      if (p) set.add(p)
     }
-    return m
+    return set
   })
 
-  function activeModels(id: string, name: string): { model: string; count: number }[] {
-    const pid = id.toLowerCase()
-    const pname = (name || '').toLowerCase()
-    return modelsByProvider.get(pid) || modelsByProvider.get(pname) || []
-  }
-
+  let hasPulse = $derived(Boolean(pulseProvider))
   let activeCount = $derived(
     Math.max(activeRequests.reduce((sum, r) => sum + (r.count || 1), 0), hasPulse ? 1 : 0)
   )
@@ -105,14 +79,22 @@
       const x = rx * Math.cos(angle)
       const y = ry * Math.sin(angle)
 
-      const pid = p.id.toLowerCase()
-      const pname = (p.name || '').toLowerCase()
+      const pid = p.id.toLowerCase().trim()
+      const pname = (p.name || '').toLowerCase().trim()
+      const palias = (p.alias || '').toLowerCase().trim()
+      const isProviderMatch = (target: string) => {
+        if (!target) return false
+        const t = target.toLowerCase().trim()
+        return t === pid || t === pname || (Boolean(palias) && t === palias)
+      }
+
       const isActive =
         activeProviderIds.has(pid) ||
         activeProviderIds.has(pname) ||
-        (hasPulse && (pulseProvider.toLowerCase() === pid || pulseProvider.toLowerCase() === pname))
-      const isLast = !isActive && Boolean(lastProvider) && (lastProvider.toLowerCase() === pid || lastProvider.toLowerCase() === pname)
-      const isError = !isActive && Boolean(errorProvider) && (errorProvider.toLowerCase() === pid || errorProvider.toLowerCase() === pname)
+        (Boolean(palias) && activeProviderIds.has(palias)) ||
+        (hasPulse && isProviderMatch(pulseProvider))
+      const isLast = !isActive && Boolean(lastProvider) && isProviderMatch(lastProvider)
+      const isError = !isActive && Boolean(errorProvider) && isProviderMatch(errorProvider)
       // Edge handle coordinates based on angle
       let sourceX = 0
       let sourceY = 0
@@ -173,8 +155,7 @@
         path,
         returnPath,
         textIcon,
-        color: p.color || '#6b7280',
-        models: activeModels(pid, pname).slice(0, 2)
+        color: p.color || '#6b7280'
       }
     })
 
@@ -187,11 +168,19 @@
     const requiredHeight = 2 * geometry.ry + 120
     const scaleX = (containerWidth - 32) / requiredWidth
     const scaleY = (containerHeight - 32) / requiredHeight
-    zoom = Math.min(1.05, Math.max(0.3, Math.min(scaleX, scaleY)))
+    zoom = Math.min(1.05, Math.max(0.15, Math.min(scaleX, scaleY)))
     panX = 0
     panY = 0
   }
 
+  let prevNodeCount = 0
+  $effect(() => {
+    const count = geometry.nodes.length
+    if (count !== prevNodeCount) {
+      prevNodeCount = count
+      fitView()
+    }
+  })
   function handlePointerDown(e: PointerEvent) {
     if ((e.target as HTMLElement).closest('button')) return
     isDragging = true
@@ -254,7 +243,7 @@
     <!-- SVG Layer for Bezier Edges -->
     <svg class="absolute inset-0 overflow-visible pointer-events-none" style="transform: translate(0, 0);">
       <defs>
-        <filter id="topo-electric" x="-30%" y="-30%" width="160%" height="160%">
+        <filter id="topo-electric" filterUnits="userSpaceOnUse" x="-5000" y="-5000" width="10000" height="10000">
           <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="1" seed="2" result="noise">
             <animate attributeName="baseFrequency" values="0.8;1.3;0.8" dur="0.25s" repeatCount="indefinite" />
           </feTurbulence>
@@ -499,16 +488,7 @@
           style="background-color: {node.color}15;"
         >
           {#if !imageErrors[node.id]}
-            <img
-              src={getIconPath(node.id)}
-              alt={node.name}
-              class="w-6 h-6 rounded-sm object-contain"
-              onerror={() => {
-                imageErrors = { ...imageErrors, [node.id]: true }
-              }}
-              loading="lazy"
-              decoding="async"
-            />
+            <ProviderArtwork id={node.id} class="w-6 h-6 rounded-sm object-contain" />
           {:else}
             <span class="text-sm font-bold" style="color: {node.color};">
               {node.textIcon}
@@ -522,20 +502,6 @@
         >
           {node.name}
         </span>
-
-        <!-- Live model labels for this provider -->
-        {#if node.models && node.models.length}
-          <div class="flex flex-wrap gap-1 items-center max-w-[220px]">
-            {#each node.models as m (m.model)}
-              <span
-                class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-info/10 text-info border border-info/25 truncate max-w-[120px]"
-                title={m.model}
-              >
-                {m.model}{m.count > 1 ? `×${m.count}` : ''}
-              </span>
-            {/each}
-          </div>
-        {/if}
 
         <!-- Active indicator -->
         {#if node.isActive}
@@ -558,6 +524,14 @@
       </div>
     {/each}
   </div>
+  <!-- Upstream empty state: nothing has been used in the period, so there is
+       nothing honest to draw. The router core and the zoom controls stay put so
+       the card keeps its shape instead of collapsing. -->
+  {#if displayProviders.length === 0}
+    <div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-sm text-text-muted">
+      No providers connected
+    </div>
+  {/if}
 
   <!-- Bottom-left React Flow style controls -->
   <div class="absolute bottom-4 left-4 z-20 flex flex-col rounded-md border border-border bg-surface/90 shadow-md overflow-hidden backdrop-blur">

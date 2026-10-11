@@ -22,25 +22,22 @@ import (
 	"sync"
 	"time"
 
-	"9router/proxy/internal/constants"
+	"9router/proxy/internal/daemon"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/shutdown"
 	"github.com/samber/lo"
 )
 
 // CurrentVersion is the active 9router-go application version.
 // Can be overridden at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.8.8"
 // Default fallback is read from version.json at init if not overridden.
-var CurrentVersion = "1.10.0"
+var CurrentVersion = "1.9.11-exp.12"
 
 // DefaultUpdateURL is the primary remote version manifest URL.
-var DefaultUpdateURL = constants.RepoRawURL + "/version.json"
+var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
 
 // DefaultGitHubRepo is the repository for GitHub Releases API fallback.
-var DefaultGitHubRepo = constants.RepoSlug
-
-// githubReleasesAPIBase is the GitHub API root. A var so tests can point it
-// at a local server.
-var githubReleasesAPIBase = "https://api.github.com"
+var DefaultGitHubRepo = "luqman-v1/9router-go"
 
 // DefaultCheckInterval is the periodic background update check interval (6 hours).
 const DefaultCheckInterval = 6 * time.Hour
@@ -53,46 +50,7 @@ var (
 	autoUpdateMu      sync.RWMutex
 	updateInProgress  bool
 	updateProgressMu  sync.Mutex
-
-	// installedPath remembers where this process last wrote itself. It matters
-	// because os.Executable() cannot be trusted after a swap: on Linux it
-	// reports the path the running inode had when it was replaced, which by
-	// then has been renamed to .old and removed, so resolving it fails and the
-	// restart never happens ("resolve symlink for restart failed error=lstat
-	// /usr/local/bin/9router-go.old: no such file or directory", seen in a
-	// container whose auto-update had just installed the new binary).
-	installedPathMu sync.Mutex
-	installedPath   string
 )
-
-func rememberInstalledPath(path string) {
-	installedPathMu.Lock()
-	defer installedPathMu.Unlock()
-	installedPath = path
-}
-
-// executableTarget is the binary an update replaces and a restart runs: the
-// path the last update installed, else this process's own executable with
-// symlinks resolved. Resolution is best-effort — a symlink must be followed so
-// the swap replaces the real file, but a path that no longer resolves (the
-// post-swap case above) is used as-is rather than aborting the operation.
-func executableTarget() (string, error) {
-	installedPathMu.Lock()
-	path := installedPath
-	installedPathMu.Unlock()
-	if path != "" {
-		return path, nil
-	}
-
-	execPath, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate executable path: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
-		return resolved, nil
-	}
-	return execPath, nil
-}
 
 // UpdateInfo holds detailed version and asset information.
 type UpdateInfo struct {
@@ -188,52 +146,61 @@ func GetStatus() *UpdaterStatus {
 	}
 }
 
+// githubReleasesAPI is the GitHub Releases endpoint template, overridden by the
+// UPSTREAM_API_BASE release pipeline. It stays a template with a single verb so
+// a test can point the fallback at a local server.
+var githubReleasesAPI = lo.CoalesceOrEmpty(os.Getenv("UPSTREAM_API_BASE"), "https://api.github.com") + "/repos/%s/releases/latest"
+
 // CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
+//
+// The manifest is tried first, but it is only allowed to answer when it can
+// actually produce an installable update. Since #72 made the digest mandatory,
+// a manifest that carries no sha256 is a dead end: PerformSelfUpdate refuses
+// every install that reaches it, and the fallback that CAN fill the digest from
+// the release's SHA256SUMS.txt would never run. version.json ships exactly
+// three keys — downloadUrl, latestVersion, releaseNotes — so taking it on trust
+// made the checksum path unreachable in production and broke `9router-go
+// update` outright. A manifest without a digest therefore falls through to the
+// GitHub Releases API, and its version metadata is used only if that fails too.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 
 	// 1. Try manifest URL first
-	info, err := checkManifest(ctx, updateURL)
-	if err == nil && info != nil {
-		// A manifest downloadUrl that is not a direct binary asset (the
-		// /releases/latest page once shipped as one) gets downloaded and
-		// written over the running binary verbatim, so repair it from the
-		// GitHub Releases API, which knows the per-platform asset.
-		if !isDirectBinaryURL(info.DownloadURL) {
-			repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-			ghURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubReleasesAPIBase, repo)
-			if ghInfo, ghErr := checkGitHubReleases(ctx, ghURL); ghErr == nil && isDirectBinaryURL(ghInfo.DownloadURL) {
-				log.Warn("updater", "manifest download URL is not a release asset, using GitHub Releases instead",
-					"manifestURL", info.DownloadURL, "assetURL", ghInfo.DownloadURL)
-				info.DownloadURL = ghInfo.DownloadURL
-				info.SHA256 = ghInfo.SHA256
-			}
+	info, manifestErr := checkManifest(ctx, updateURL)
+	if manifestErr == nil && info != nil {
+		if info.SHA256 != "" || !info.HasUpdate {
+			cacheUpdateInfo(info)
+			return info, nil
 		}
-		cacheMu.Lock()
-		cachedInfo = info
-		lastCheckTime = time.Now()
-		cacheMu.Unlock()
-		return info, nil
+		// A manifest that advertises an update it cannot describe with a digest
+		// is not an answer, only a lead. Keep it as the fallback so an outage
+		// in the Releases API still shows the notes.
+		log.Debug("updater", "manifest has no sha256, trying github releases", "url", updateURL)
+		manifestErr = fmt.Errorf("manifest carries no sha256 for %s", info.LatestVersion)
 	}
 
 	// 2. Fallback to GitHub Releases API
 	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-	ghURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubReleasesAPIBase, repo)
+	ghURL := fmt.Sprintf(githubReleasesAPI, repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
 	ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
 	if ghErr == nil && ghInfo != nil {
-		cacheMu.Lock()
-		cachedInfo = ghInfo
-		lastCheckTime = time.Now()
-		cacheMu.Unlock()
+		cacheUpdateInfo(ghInfo)
 		return ghInfo, nil
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
+	if manifestErr != nil {
+		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", manifestErr, ghErr)
 	}
 	return nil, ghErr
+}
+
+func cacheUpdateInfo(info *UpdateInfo) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	cachedInfo = info
+	lastCheckTime = time.Now()
 }
 
 func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
@@ -309,12 +276,6 @@ func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
 	}, nil
 }
 
-// releaseAsset is one downloadable file attached to a GitHub release.
-type releaseAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}
-
 func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -350,11 +311,15 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 	hasUpdate := CompareVersions(latestVersion, current) > 0
 
 	downloadURL := matchReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
-	// Verify the download against the release's SHA256SUMS.txt when both the
-	// asset and the checksum file are present.
-	var sha256Sum string
-	if downloadURL != "" {
-		sha256Sum = fetchReleaseChecksum(ctx, release.Assets, assetNameFromURL(downloadURL))
+
+	// A missing digest only disables the install: PerformSelfUpdate refuses to
+	// rename over the running binary without one, and the user can still see
+	// the release notes and update manually.
+	sha256 := ""
+	if digest, err := lookupAssetSHA256(ctx, release.Assets, downloadURL); err != nil {
+		logChecksumLookupFailure(latestVersion, err)
+	} else {
+		sha256 = digest
 	}
 
 	return &UpdateInfo{
@@ -366,8 +331,8 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 		GoVersion:      runtime.Version(),
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
+		SHA256:         sha256,
 		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
-		SHA256:         sha256Sum,
 		Source:         "github_releases",
 	}, nil
 }
@@ -415,96 +380,21 @@ func matchReleaseAsset(assets []releaseAsset, targetOS, targetArch string) strin
 	return ""
 }
 
-// isDirectBinaryURL reports whether the URL points at a downloadable release
-// asset rather than an HTML page. The manifest once carried the
-// /releases/latest page as downloadUrl; downloading it produced an HTML file
-// that PerformSelfUpdate swapped over the running binary, leaving the install
-// unable to execute and later update attempts failing on the missing path.
-// Page-shaped URLs are rejected; anything else (release assets, mirrors) is
-// allowed through.
-func isDirectBinaryURL(u string) bool {
-	if u == "" {
-		return false
-	}
-	lower := strings.ToLower(u)
-	if strings.HasSuffix(lower, "/latest") || strings.HasSuffix(lower, "/releases") || strings.Contains(lower, "/releases/tag/") {
-		return false
-	}
-	return true
-}
-
-// assetNameFromURL returns the file name a release asset URL points at.
-func assetNameFromURL(u string) string {
-	if i := strings.LastIndexByte(u, '/'); i >= 0 {
-		return u[i+1:]
-	}
-	return u
-}
-
-// fetchReleaseChecksum downloads the release's SHA256SUMS.txt and returns the
-// checksum recorded for assetName. Empty when the checksum file or the entry
-// is missing — verification is then skipped rather than failed.
-func fetchReleaseChecksum(ctx context.Context, assets []releaseAsset, assetName string) string {
-	if assetName == "" {
-		return ""
-	}
-	var sumsURL string
-	for _, a := range assets {
-		if strings.EqualFold(a.Name, "SHA256SUMS.txt") {
-			sumsURL = a.BrowserDownloadURL
-			break
-		}
-	}
-	if sumsURL == "" {
-		return ""
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
-	if err != nil {
-		return ""
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(body), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 2 && strings.EqualFold(strings.TrimPrefix(fields[1], "*"), assetName) {
-			return fields[0]
-		}
-	}
-	return ""
-}
-
-// isExecutableForPlatform checks the magic bytes against the platform the
-// updater is running on. It is the last line of defense before an update
-// replaces the running binary: a wrong-platform asset (or an HTML page) must
-// abort the update, not leave an install that cannot start.
-func isExecutableForPlatform(data []byte) bool {
-	switch runtime.GOOS {
-	case "windows":
-		return isPE(data)
-	case "darwin":
-		return isMachO(data)
-	default:
-		return isELF(data)
-	}
-}
+// selfExecutable resolves the binary this process runs, so the tests can point
+// the swap at a temp file instead of the live test binary.
+var selfExecutable = os.Executable
 
 // PerformSelfUpdate downloads, decompresses (tar.gz/zip if needed), verifies, and safely replaces the active binary.
-// When expectedSHA256 is non-empty, the downloaded asset (after archive extraction) is verified against it before
-// the binary is written to disk; a mismatch aborts the update and keeps the running binary intact.
+// The downloaded asset (after archive extraction) is verified against expectedSHA256 before the binary is written
+// to disk, and a mismatch aborts the update and keeps the running binary intact.
 func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	if downloadURL == "" {
 		return fmt.Errorf("missing download URL for platform %s_%s", runtime.GOOS, runtime.GOARCH)
+	}
+	// Renaming over the running executable with no digest is exactly the
+	// unverified install this refuses, so it is checked before any request.
+	if expectedSHA256 == "" {
+		return fmt.Errorf("refusing to install %s: release carries no checksum", downloadURL)
 	}
 
 	updateProgressMu.Lock()
@@ -521,9 +411,13 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		updateProgressMu.Unlock()
 	}()
 
-	execPath, err := executableTarget()
+	execPath, err := selfExecutable()
 	if err != nil {
-		return err
+		return fmt.Errorf("locate executable path: %w", err)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return fmt.Errorf("resolve symlink path: %w", err)
 	}
 
 	log.Info("updater", "downloading update asset", "url", downloadURL, "target", execPath)
@@ -550,21 +444,11 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		return fmt.Errorf("extract executable: %w", err)
 	}
 
-	// Refuse to swap in anything that could not execute on this platform: a
-	// wrong-OS asset or an HTML page must abort here, not brick the install
-	// and make every later update attempt fail on the missing binary path.
-	if !isExecutableForPlatform(binaryBytes) {
-		return fmt.Errorf("downloaded asset is not an executable for %s/%s (%d bytes) — refusing to replace the running binary", runtime.GOOS, runtime.GOARCH, len(binaryBytes))
+	actualSHA := ComputeSHA256(binaryBytes)
+	if !strings.EqualFold(actualSHA, expectedSHA256) {
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA)
 	}
-
-	// Verify SHA256 checksum when the manifest provides one
-	if expectedSHA256 != "" {
-		actualSHA := ComputeSHA256(binaryBytes)
-		if !strings.EqualFold(actualSHA, expectedSHA256) {
-			return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA)
-		}
-		log.Info("updater", "SHA256 checksum verified", "sha256", actualSHA)
-	}
+	log.Info("updater", "SHA256 checksum verified", "sha256", actualSHA)
 
 	// Create temporary binary file in the target directory
 	dir := filepath.Dir(execPath)
@@ -586,22 +470,31 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		return fmt.Errorf("chmod executable: %w", err)
 	}
 
-	// Replace running binary atomically
+	// Replace the running binary. The old image moves aside first so the rename
+	// below can restore it if it fails, and the fresh image is then renamed to
+	// the real path: renaming over a path this process is still executing from
+	// fails on windows, which is the platform that needs it.
 	oldPath := execPath + ".old"
+	newPath := execPath + ".new"
 	_ = os.Remove(oldPath)
+	_ = os.Remove(newPath)
 
 	if err := os.Rename(execPath, oldPath); err != nil {
 		return fmt.Errorf("backup active binary: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, execPath); err != nil {
-		// Rollback on failure
+	if err := os.Rename(tmpPath, newPath); err != nil {
 		_ = os.Rename(oldPath, execPath)
+		return fmt.Errorf("stage updated binary: %w", err)
+	}
+
+	if err := os.Rename(newPath, execPath); err != nil {
+		_ = os.Rename(oldPath, execPath)
+		_ = os.Remove(newPath)
 		return fmt.Errorf("swap binary asset: %w", err)
 	}
 
 	_ = os.Remove(oldPath)
-	rememberInstalledPath(execPath)
 	log.Info("updater", "self-update applied successfully!", "binary", execPath)
 	return nil
 }
@@ -832,85 +725,97 @@ func runCheckCycle(ctx context.Context) {
 		"downloadUrl", info.DownloadURL,
 	)
 
+	// An unattended install must not move a user on a final release onto a
+	// prerelease of the next one. The CLI and the dashboard trigger keep
+	// working, so an RC is still one command away.
+	if !autoApplyAllowed(info.CurrentVersion, info.LatestVersion) {
+		log.Info("updater", "auto-update skipped: prerelease does not replace a final release — install it manually",
+			"current", info.CurrentVersion, "latest", info.LatestVersion)
+		return
+	}
+
 	if IsAutoUpdateEnabled() || os.Getenv("AUTO_UPDATE") == "true" {
 		log.Info("updater", "auto-update is enabled — applying update...", "version", info.LatestVersion)
 		if err := PerformSelfUpdate(info.DownloadURL, info.SHA256); err != nil {
 			log.Error("updater", "auto-update download/apply failed", "error", err)
 		} else {
 			log.Info("updater", "auto-update applied successfully! Restarting process...")
-			RestartSelf()
+			restartSelf()
 		}
 	}
 }
 
-// RestartSelf runs the freshly installed binary in place of this one.
+// RestartSelf replaces this process with a fresh one running the updated
+// binary.
 //
-// On Unix the process image is replaced by exec, with the listening socket
-// carried across (see execWithInheritedListener): the PID — and therefore a
-// container whose PID 1 is the gateway — survives, and the port is never closed.
-// With no socket to carry, or on Windows, it falls back to spawning a child and
-// shutting this instance down, which costs the bind/window the exec avoids.
+// The replacement is spawned from the after-stop hook rather than here: this
+// process still holds the listening socket, and a child that starts a moment
+// earlier races it for the port. main runs the hook once fxApp.Stop has closed
+// the listener, so the new process always finds the port free.
 func RestartSelf() {
-	execPath, err := executableTarget()
+	execPath, err := os.Executable()
 	if err != nil {
 		log.Error("updater", "locate binary for restart failed", "error", err)
 		return
 	}
 
-	if execWithInheritedListener(execPath) {
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		log.Error("updater", "resolve symlink for restart failed", "error", err)
 		return
 	}
 
-	cmd := exec.Command(execPath, os.Args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
+	spawn := func() {
+		cmd := exec.Command(execPath, restartArgs()...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.Env = os.Environ()
 
-	if err := cmd.Start(); err != nil {
-		log.Error("updater", "spawn updated process failed", "error", err)
-		return
+		if err := cmd.Start(); err != nil {
+			log.Error("updater", "spawn updated process failed", "error", err)
+			os.Exit(1)
+		}
+
+		log.Info("updater", "replacement process started, old instance exiting", "pid", cmd.Process.Pid)
+		// Release the handle so the child is never killed with this process
+		// (Windows job control) and does not stay a zombie on POSIX.
+		_ = cmd.Process.Release()
+		os.Exit(0)
 	}
 
-	log.Info("updater", "spawned updated process, shutting down old instance", "pid", cmd.Process.Pid)
+	shutdown.RestartAfterStop(spawn)
+}
 
-	// Signal our own process to shut down gracefully instead of os.Exit(0):
-	// main's signal handler drains in-flight SSE streams and closes the listener
-	// before exiting, so the spawned process can bind the same port without
-	// "address already in use". If we are not the process leader or the signal
-	// path is unavailable (e.g. Windows), fall back to os.Exit(0).
-	if signalSelfShutdown() {
-		// Give main a bounded window to complete graceful shutdown; if it does
-		// not exit in time, force-quit so the new process can take over.
-		time.AfterFunc(5*time.Second, func() { os.Exit(1) })
-		select {}
+// restartSelf is the indirection the cycle restarts through; a test swaps it so
+// an applied update cannot take the test process down with it.
+var restartSelf = RestartSelf
+
+// restartArgs drops the background flag: the replacement process is the
+// daemon already, and re-honouring the flag would make it spawn another one.
+func restartArgs() []string {
+	out := make([]string, 0, len(os.Args))
+	for _, a := range os.Args[1:] {
+		if a == daemon.BackgroundFlag || a == daemon.BackgroundAlias ||
+			strings.HasPrefix(a, daemon.BackgroundFlag+"=") ||
+			strings.HasPrefix(a, daemon.BackgroundAlias+"=") {
+			continue
+		}
+		out = append(out, a)
 	}
-
-	os.Exit(0)
+	return out
 }
 
 // CompareVersions compares two semver strings (v1 > v2 -> 1, v1 < v2 -> -1, v1 == v2 -> 0).
 func CompareVersions(v1, v2 string) int {
-	parts1 := parseSemver(v1)
-	parts2 := parseSemver(v2)
-
-	for i := 0; i < 3; i++ {
-		if parts1[i] > parts2[i] {
-			return 1
-		}
-		if parts1[i] < parts2[i] {
-			return -1
-		}
-	}
-	return 0
+	return compareSemver(parseSemver(v1), parseSemver(v2))
 }
 
-func parseSemver(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
-	if idx := strings.Index(v, "-"); idx != -1 {
-		v = v[:idx]
-	}
-	var parts [3]int
-	fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
-	return parts
+// autoApplyAllowed decides whether the background cycle may install latest over
+// current without a human in the loop. A prerelease never replaces a final
+// release unattended: 1.9.7 must not silently become 1.9.8-rc1. Someone already
+// running a prerelease is opted in, so prereleases keep rolling forward there,
+// and a final release is always welcome.
+func autoApplyAllowed(current, latest string) bool {
+	return parseSemver(current).hasPrerelease() || !parseSemver(latest).hasPrerelease()
 }

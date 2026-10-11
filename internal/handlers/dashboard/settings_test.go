@@ -1,8 +1,10 @@
 package dashboard
 
 import (
+	"archive/zip"
 	"bytes"
 	json "encoding/json/v2"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -280,6 +282,92 @@ func TestHandleExportImportDatabase_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestHandleExportDatabase_PrettyJSON pins the download the profile page hands
+// the user: a plain JSON file (issue #160), pretty-printed with the same
+// two-space indentation upstream's JSON.stringify(payload, null, 2) produces so
+// a saved backup is readable as-is. The Content-Disposition header must name a
+// .json file, otherwise the browser saves it without the extension the import
+// picker looks for.
+func TestHandleExportDatabase_PrettyJSON(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.RawDB().Exec(
+		`INSERT INTO providerConnections (id, provider, authType, isActive, priority, data, createdAt, updatedAt)
+		 VALUES ('conn-json', 'deepseek', 'apikey', 1, 1, '{"apiKey":"sk-json","model":"deepseek-chat"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, ".json") {
+		t.Errorf("expected a .json download filename, got Content-Disposition %q", cd)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("\n  \"")) {
+		t.Error("the download must be indented for reading")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	connections, _ := payload["providerConnections"].([]any)
+	if len(connections) != 1 {
+		t.Fatalf("expected 1 exported connection, got %d", len(connections))
+	}
+}
+
+// TestHandleImportDatabase_LegacyZipArchive keeps the older .zip backups
+// restorable: a user who downloaded one before the JSON-only export must still
+// be able to load it.
+func TestHandleImportDatabase_LegacyZipArchive(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	payload := `{"settings":{"requireLogin":true},"providerConnections":[{"id":"conn-zip","provider":"deepseek","authType":"apikey","isActive":true,"priority":1,"apiKey":"sk-zip"}],"customModels":[]}`
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f, err := zw.Create("9router-backup.json")
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := f.Write([]byte(payload)); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(buf.Bytes()))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set("Content-Type", "application/zip")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import zip failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var data string
+	if err := repo.RawDB().QueryRow(`SELECT data FROM providerConnections WHERE id='conn-zip'`).Scan(&data); err != nil {
+		t.Fatalf("query restored connection: %v", err)
+	}
+	if !strings.Contains(data, "sk-zip") {
+		t.Errorf("expected restored connection with sk-zip, got %s", data)
+	}
+}
+
 // The backup file lands in the user's Downloads folder and gets shared like
 // any other file, so credentials must not travel in it: the dashboard
 // password hash and the live OIDC client secret are stripped, while ordinary
@@ -487,3 +575,89 @@ func TestHandleImportDatabase_LegacyBackupPasswordWins(t *testing.T) {
 	}
 }
 
+// TestHandleImportDatabase_ClientContract pins the wire contract the Svelte
+// dashboard uses: a raw JSON body (never multipart/form-data) and the
+// x-9r-password header for re-auth, matching Next's settings/database route.
+func TestHandleImportDatabase_ClientContract(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	payload := `{"settings":{"requireLogin":false},"providerConnections":[],"customModels":[]}`
+
+	// Multipart uploads (the pre-fix client) are rejected, not silently ignored.
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	fw, err := mw.CreateFormFile("file", "backup.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	mw.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/database", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Invalid database payload") {
+		t.Fatalf("multipart upload should be rejected, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Raw JSON restores the data.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw JSON import failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Once a password is set, the x-9r-password header must authorize too.
+	hash, err := bcrypt.GenerateFromPassword([]byte("s3cret-pass"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateSettingsRaw(map[string]any{"password": string(hash)}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(passwordHeader, "s3cret-pass")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("password header should authorize import: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The authorized import above wiped the settings row and re-inserted only
+	// payload["settings"], so the stored hash is gone. Re-arm it, otherwise this
+	// negative case would be answered by the default-password fallback rather
+	// than by bcrypt and would keep passing even if header auth were broken.
+	if err := repo.UpdateSettingsRaw(map[string]any{"password": string(hash)}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{"wrong password", "wrong"},
+		// The upstream default must not authorize once a password is stored.
+		{"default password", defaultInitialPassword},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec = httptest.NewRecorder()
+			req = httptest.NewRequest(http.MethodPost, "/api/settings/database", strings.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(passwordHeader, tc.password)
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for %q, got %d: %s", tc.password, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

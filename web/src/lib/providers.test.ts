@@ -1,4 +1,6 @@
 import assert from 'node:assert'
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
   getProvidersByKind,
@@ -6,6 +8,7 @@ import {
   MEDIA_PROVIDER_KINDS,
   PROVIDER_CATALOG,
 } from './providers'
+import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from './models'
 import { pathToTab, TAB_ROUTES } from './router'
 
 describe('providers & media separation', () => {
@@ -32,7 +35,7 @@ describe('providers & media separation', () => {
   it('retrieves providers by kind', () => {
     const ttsProviders = getProvidersByKind('tts')
     assert.ok(ttsProviders.some((p) => p.id === 'elevenlabs'))
-    assert.ok(ttsProviders.some((p) => p.id === 'coqui'))
+    assert.ok(ttsProviders.some((p) => p.id === 'fish-audio'))
     assert.ok(ttsProviders.some((p) => p.id === 'openai'))
     assert.strictEqual(ttsProviders.some((p) => p.id === 'anthropic'), false)
 
@@ -108,24 +111,9 @@ describe('providers & media separation', () => {
   })
 
   it('carries upstream display links (website/notice) for all registry providers', () => {
-    // No upstream registry counterpart (Go-only or pseudo header entries),
-    // or no display link upstream by design (mimo-free, mmf, opencode).
-    const exempt = new Set([
-      'freebuff',
-      'kimi-coding',
-      'mimo-free',
-      'mmf',
-      'opencode',
-      'zai-search',
-      'x-codebuddy-request',
-      'x-github-api-version',
-      'x-requested-with',
-      'x-vscode-user-agent-library-version',
-      'anthropic-version',
-      'openai-intent',
-      'originator',
-      'user-agent',
-    ])
+    // No upstream registry counterpart (Go-only entries), or no display link
+    // upstream by design (mimo-free, mmf, opencode).
+    const exempt = new Set(['freebuff', 'kimi-coding', 'mimo-free', 'mmf', 'opencode'])
     for (const p of PROVIDER_CATALOG) {
       if (exempt.has(p.id)) continue
       assert.ok(
@@ -165,5 +153,42 @@ describe('providers & media separation', () => {
     assert.ok(p)
     assert.strictEqual(p.category, 'apikey')
     assert.strictEqual(p.hidden, true)
+  })
+  it('wires the five v0.5.91 aggregators (tokenharbor, dahl, atria, agnes, bai)', () => {
+    const expected: Record<string, { category: string; models: number; fetcher: boolean }> = {
+      tokenharbor: { category: 'apikey', models: 10, fetcher: true },
+      dahl: { category: 'apikey', models: 3, fetcher: true },
+      atria: { category: 'apikey', models: 1, fetcher: false },
+      agnes: { category: 'freeTier', models: 5, fetcher: false },
+      bai: { category: 'apikey', models: 0, fetcher: true },
+    }
+    for (const [id, want] of Object.entries(expected)) {
+      const p = PROVIDER_CATALOG.find((e) => e.id === id)
+      assert.ok(p, `${id} missing from the dashboard catalog`)
+      assert.strictEqual(p.category, want.category, `${id} category`)
+      assert.ok(isChatProvider(p), `${id} should be a chat provider`)
+      assert.strictEqual(p.alias, id, `${id} uiAlias equals its id upstream`)
+      assert.strictEqual(getModelsByProviderId(id).length, want.models, `${id} model count`)
+      assert.strictEqual(Boolean(p.modelsFetcher), want.fetcher, `${id} modelsFetcher`)
+    }
+  })
+
+  it('resolves every provider alias to a catalog with an entry', () => {
+    const missing = Object.keys(PROVIDER_ID_TO_ALIAS).filter(
+      (id) => !PROVIDER_CATALOG.some((p) => p.id === id || p.alias === id)
+    )
+    assert.deepStrictEqual(missing, [])
+  })
+
+  it('ships artwork for every provider the dashboard can render', () => {
+    // getIconPath derives the URL from the catalog id, so a catalog entry
+    // without an asset under web/public/providers is a 404 on every surface
+    // that draws it. Only the alias table may point at another provider's file.
+    const assets = new Set(readdirSync(join(import.meta.dir, '../../public/providers')))
+    const shared = new Set(['zai-search'])
+    const missing = PROVIDER_CATALOG.filter(
+      (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
+    ).map((p) => p.id)
+    assert.deepStrictEqual(missing, [], `providers without artwork: ${missing.join(', ')}`)
   })
 })

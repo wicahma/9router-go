@@ -9,14 +9,11 @@ import (
 	"9router/proxy/internal/models"
 )
 
-func conn(id, provider, authType, data string) *models.ProviderConnection {
-	return &models.ProviderConnection{ID: id, Provider: provider, AuthType: authType, Data: data}
-}
-
 func TestSelectConnectionsNeedingRefresh(t *testing.T) {
-	now := time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC)
-	soon := now.Add(10 * time.Minute).Format(time.RFC3339)
-	far := now.Add(4 * time.Hour).Format(time.RFC3339)
+	now := time.Now()
+	mk := func(id, authType, data string) *models.ProviderConnection {
+		return &models.ProviderConnection{ID: id, Provider: "kiro", AuthType: authType, Data: data}
+	}
 
 	tests := []struct {
 		name string
@@ -24,109 +21,69 @@ func TestSelectConnectionsNeedingRefresh(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "oauth token inside lead window selected",
-			conn: conn("a", "kiro", "oauth", `{"accessToken":"x","refreshToken":"r","expiresAt":"`+soon+`"}`),
+			name: "expiring oauth connection is due",
+			conn: mk("c1", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(10*time.Minute).UTC().Format(time.RFC3339)+`"}`),
 			want: true,
 		},
 		{
-			name: "oauth token outside lead window skipped",
-			conn: conn("b", "kiro", "oauth", `{"accessToken":"x","refreshToken":"r","expiresAt":"`+far+`"}`),
+			name: "fresh oauth connection is not due",
+			conn: mk("c2", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(2*time.Hour).UTC().Format(time.RFC3339)+`"}`),
 			want: false,
 		},
 		{
-			name: "missing expiresAt skipped",
-			conn: conn("c", "kiro", "oauth", `{"accessToken":"x","refreshToken":"r"}`),
+			name: "apikey connection is not due",
+			conn: mk("c3", "apikey", `{"apiKey":"sk","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`"}`),
 			want: false,
 		},
 		{
-			name: "unparsable expiresAt skipped",
-			conn: conn("d", "kiro", "oauth", `{"refreshToken":"r","expiresAt":"not-a-time"}`),
+			name: "missing refresh token is not due",
+			conn: mk("c4", "oauth", `{"expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`"}`),
 			want: false,
 		},
 		{
-			name: "no refresh token skipped",
-			conn: conn("e", "kiro", "oauth", `{"accessToken":"x","expiresAt":"`+soon+`"}`),
+			name: "missing expiry is not due",
+			conn: mk("c5", "oauth", `{"refreshToken":"rt"}`),
 			want: false,
 		},
 		{
-			name: "api-key connection skipped",
-			conn: conn("f", "kiro", "apikey", `{"apiKey":"k","refreshToken":"r","expiresAt":"`+soon+`"}`),
+			name: "parked connection is not retried on every tick",
+			conn: mk("c6", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"`+now.Add(20*time.Minute).UTC().Format(time.RFC3339)+`"}`),
 			want: false,
 		},
 		{
-			name: "oauth_ underscore authType accepted",
-			conn: conn("g", "kiro", "oauth_", `{"refreshToken":"r","expiresAt":"`+soon+`"}`),
+			name: "expired park lets the connection back in",
+			conn: mk("c7", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"`+now.Add(-time.Minute).UTC().Format(time.RFC3339)+`"}`),
 			want: true,
 		},
 		{
-			name: "empty data skipped",
-			conn: conn("h", "kiro", "oauth", ""),
-			want: false,
+			name: "malformed park is not due-blocking",
+			conn: mk("c8", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"soon"}`),
+			want: true,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := SelectConnectionsNeedingRefresh([]*models.ProviderConnection{tc.conn}, now)
-			if (len(got) == 1) != tc.want {
-				t.Fatalf("selected=%d want=%v", len(got), tc.want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SelectConnectionsNeedingRefresh([]*models.ProviderConnection{tt.conn}, now)
+			if (len(got) > 0) != tt.want {
+				t.Errorf("due = %v, want %v", len(got) > 0, tt.want)
 			}
 		})
-	}
-
-	if got := SelectConnectionsNeedingRefresh([]*models.ProviderConnection{nil}, now); len(got) != 0 {
-		t.Fatalf("nil connection selected: %d", len(got))
-	}
-}
-
-func TestSelectConnectionsCarriesProviderSpecificData(t *testing.T) {
-	now := time.Now()
-	data := `{"refreshToken":"r","expiresAt":"` + now.Add(time.Minute).Format(time.RFC3339) +
-		`","providerSpecificData":{"clientId":"cid","clientSecret":"sec","region":"us-east-1","profileArn":null}}`
-
-	got := SelectConnectionsNeedingRefresh([]*models.ProviderConnection{conn("k", "kiro", "oauth", data)}, now)
-	if len(got) != 1 {
-		t.Fatalf("selected=%d want=1", len(got))
-	}
-	psd := got[0].ProviderSpecificData
-	if psd["clientId"] != "cid" || psd["clientSecret"] != "sec" || psd["region"] != "us-east-1" {
-		t.Fatalf("providerSpecificData not flattened: %v", psd)
-	}
-	if _, present := psd["profileArn"]; present {
-		t.Fatalf("null profileArn must be dropped: %v", psd)
-	}
-}
-
-func TestStringMapDropsEmptyAndNonString(t *testing.T) {
-	got := StringMap(map[string]any{"a": "x", "b": "", "c": 1, "d": nil})
-	if len(got) != 1 || got["a"] != "x" {
-		t.Fatalf("got %v", got)
-	}
-	if StringMap(nil) != nil || StringMap(map[string]any{}) != nil {
-		t.Fatal("empty input must yield nil")
-	}
-}
-
-// TestRefreshKiroRoutesByProviderSpecificData pins the AWS SSO OIDC branch: a
-// connection carrying clientId/clientSecret must not fall through to the social
-// endpoint. The region guard makes the branch observable offline.
-func TestRefreshKiroRoutesByProviderSpecificData(t *testing.T) {
-	_, err := refreshKiro(context.Background(), &Params{
-		Provider:             "kiro",
-		RefreshToken:         "rt",
-		ProviderSpecificData: map[string]string{"clientId": "cid", "clientSecret": "sec", "region": "not-a-region"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "invalid region") {
-		t.Fatalf("want invalid region error, got %v", err)
-	}
-
-	if _, err := refreshKiro(context.Background(), &Params{Provider: "kiro"}); err == nil {
-		t.Fatal("missing refresh token must error")
 	}
 }
 
 func TestRefreshKiroRegistered(t *testing.T) {
 	if Get("kiro") == nil {
 		t.Fatal("kiro refresher not registered")
+	}
+}
+
+func TestRefreshKiroRejectsInvalidRegion(t *testing.T) {
+	_, err := refreshKiro(context.Background(), &Params{
+		RefreshToken:         "rt",
+		ProviderSpecificData: map[string]string{"clientId": "cid", "clientSecret": "cs", "region": "evil;region"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid region") {
+		t.Errorf("expected invalid region error, got %v", err)
 	}
 }

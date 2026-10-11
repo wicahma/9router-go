@@ -117,7 +117,7 @@ func TestHandleModelLookup_CodexModel(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
-	cxData := `{"prefix":"cx"}`
+	cxData := `{"prefix":"cx","apiKey":"tok-codex-test"}`
 	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-cx-1', 'codex', 'oauth', 'Codex Account', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, cxData)
 	if err != nil {

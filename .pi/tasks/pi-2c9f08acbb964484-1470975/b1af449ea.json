@@ -1,0 +1,25 @@
+{
+  "id": "b1af449ea",
+  "name": "Go 1.27 toolchain download",
+  "command": "cd /home/diama/repos/9router-go && export PATH=/usr/local/go/bin:$PATH && export GOTOOLCHAIN=auto && go version && go build ./... 2>&1 | tail -20 && echo BUILD_OK",
+  "status": "running",
+  "outputPath": ".pi/tasks/pi-2c9f08acbb964484-1470975/b1af449ea.output",
+  "cwd": "/home/diama/repos/9router-go",
+  "startTime": 1791733163249,
+  "pid": 1559248,
+  "bytesWritten": 0,
+  "isAgent": false,
+  "surviveReload": false,
+  "notified": false,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true,
+  "timeoutSeconds": 900,
+  "shellPolicy": {
+    "policy": "inherit",
+    "executable": "/bin/bash",
+    "argvPrefix": [
+      "-c"
+    ],
+    "dialect": "bash"
+  }
+}

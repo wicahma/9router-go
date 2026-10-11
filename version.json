@@ -1,11 +1,5 @@
 {
-  "downloadUrls": {
-    "linux_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.10.0/9router-go-linux-amd64",
-    "linux_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.10.0/9router-go-linux-arm64",
-    "darwin_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.10.0/9router-go-darwin-amd64",
-    "darwin_arm64": "https://github.com/wicahma/9router-go/releases/download/v1.10.0/9router-go-darwin-arm64",
-    "windows_amd64": "https://github.com/wicahma/9router-go/releases/download/v1.10.0/9router-go-windows-amd64.exe"
-  },
-  "latestVersion": "1.10.0",
-  "releaseNotes": "v1.10.0: Env-configurable retention for SQLite and logs. Prunes requestDetails by age (72h) and row cap (20k), usageHistory by age (720h), keeps the DB under RETENTION_DB_MAX_MB (256) via incremental vacuum, and tail-truncates RETENTION_LOG_FILES above RETENTION_LOG_MAX_MB (16). Disable with RETENTION_ENABLED=false."
+  "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
+  "latestVersion": "1.9.10",
+  "releaseNotes": "v1.9.10: Channel split, per-kind model probes, contrast & data-read fixes — the release channel is now derived from the tag itself, so v1.10.0 ships as a final GitHub Release with docker :latest / :1.10 while v1.10.0-exp.1 stays a prerelease on :exp / :1.10-exp, and a new gate job fails the build when VERSION, the tag and version.json disagree (an experimental build can no longer leak into the manifest every stable install polls) (#170); the Test button on media provider pages now probes per model kind instead of always assuming Chat Completions, so System One models reach /v1/systemone rather than a lane that returns 500, the verdict is read from the payload rather than the HTTP status, and the results finally render with icon, latency and error tooltip (#172); GET /v1/models is measurably faster with many providers and models — per-id capability and token-limit caches, an indexed pattern table, combo row reuse and single-marshal encoding cut warm build 28→6 ms and cold build 512→76 ms (#169); text-danger failed the contrast bar in dark theme at 2.83:1, so nine text sites now use the repo's red-600/red-400 convention, and text-error/bg-error were dead utilities with no CSS token, which had silently stripped the error colour from six elements (#174, #168); failed usage reads no longer render as a real zero and are now surfaced as an alert with Retry in Usage & Analytics instead of console.error only (#167, #147); go test -race ./... is its own CI gate and caught one flaky Gemini STT test (#162); seven parity fixes from still-open upstream PRs, tool strict / tool_choice policy / response_format / reasoning tokens merged from five upstream PRs, custom provider URL suffixes, API key rotation from the Edit Connection modal, one shared Edit Connection modal (#163, #164, #155, #154, #158), plus issue and PR templates and a tidied JSON dashboard backup (#166, #160)."
 }

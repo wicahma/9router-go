@@ -1,5 +1,4 @@
 // Typed API client for 9router-go Native Dashboard
-import { REPO_RAW_URL } from '../lib/repo'
 
 export interface ProviderConnection {
   id: string
@@ -12,8 +11,12 @@ export interface ProviderConnection {
   data: string // JSON string
   createdAt: string
   updatedAt: string
+  /** Masked hint of the stored credential; the raw secret is never listed. */
+  apiKeyMasked?: string
   testStatus?: string | null
   lastError?: string | null
+  lastErrorModel?: string | null
+  lastErrorSource?: 'chat' | null
   displayName?: string | null
   assignedModel?: string | null
   providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
@@ -25,7 +28,6 @@ export interface Combo {
   kind: string | null
   models: string // JSON array string
   strategy: string
-  contextSize?: number // Minimum context length among models in combo
   createdAt: string
   updatedAt: string
 }
@@ -39,15 +41,95 @@ export interface ModelCaps {
   maxOutput: number
   /** Selectable thinking levels, or empty for a model without reasoning. */
   thinkingLevels: string[]
+  free?: boolean
 }
+
+/**
+ * A model the gateway has confirmed is gone upstream.
+ *
+ * `status` is "gone" when a live request drew an HTTP 410 naming the model,
+ * and "retired" when a catalogue sync found it absent from a complete list.
+ */
+export interface ModelDeprecation {
+  provider: string
+  model: string
+  status: 'gone' | 'retired' | ''
+  message?: string
+  /** The upstream's own replacement, when it named one. */
+  successor?: string
+  detectedAt?: string
+}
+
+/** Deprecations keyed "<provider>/<model>" — the same key a combo entry uses. */
+export type ModelDeprecationMap = Record<string, ModelDeprecation>
 
 export interface APIKey {
   id: string
+  /**
+   * The stored secret. Empty for a caller authenticated with an engine client
+   * key, and for rows created before #199, whose plaintext was hashed away and
+   * cannot be recovered — the UI falls back to `keyDisplay` in both cases.
+   */
   key: string
   name: string | null
   machineId: string | null
   isActive: number
   createdAt: string
+  /** Masked secret, e.g. `sk-6…008f`. Always present. */
+  keyDisplay?: string
+  /** Rate limits. 0 means unlimited. */
+  rateLimitRpm?: number
+  rateLimitTpm?: number
+  rateLimitConcurrency?: number
+  /** RFC3339 UTC. Empty means the key never expires. */
+  expiresAt?: string
+  lastUsedAt?: string
+  usedCount?: number
+  /** Free-form JSON object, e.g. { customerId, priceCents }. */
+  metadata?: string
+}
+
+export interface APIKeyPolicy {
+  rateLimitRpm?: number
+  rateLimitTpm?: number
+  rateLimitConcurrency?: number
+  expiresAt?: string
+  metadata?: string
+  /** Renames the key. An empty string clears the stored name. */
+  name?: string
+}
+
+export interface GuardrailPolicy {
+  id: string
+  tenantId: string
+  scope: string
+  scopeId: string
+  name: string
+  enabled: boolean
+  config: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface GuardrailLog {
+  id: string
+  tenantId: string
+  apiKeyId?: string
+  provider?: string
+  model?: string
+  detector: string
+  direction: string
+  action: string
+  severity?: string
+  reason?: string
+  findings?: string
+  createdAt: string
+}
+
+export interface VaultStatus {
+  enabled: boolean
+  sealedCount: number
+  plaintextCount: number
 }
 
 export interface ProviderStrategyConfig {
@@ -61,14 +143,32 @@ export interface Settings {
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
   rtkEnabled?: boolean
+  rtkMode?: 'simple' | 'advance' | string
+  rtkIntensity?: 'minimal' | 'standard' | 'aggressive' | string
+  rtkMaxLines?: number
+  rtkMaxChars?: number
+  rtkDeduplicate?: boolean
+  rtkCategories?: Record<string, boolean>
+  rtkFilters?: Record<string, boolean>
+  rtkRawRetention?: 'never' | 'failures' | 'always' | string
   cavemanEnabled?: boolean
+  cavemanMode?: 'simple' | 'advance' | string
   cavemanLevel?: string
+  cavemanAutoClarity?: boolean
+  cavemanLanguage?: string
+  cavemanInputMode?: boolean
+  cavemanPreserveKeywords?: string
   ponytailEnabled?: boolean
   ponytailLevel?: string
+  adhdEnabled?: boolean
+  adhdLevel?: string
   headroomEnabled?: boolean
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
+  semanticCacheEnabled?: boolean
+  semanticCacheTTL?: number
+  semanticCacheMaxEntries?: number
   autoUpdate?: boolean
   /** Dashboard security & SSO (profile page, Next parity). */
   requireLogin?: boolean
@@ -85,22 +185,32 @@ export interface Settings {
   samlLoginLabel?: string
   samlAttributeEmail?: string
   samlAttributeName?: string
-  /** Language, routing and network preferences (profile page). */
-  language?: string
+  /** Routing and network preferences (profile page). */
   fallbackStrategy?: string
   comboStrategy?: string
   stickyRoundRobinLimit?: number
   comboStickyRoundRobinLimit?: number
+  /** Serve requests from the account that frees up first when all are cooling down. */
+  forceFallback?: boolean
   enableObservability?: boolean
   outboundProxyEnabled?: boolean
   outboundProxyUrl?: string
   outboundNoProxy?: string
-  /** Per-model requests-per-second ceiling. Missing or 0 = unlimited. */
-  modelRps?: Record<string, number>
-  /** Per-model input context ceiling in tokens. Missing or 0 = provider default. */
-  modelContextLimit?: Record<string, number>
   providerStrategies?: Record<string, ProviderStrategyConfig>
   [key: string]: unknown
+}
+
+/**
+ * One provider's outbound header overrides. `builtinHeaders` is what the
+ * registry already sends on this provider's requests; `blockedHeaders` is the
+ * set an override may never carry (credentials, framing, destination), so the
+ * UI can disable those fields instead of discovering them through a 400.
+ */
+export interface ProviderOverridesResponse {
+  provider: string
+  headers: Record<string, string>
+  builtinHeaders: Record<string, string>
+  blockedHeaders: string[]
 }
 
 export interface TunnelStatusResponse {
@@ -122,6 +232,104 @@ export interface TunnelStatusResponse {
     downloading?: boolean
     progress?: number
   }
+}
+
+// --- Hermes per-profile configuration (upstream decolua/9router#4660) ---
+
+/** One Hermes profile as reported by `GET /api/cli-tools/hermes-profiles`. */
+export interface HermesProfile {
+  name: string
+  dir: string
+  isDefault: boolean
+  displayName: string | null
+  command: string
+  alias: string | null
+  model: string | null
+  baseUrl: string | null
+  has9Router: boolean
+}
+
+export interface HermesProfilesResponse {
+  profiles: HermesProfile[]
+}
+
+/** The top-level `model:` block of `~/.hermes/config.yaml`. */
+export interface HermesModelBlock {
+  default: string
+  provider: string
+  base_url: string
+  api_key: string
+}
+
+/** The top-level `delegation:` block. */
+export interface HermesDelegationBlock {
+  model: string
+  provider: string
+  base_url: string
+}
+
+/** One entry of the `auxiliary:` map, keyed by role id. */
+export interface HermesAuxRole {
+  model: string
+  provider: string
+  base_url: string
+}
+
+export interface HermesSettings {
+  model: HermesModelBlock | null
+  delegation: HermesDelegationBlock | null
+  auxiliary: Record<string, HermesAuxRole>
+}
+
+export interface HermesSettingsResponse {
+  installed: boolean
+  profile?: { name: string; dir: string; isDefault: boolean }
+  settings: HermesSettings | null
+  has9Router?: boolean
+  configPath?: string
+  message?: string
+}
+
+/** One `{ role, model }` pair in an apply payload. `default` is the main block. */
+export interface HermesSelection {
+  role: string
+  model: string
+}
+
+export interface HermesApplyPayload {
+  profile?: string
+  baseUrl: string
+  apiKey?: string | null
+  model?: string
+  selections?: HermesSelection[]
+  applyToAll?: boolean
+}
+
+export interface HermesApplyResult {
+  profile: string
+  status: 'updated' | 'skipped' | 'failed'
+  reason?: string
+}
+
+export interface HermesApplyResponse {
+  success: boolean
+  bulk?: boolean
+  results?: HermesApplyResult[]
+  updated?: number
+  skipped?: number
+  message?: string
+  error?: string
+  profile?: { name: string; dir: string; isDefault: boolean }
+  configPath?: string
+}
+
+export interface HermesResetResponse {
+  success: boolean
+  profile?: string
+  removed?: { model: boolean; delegation: boolean; auxiliary: string[] }
+  kept?: string[]
+  message?: string
+  error?: string
 }
 
 export interface HeadroomStatusResponse {
@@ -149,7 +357,7 @@ export interface HeadroomExtrasResponse {
 export interface ProxyPool {
   id: string
   name: string
-  type: 'http' | 'socks5' | 'vercel' | 'cloudflare' | 'deno' | string
+  type: 'http' | 'socks5' | 'vercel' | 'cloudflare' | 'deno' | 'netlify' | string
   proxyUrl?: string
   urls?: string[]
   noProxy?: string
@@ -195,6 +403,13 @@ export interface ProviderNode {
   prefix?: string
   apiType?: string
   baseUrl?: string
+  /**
+   * The custom tail of the provider id, without the "openai-compatible-chat-"
+   * literal in front of it. Empty for a node created before the field existed.
+   */
+  urlSuffix?: string
+  /** True when the id tail is the random fallback rather than a chosen value. */
+  urlSuffixGenerated?: boolean
   createdAt?: string
   updatedAt?: string
 }
@@ -245,6 +460,34 @@ export interface ConnectionUsageResponse {
   plan?: string
   quotas?: Record<string, ConnectionQuotaInfo> | ConnectionQuotaInfo[]
   error?: string
+}
+
+// Codex reset credits. `selectionToken` is the field the dashboard selects
+// with; `code` carries the typed refusal the server raised (e.g. no_credit vs
+// nothing_to_reset) so the modal can say which happened.
+export interface CodexResetCredit {
+  selectionToken: string
+  resetType?: string
+  status?: string
+  grantedAt?: string
+  expiresAt?: string
+  title?: string
+  description?: string
+}
+
+export interface CodexResetCreditListResponse {
+  credits: CodexResetCredit[]
+  availableCount: number
+  error?: string
+  code?: string
+}
+
+export interface CodexResetCreditConsumeResponse {
+  outcome: 'reset' | 'alreadyRedeemed' | 'error'
+  selectionToken?: string
+  idempotencyKey?: string
+  error?: string
+  code?: string
 }
 
 export interface FreebuffSessionSwitchResponse {
@@ -314,6 +557,156 @@ export interface LoginResponse {
   retryAfter?: number
   resetHint?: string
   remainingBeforeLock?: number
+}
+
+export interface SemanticCacheStats {
+  memoryEntries: number
+  dbEntries: number
+  hits: number
+  misses: number
+  hitRate: string
+  tokensSaved: number
+}
+
+export interface PromptCacheProviderStats {
+  requests: number
+  totalRequests?: number
+  cachedRequests?: number
+  inputTokens: number
+  cachedTokens: number
+  cacheCreationTokens: number
+}
+
+export interface PromptCacheMetrics {
+  totalRequests: number
+  requestsWithCacheControl: number
+  totalInputTokens: number
+  totalCachedTokens: number
+  totalCacheCreationTokens: number
+  tokensSaved: number
+  estimatedCostSaved: number
+  byProvider: Record<string, PromptCacheProviderStats>
+  byModel?: Record<string, PromptCacheProviderStats>
+  lastUpdated: string
+  /** The window these numbers describe, echoed from the request. */
+  period?: string
+  /** Distinct providers/models left out of the breakdowns by the server cap. */
+  truncatedProviders?: number
+  truncatedModels?: number
+}
+
+export interface CacheTrendPoint {
+  timestamp: string
+  requests: number
+  cachedRequests: number
+  inputTokens: number
+  cachedTokens: number
+  cacheCreationTokens: number
+}
+
+export interface CacheStatsResponse {
+  semanticCache: SemanticCacheStats
+  promptCache: PromptCacheMetrics | null
+  trend: CacheTrendPoint[]
+  idempotency: {
+    activeKeys: number
+    windowMs: number
+  }
+  config?: {
+    semanticCacheEnabled: boolean
+  }
+}
+
+export interface CacheEntryMeta {
+  id: string
+  signature: string
+  model: string
+  hit_count: number
+  tokens_saved: number
+  created_at: string
+  expires_at: string
+}
+
+export interface CacheEntriesResponse {
+  entries: CacheEntryMeta[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    totalPages: number
+  }
+}
+
+export interface CompressionModeStats {
+  count: number
+  tokensSaved: number
+  avgSavingsPct: number
+  skipped?: number
+}
+
+export interface CompressionProviderStats {
+  count: number
+  tokensSaved: number
+}
+
+export interface CompressionModelStats {
+  count: number
+  tokensSaved: number
+  avgSavingsPct: number
+}
+
+export interface CompressionHourBucket {
+  hour: string
+  count: number
+  tokensSaved: number
+}
+
+export interface CompressionRealUsage {
+  requestsWithReceipts: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedUsdSaved: number
+  bySource?: Record<string, number>
+}
+
+export interface CompressionTopSaver {
+  requestId: string
+  timestamp: string
+  provider: string
+  model: string
+  mode: string
+  originalTokens: number
+  compressedTokens: number
+  tokensSaved: number
+  savingsPct: number
+  durationMs: number
+  estimatedUsd: number
+}
+
+export interface CompressionAnalyticsSummary {
+  totalRequests: number
+  totalTokensSaved: number
+  avgSavingsPct: number
+  avgDurationMs: number
+  byMode: Record<string, CompressionModeStats>
+  byProvider: Record<string, CompressionProviderStats>
+  byModel?: Record<string, CompressionModelStats>
+  /** The window these numbers describe, echoed from the request. */
+  period?: string
+  /** Hourly series over `period`. */
+  trend: CompressionHourBucket[]
+  /** Distinct providers/models left out of the breakdowns by the server cap. */
+  truncatedProviders?: number
+  truncatedModels?: number
+  totalSkipped?: number
+  bySkipReason?: Record<string, number>
+  validationFallbacks: number
+  realUsage: CompressionRealUsage
+  roiTokensPerMs?: number
+  topSavers?: CompressionTopSaver[]
 }
 
 export function isAuthenticated(): boolean {
@@ -391,47 +784,151 @@ export async function responseErrorMessage(
     return text
   }
 }
+export type UnauthorizedListener = () => void
+const unauthorizedListeners: Set<UnauthorizedListener> = new Set()
+
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener)
+  return () => {
+    unauthorizedListeners.delete(listener)
+  }
+}
+
+let unauthorizedTimer: number | null = null
+
+export function handleUnauthorized(path?: string) {
+  // Do not redirect for public auth endpoints or if already on login page
+  if (
+    path === '/api/auth/login' ||
+    path === '/api/auth/status' ||
+    path === '/api/settings/require-login' ||
+    path === '/api/changelog'
+  ) {
+    return
+  }
+
+  if (typeof window !== 'undefined' && window.location.pathname === '/login') {
+    return
+  }
+
+  // Clear stale local auth session tokens and invalid stored keys
+  if (typeof sessionStorage !== 'undefined') {
+    sessionStorage.removeItem('9router_auth')
+  }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('9router_auth')
+    localStorage.removeItem('9router_key')
+  }
+
+  // Debounce multiple concurrent 401 responses
+  if (unauthorizedTimer !== null) return
+  unauthorizedTimer = setTimeout(() => {
+    unauthorizedTimer = null
+    if (unauthorizedListeners.size > 0) {
+      for (const listener of unauthorizedListeners) {
+        try {
+          listener()
+        } catch (e) {
+          console.error('Error in onUnauthorized listener:', e)
+        }
+      }
+    } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.history.replaceState({ tab: 'login' }, '', '/login')
+    }
+  }, 50)
+}
+
+/**
+ * A non-2xx API response. `status` rides along with the message because a
+ * caller branching on 404 (a vanished resource) cannot recover the code from
+ * the text — the message is written for humans and can change.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = {
     ...getAuthHeaders(),
     ...(options.headers as Record<string, string> || {}),
   }
-  // A stalled response (per-origin connection saturation, tunnel drop, proxy
-  // stall) would otherwise pin a caller's `loading` flag forever. Bound it;
-  // SSE uses raw fetch, never request(), so the stream is unaffected.
-  const controller = new AbortController()
-  // Generous enough that upstream-probing calls (provider test/validate) that
-  // legitimately take long survive; small enough that a queued/saturated
-  // connection can't pin a `loading` flag forever. SSE uses raw fetch.
-  const timeoutMs = (options as { timeoutMs?: number }).timeoutMs ?? 60_000
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  let res: Response
-  try {
-    res = await fetch(path, { ...options, headers, signal: controller.signal })
-  } catch (err) {
-    clearTimeout(timer)
-    if ((err as { name?: string })?.name === 'AbortError') {
-      throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`)
-    }
-    throw err
-  } finally {
-    clearTimeout(timer)
-  }
+  const res = await fetch(path, { ...options, headers })
   if (res.status === 401) {
-    // The session gate answers 401 with this exact message; every other 401
-    // (e.g. a key being managed) must not log the user out.
+    handleUnauthorized(path)
+  }
+  if (!res.ok) throw new ApiError(await responseErrorMessage(res), res.status)
+  return res.json()
+}
+
+export function normalizeLastError(err: unknown): string | null {
+  if (err == null) return null
+  if (typeof err === 'string') return err
+  if (typeof err === 'object') {
+    const obj = err as Record<string, unknown>
+    if (typeof obj.message === 'string' && obj.message) return obj.message
+    if (typeof obj.error === 'string' && obj.error) return obj.error
+    if (typeof obj.msg === 'string' && obj.msg) return obj.msg
+    if (typeof obj.details === 'string' && obj.details) return obj.details
     try {
-      const body = await res.clone().text()
-      if (body.includes('dashboard session required')) {
-        sessionStorage.removeItem('9router_auth')
-        localStorage.removeItem('9router_auth')
-        window.dispatchEvent(new Event('9router-session-expired'))
-      }
+      return JSON.stringify(err)
+    } catch {
+      return String(err)
+    }
+  }
+  return String(err)
+}
+
+function numberField(source: Record<string, unknown>, key: string): number | null {
+  const value = source[key]
+  return typeof value === 'number' ? value : null
+}
+
+function stringField(source: Record<string, unknown>, key: string): string | null {
+  const value = source[key]
+  return typeof value === 'string' ? value : null
+}
+
+export function normalizeConnection(c: ProviderConnection): ProviderConnection {
+  let parsed: Record<string, unknown> = {}
+  if (typeof c.data === 'string' && c.data) {
+    try {
+      parsed = JSON.parse(c.data)
     } catch {}
   }
-  if (!res.ok) throw new Error(await responseErrorMessage(res))
-  return res.json()
+  const wire = c as unknown as Record<string, unknown>
+  const wireSpecific =
+    c.providerSpecificData && typeof c.providerSpecificData === 'object'
+      ? (c.providerSpecificData as Record<string, unknown>)
+      : undefined
+  const parsedSpecific =
+    parsed.providerSpecificData && typeof parsed.providerSpecificData === 'object'
+      ? (parsed.providerSpecificData as Record<string, unknown>)
+      : Object.keys(parsed).length > 0
+        ? parsed
+        : undefined
+
+  const specific = {
+    ...(parsedSpecific || {}),
+    ...(wireSpecific || {}),
+  }
+  return {
+    ...parsed,
+    ...c,
+    providerSpecificData: specific,
+    lastError: normalizeLastError(c.lastError) || normalizeLastError(parsed.lastError) || null,
+    errorCode: numberField(parsed, 'errorCode') ?? numberField(wire, 'errorCode'),
+    rateLimitedUntil: stringField(parsed, 'rateLimitedUntil') ?? stringField(wire, 'rateLimitedUntil'),
+    testStatus: stringField(wire, 'testStatus') || stringField(parsed, 'testStatus'),
+    expiresAt: stringField(parsed, 'expiresAt'),
+    lastErrorModel: stringField(parsed, 'lastErrorModel') ?? stringField(wire, 'lastErrorModel'),
+    lastErrorSource: stringField(parsed, 'lastErrorSource') ?? stringField(wire, 'lastErrorSource'),
+  } as ProviderConnection
 }
 
 // Connections API
@@ -439,27 +936,7 @@ export const api = {
   // Connections
   getConnections: async () => {
     const conns = await request<ProviderConnection[]>('/api/connections')
-    return conns.map((c) => {
-      let parsed: Record<string, unknown> = {}
-      if (typeof c.data === 'string' && c.data) {
-        try {
-          parsed = JSON.parse(c.data)
-        } catch {}
-      }
-      const specific = (parsed.providerSpecificData && typeof parsed.providerSpecificData === 'object')
-        ? (parsed.providerSpecificData as Record<string, unknown>)
-        : parsed
-      return {
-        ...parsed,
-        ...c,
-        providerSpecificData: specific,
-        lastError: c.lastError || (typeof parsed.lastError === 'string' ? parsed.lastError : null),
-        errorCode: (typeof parsed.errorCode === 'number' ? parsed.errorCode : null),
-        rateLimitedUntil: (typeof parsed.rateLimitedUntil === 'string' ? parsed.rateLimitedUntil : null),
-        testStatus: c.testStatus || (typeof parsed.testStatus === 'string' ? parsed.testStatus : null),
-        expiresAt: (typeof parsed.expiresAt === 'string' ? parsed.expiresAt : null),
-      } as ProviderConnection
-    })
+    return conns.map(normalizeConnection)
   },
   createConnection: (payload: CreateConnectionPayload) =>
     request<{ success: boolean; id: string }>('/api/connections', {
@@ -507,6 +984,19 @@ export const api = {
       body: JSON.stringify(body),
     })
   },
+  // reorderConnection moves a connection one slot up or down inside its
+  // provider pool. The swap plus the 1..N renumbering happens server-side in a
+  // single SQLite transaction, so the pool can never end up with two rows
+  // sharing a priority. Reordering client-side with two PUTs could not: a
+  // partial failure left a tied pair that no later click could undo.
+  reorderConnection: (id: string, direction: 'up' | 'down') =>
+    request<{ status: string; id: string; connections: ProviderConnection[] }>(
+      `/api/connections/${encodeURIComponent(id)}/reorder`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ direction }),
+      }
+    ),
   deleteConnection: (id: string) =>
     request<{ success: boolean }>(`/api/connections/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -521,7 +1011,15 @@ export const api = {
     const res = await request<{ nodes: ProviderNode[] }>('/api/provider-nodes')
     return res.nodes || []
   },
-  createProviderNode: async (payload: { name: string; prefix: string; apiType?: string; baseUrl?: string; type?: string }) => {
+  createProviderNode: async (payload: {
+    name: string
+    prefix: string
+    apiType?: string
+    baseUrl?: string
+    type?: string
+    /** Replaces the random uuid in the provider id. Omit to keep it generated. */
+    urlSuffix?: string
+  }) => {
     const res = await request<{ node: ProviderNode }>('/api/provider-nodes', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -536,7 +1034,15 @@ export const api = {
         body: JSON.stringify(payload),
       }
     ),
-  updateProviderNode: (id: string, payload: { name: string; prefix: string; apiType?: string; baseUrl: string }) =>
+  /**
+   * Update a node. Sending a different `urlSuffix` renames the provider id and
+   * carries the node's connections, models and history with it, so the returned
+   * node carries the new id and the caller must navigate to it.
+   */
+  updateProviderNode: (
+    id: string,
+    payload: { name: string; prefix: string; apiType?: string; baseUrl: string; urlSuffix?: string }
+  ) =>
     request<{ node: ProviderNode }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -545,25 +1051,9 @@ export const api = {
     request<{ success: boolean }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-/** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
+  /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
-    request<{
-      provider: string;
-      connectionId: string;
-      models: Array<(
-        | {
-            id?: string;
-            name?: string;
-            model?: string;
-            inputCostPer1M?: number;
-            outputCostPer1M?: number;
-            cacheCostPer1M?: number;
-            contextWindow?: number;
-            maxOutputTokens?: number;
-          }
-        | string
-      )>
-    }>(
+    request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 
@@ -602,6 +1092,79 @@ export const api = {
     request<{ success: boolean; isActive: boolean }>(`/api/keys/${encodeURIComponent(id)}/toggle`, {
       method: 'PUT',
     }),
+
+  /** Mints a replacement secret, keeping the row's id, policy and history. */
+  rotateApiKey: (id: string) =>
+    request<{ status: string; id: string; key: string }>(`/api/keys/${encodeURIComponent(id)}/rotate`, {
+      method: 'POST',
+    }),
+  setApiKeyActive: (id: string, isActive: boolean) =>
+    request<{ status: string; id: string; isActive: boolean }>(
+      `/api/keys/${encodeURIComponent(id)}/toggle`,
+      { method: 'PUT', body: JSON.stringify({ isActive }) },
+    ),
+
+  // F-1/F-14 per-key governance. Omitted fields are left unchanged server-side,
+  // so a partial update never resets a limit the operator did not touch.
+  updateApiKeyPolicy: (id: string, policy: APIKeyPolicy) =>
+    request<{ status: string; id: string }>(`/api/keys/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(policy),
+    }),
+  getApiKeyModels: (id: string) =>
+    request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`),
+  setApiKeyModels: (id: string, models: string[]) =>
+    request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`, {
+      method: 'PUT',
+      body: JSON.stringify({ models }),
+    }),
+
+  // F-5 credential vault
+  getVaultStatus: () => request<VaultStatus>('/api/vault/status'),
+  rotateVault: (masterKey: string) =>
+    request<{ status: string; rewrapped: number; failures: string[] }>('/api/vault/rotate', {
+      method: 'POST',
+      body: JSON.stringify({ masterKey }),
+    }),
+
+  // F-4 guardrails
+  getGuardrailPolicies: (scope: string, scopeId = '') =>
+    request<GuardrailPolicy[]>(
+      `/api/guardrails/policies?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`
+    ),
+  createGuardrailPolicy: (payload: {
+    name: string
+    scope: string
+    scopeId?: string
+    enabled?: boolean
+    config: string
+  }) =>
+    request<GuardrailPolicy>('/api/guardrails/policies', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateGuardrailPolicy: (
+    id: string,
+    payload: {
+      name: string
+      scope: string
+      scopeId?: string
+      enabled?: boolean
+      config: string
+    }
+  ) =>
+    request<GuardrailPolicy>(`/api/guardrails/policies/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteGuardrailPolicy: (id: string) =>
+    request<{ status: string; id: string }>(
+      `/api/guardrails/policies/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    ),
+  getGuardrailLogs: (limit = 100) =>
+    request<GuardrailLog[]>(`/api/guardrails/logs?limit=${encodeURIComponent(String(limit))}`),
+  getMetrics: () => request<string>('/api/metrics'),
 
   // Models — upstream parity: GET /api/models/custom -> { models: [...] },
   // GET /api/models/disabled -> { disabled: {...} } (full map) or { ids: [...] } (per-provider).
@@ -644,10 +1207,35 @@ export const api = {
     request<{ success: boolean }>(`/api/models/alias?alias=${encodeURIComponent(alias)}`, {
       method: 'DELETE',
     }),
-  testModel: (model: string) =>
-    request<{ ok: boolean; error?: string }>('/api/models/test', {
+  /**
+   * Models the gateway has confirmed dead upstream, keyed "<provider>/<model>".
+   *
+   * A client that never sends gateway traffic has no 410s of its own to learn
+   * from, so this endpoint is how its model list finds out a model is gone.
+   */
+  getModelDeprecations: (provider?: string) =>
+    request<{ provider: string; deprecations: ModelDeprecationMap }>(
+      `/api/models/deprecations${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`,
+    ),
+  /**
+   * Re-reads every connection's upstream catalogue and clears the badge of any
+   * model the provider still publishes. Omitting the provider syncs them all.
+   */
+  syncProviderModels: (provider?: string) =>
+    request<{ success: boolean; provider: string; synced: number; failed: number; revived: number; lastError?: string }>(
+      `/api/models/sync${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`,
+      { method: 'POST' },
+    ),
+  /**
+   * Pings one model the way the page lists it. `kind` picks the endpoint the
+   * probe travels on (upstream /api/models/test `kind`): a System One model
+   * answers on /v1/systemone, and a chat probe on it returns 500. Omit `kind`
+   * for a plain LLM model.
+   */
+  testModel: (model: string, kind?: string) =>
+    request<{ ok: boolean; error?: string; note?: string; latencyMs?: number; status?: number; blocked?: boolean; resetAt?: string }>('/api/models/test', {
       method: 'POST',
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, kind }),
     }),
 
   // Settings
@@ -662,6 +1250,53 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(settings),
     }),
+  testRtk: (data: { text: string; config?: Record<string, unknown> }) =>
+    request<{
+      originalTokens: number
+      compressedTokens: number
+      savedTokens: number
+      savedPct: number
+      text: string
+      detectedCategory: string
+      techniquesUsed: string[]
+    }>('/api/tokensaver/rtk/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getRTKFilters: () =>
+    request<{
+      filters: Array<{
+        id: string
+        label: string
+        category: string
+        description: string
+        priority: number
+        enabled: boolean
+      }>
+    }>('/api/tokensaver/rtk/filters'),
+  testCaveman: (data: { text: string; level?: string; language?: string; mode?: string; preserveKeywords?: string }) =>
+    request<{
+      text: string
+      originalTokens: number
+      compressedTokens: number
+      savedPct: number
+    }>('/api/tokensaver/caveman/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /**
+   * Per-provider outbound header overrides. `builtinHeaders` is what the
+   * registry already sends, so the UI shows the real baseline instead of an
+   * operator guessing; `blockedHeaders` is the set an override may never
+   * carry (auth, framing, destination).
+   */
+  getProviderOverrides: (providerId: string) =>
+    request<ProviderOverridesResponse>(`/api/providers/${encodeURIComponent(providerId)}/overrides`),
+  saveProviderOverrides: (providerId: string, headers: Record<string, string>) =>
+    request<{ provider: string; headers: Record<string, string> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/overrides`,
+      { method: 'PUT', body: JSON.stringify({ headers }) },
+    ),
   // OAuth Flows
   initiateFreebuff: () => request<FreebuffInitiateResponse>('/api/oauth/freebuff/initiate', { method: 'POST' }),
   pollFreebuff: (fingerprintId: string, fingerprintHash: string, expiresAt?: number | string) =>
@@ -715,6 +1350,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  // Codex's OAuth client has exactly one registered loopback redirect URI, so
+  // the callback lands on a fixed-port listener the server owns rather than on
+  // the dashboard's /callback page. start-proxy binds it, the login completes
+  // server-side, and poll-status reports the outcome.
+  codexStartProxy: (params: { appPort: string; state: string; codeVerifier: string; redirectUri: string; name?: string }) => {
+    const q = new URLSearchParams({
+      app_port: params.appPort,
+      state: params.state,
+      code_verifier: params.codeVerifier,
+      redirect_uri: params.redirectUri,
+    })
+    if (params.name) q.set('name', params.name)
+    return request<{ success: boolean; serverSide?: boolean; port?: number; reason?: string }>(
+      `/api/oauth/codex/start-proxy?${q.toString()}`
+    )
+  },
+  codexPollStatus: (state: string) =>
+    request<{ status: string; connectionId?: string; email?: string; error?: string }>(
+      `/api/oauth/codex/poll-status?state=${encodeURIComponent(state)}`
+    ),
+  codexStopProxy: () => request<{ success: boolean }>('/api/oauth/codex/stop-proxy'),
   authcodeAuthorize: (provider: string, redirectUri?: string) => {
     const q = new URLSearchParams({ provider })
     if (redirectUri) q.set('redirect_uri', redirectUri)
@@ -745,6 +1401,30 @@ export const api = {
     request<{ status: string; connectionId?: string; error?: string }>('/api/oauth/device/poll', {
       method: 'POST',
       body: JSON.stringify({ provider, device_code: deviceCode, session }),
+    }),
+  kiroImport: (refreshToken: string) =>
+    request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/import', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken }),
+    }),
+  kiroImportCliProxy: (jsonPayload: string) =>
+    request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/import-cli-proxy', {
+      method: 'POST',
+      body: JSON.stringify({ json: jsonPayload }),
+    }),
+  kiroAutoImport: () =>
+    request<{ found: boolean; refreshToken?: string; error?: string }>('/api/oauth/kiro/auto-import'),
+  kiroApiKey: (apiKey: string, region?: string) =>
+    request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/api-key', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey, region }),
+    }),
+  kiroSocialAuthorize: (provider: 'google' | 'github') =>
+    request<{ authUrl: string; url: string; state: string }>(`/api/oauth/kiro/social-authorize?provider=${provider}`),
+  kiroSocialExchange: (code: string) =>
+    request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/social-exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
     }),
   cursorImport: (accessToken: string, machineId: string) =>
     request<{ success: boolean; id: string; error?: string }>('/api/oauth/cursor/import', {
@@ -798,23 +1478,23 @@ export const api = {
       }
     } catch {}
     try {
-      const res = await fetch(`${REPO_RAW_URL}/CHANGELOG.md`)
+      const res = await fetch('https://raw.githubusercontent.com/luqman-v1/9router-go/main/CHANGELOG.md')
       if (res.ok) {
         const text = await res.text()
         if (text && text.trim().length > 0) return text
       }
     } catch {}
-    const res = await fetch(`${REPO_RAW_URL}/CHANGELOG.md`)
+    const res = await fetch('https://raw.githubusercontent.com/decolua/9router/refs/heads/master/CHANGELOG.md')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return await res.text()
   },
 
   // Usage & Telemetry
   getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
-  getRequestDetails: (limit = 50, offset = 0, status = '') =>
-    request<any>(
-      `/api/usage/request-details?limit=${limit}&offset=${offset}${status ? `&status=${encodeURIComponent(status)}` : ''}`
-    ),
+  getRequestDetails: (limit = 50, offset = 0) =>
+    request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
+  /** Full stored payload for one request; the list omits request/response bodies. */
+  getRequestDetail: (id: string) => request<any>(`/api/usage/request-details/${encodeURIComponent(id)}`),
   resetHealth: (provider: string, model?: string) =>
     request<{ status: string }>(`/admin/health/reset?provider=${encodeURIComponent(provider)}${model ? `&model=${encodeURIComponent(model)}` : ''}`, {
       method: 'POST',
@@ -822,7 +1502,9 @@ export const api = {
   getProvidersClient: async (): Promise<{ connections: ProviderConnection[] }> => {
     try {
       const res = await request<{ connections: ProviderConnection[] }>('/api/providers/client')
-      if (res && res.connections) return res
+      if (res && res.connections) {
+        return { ...res, connections: res.connections.map(normalizeConnection) }
+      }
     } catch {}
     const conns = await api.getConnections().catch(() => [])
     return { connections: conns }
@@ -844,14 +1526,40 @@ export const api = {
         pagination?: { page: number; pageSize: number; total: number; totalPages: number }
         totals?: { eligibleConnections: number; providerFilteredConnections: number }
       }>(`/api/providers/client${query ? `?${query}` : ''}`)
-      if (res && res.connections) return res
+      if (res && res.connections) {
+        return { ...res, connections: res.connections.map(normalizeConnection) }
+      }
     } catch {}
     const fallback = await api.getProvidersClient()
     return { connections: fallback.connections }
   },
-  getConnectionUsage: async (connectionId: string, force = false): Promise<ConnectionUsageResponse> => {
-    return request<ConnectionUsageResponse>(`/api/usage/${encodeURIComponent(connectionId)}${force ? '?force=1' : ''}`)
+  // The quota tracker cancels a superseded pass with `signal`: the reading it
+  // would receive belongs to a page the user has already navigated away from.
+  getConnectionUsage: async (
+    connectionId: string,
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<ConnectionUsageResponse> => {
+    return request<ConnectionUsageResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}${force ? '?force=1' : ''}`,
+      { signal },
+    )
   },
+  // Codex reset credits. The list is fetched when the user opens the chooser
+  // rather than with the quota poll, so the button stays cheap until it is used.
+  listCodexResetCredits: (connectionId: string) =>
+    request<CodexResetCreditListResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/reset-credits`
+    ),
+  consumeCodexResetCredit: (connectionId: string, selectionToken: string, idempotencyKey?: string) =>
+    request<CodexResetCreditConsumeResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/reset-credits/consume`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectionToken, idempotencyKey }),
+      }
+    ),
   // Tunnel & Tailscale
   getTunnelStatus: () =>
     request<TunnelStatusResponse>('/api/tunnel/status').catch(() => ({
@@ -932,17 +1640,22 @@ export const api = {
       { method: 'POST' }
     ),
   deployVercelRelay: (payload: { vercelToken: string; projectName?: string }) =>
-    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/proxy-pools/vercel-deploy', {
+    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/vercel-deploy', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   deployCloudflareRelay: (payload: { accountId: string; apiToken: string; projectName?: string }) =>
-    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/proxy-pools/cloudflare-deploy', {
+    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/cloudflare-deploy', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   deployDenoRelay: (payload: { denoToken: string; orgDomain: string; projectName?: string }) =>
-    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/proxy-pools/deno-deploy', {
+    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/deno-deploy', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deployNetlifyRelay: (payload: { netlifyToken: string; projectName?: string }) =>
+    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/netlify-deploy', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -952,6 +1665,36 @@ export const api = {
     request<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>(
       '/api/cli-tools/all-statuses'
     ).catch(() => ({})),
+
+  // Hermes per-profile configuration.
+  // Hermes is usually absent, so the profile list degrades to an empty list
+  // exactly like the status map above — the card hides its profile picker then.
+  getHermesProfiles: () =>
+    request<HermesProfilesResponse>('/api/cli-tools/hermes-profiles').catch(() => ({ profiles: [] })),
+  getHermesSettings: (profile?: string) =>
+    request<HermesSettingsResponse>(
+      `/api/cli-tools/hermes-settings${profile ? `?profile=${encodeURIComponent(profile)}` : ''}`
+    ),
+  // `applyToAll` carries the endpoint to every 9router-wired profile; the
+  // client splits it out because the two shapes share one endpoint.
+  applyHermesSettings: (payload: HermesApplyPayload) =>
+    request<HermesApplyResponse>('/api/cli-tools/hermes-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  applyHermesToAll: (payload: HermesApplyPayload) =>
+    request<HermesApplyResponse>('/api/cli-tools/hermes-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, applyToAll: true }),
+    }),
+  resetHermesSettings: (profile?: string) =>
+    request<HermesResetResponse>('/api/cli-tools/hermes-settings', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile ? { profile } : {}),
+    }),
   // Auth
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {
@@ -981,11 +1724,11 @@ export const api = {
     } catch {}
     return { requireLogin: false }
   },
-  login: async (password: string): Promise<LoginResponse> => {
+  login: async (password: string, newPassword?: string): Promise<LoginResponse> => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, ...(newPassword ? { newPassword } : {}) }),
     })
     if (res.ok) {
       const data = await res.json()
@@ -1017,14 +1760,51 @@ export const api = {
     err.mustChangePassword = mustChangePassword
     throw err
   },
-  // Rotates the compatibility default password from the login screen, where
-  // the caller has no session yet (the server refuses one until this rotation
-  // happens). Only valid while no dashboard password hash is stored.
-  setPassword: (currentPassword: string, newPassword: string) =>
-    request<{ success: boolean }>('/api/auth/set-password', {
-      method: 'POST',
-      body: JSON.stringify({ currentPassword, newPassword }),
-    }),
+    // Cache Analytics
+    /**
+     * `period` bounds the totals, the breakdowns and the hourly trend together.
+     * It was `trendHours` before, which bounded only the trend — the cards above
+     * the chart were always all-time, whatever the chart was showing.
+     */
+    getCacheStats: (period = '24h') =>
+      request<CacheStatsResponse>(`/api/cache?period=${encodeURIComponent(period)}`),
+    deleteCache: (params?: { model?: string; signature?: string; staleMs?: number }) => {
+      const sp = new URLSearchParams()
+      if (params?.model) sp.set('model', params.model)
+      if (params?.signature) sp.set('signature', params.signature)
+      if (params?.staleMs) sp.set('staleMs', String(params.staleMs))
+      const qs = sp.toString()
+      return request<{ success: boolean; count?: number }>(`/api/cache${qs ? `?${qs}` : ''}`, {
+        method: 'DELETE',
+      })
+    },
+    getCacheEntries: (params?: {
+      page?: number
+      limit?: number
+      search?: string
+      model?: string
+      sortBy?: string
+      sortOrder?: string
+    }) => {
+      const sp = new URLSearchParams()
+      if (params?.page) sp.set('page', String(params.page))
+      if (params?.limit) sp.set('limit', String(params.limit))
+      if (params?.search) sp.set('search', params.search)
+      if (params?.model) sp.set('model', params.model)
+      if (params?.sortBy) sp.set('sortBy', params.sortBy)
+      if (params?.sortOrder) sp.set('sortOrder', params.sortOrder)
+      const qs = sp.toString()
+      return request<CacheEntriesResponse>(`/api/cache/entries${qs ? `?${qs}` : ''}`)
+    },
+    deleteCacheEntry: (id: string) =>
+      request<{ success: boolean }>(`/api/cache/entries?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    // Compression Analytics
+    getCompressionAnalytics: (period = '24h') =>
+      request<CompressionAnalyticsSummary>(
+        `/api/analytics/compression?period=${encodeURIComponent(period)}`
+      ),
   logout: async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })

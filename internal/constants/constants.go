@@ -66,17 +66,6 @@ const (
 	UpstreamErrLimit     = 1 << 20  // 1MB cap for upstream error body reads
 )
 
-// Project repository. Single source of truth: every link, badge, update
-// manifest and raw-asset URL is derived from these so a fork only edits here.
-const (
-	RepoOwner  = "wicahma"
-	RepoName   = "9router-go"
-	RepoSlug   = RepoOwner + "/" + RepoName
-	RepoURL    = "https://github.com/" + RepoSlug
-	RepoBranch = "main"
-	RepoRawURL = "https://raw.githubusercontent.com/" + RepoSlug + "/" + RepoBranch
-)
-
 // Buffer Sizes
 const (
 	StreamReadBuffer = 4096 // 4 KB read buffer for streaming

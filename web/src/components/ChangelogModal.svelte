@@ -1,7 +1,6 @@
 <script lang="ts">
   import { api } from '../api/client'
   import { marked } from 'marked'
-  import { REPO_URL } from '../lib/repo'
 
   let {
     isOpen = false,
@@ -81,7 +80,7 @@
         </div>
         <div class="flex items-center gap-2">
           <a
-            href="{REPO_URL}/releases"
+            href="https://github.com/luqman-v1/9router-go/releases"
             target="_blank"
             rel="noopener noreferrer"
             class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-text-muted hover:text-text-main hover:bg-surface-2 border border-border-subtle transition-colors"
@@ -127,7 +126,7 @@
                 Retry
               </button>
               <a
-                href="{REPO_URL}/blob/main/CHANGELOG.md"
+                href="https://github.com/luqman-v1/9router-go/blob/main/CHANGELOG.md"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="px-4 py-2 text-xs font-medium rounded-lg border border-border-subtle text-text-main hover:bg-surface-2 transition-colors"
@@ -147,7 +146,7 @@
       <!-- Footer -->
       <div class="flex items-center justify-between px-6 py-3.5 border-t border-border-subtle bg-surface shrink-0">
         <a
-          href="{REPO_URL}/blob/main/CHANGELOG.md"
+          href="https://github.com/luqman-v1/9router-go/blob/main/CHANGELOG.md"
           target="_blank"
           rel="noopener noreferrer"
           class="text-xs text-text-muted hover:text-primary transition-colors flex items-center gap-1"

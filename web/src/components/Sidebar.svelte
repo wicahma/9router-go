@@ -1,10 +1,9 @@
 <script lang="ts">
   import { api, type SystemVersionInfo } from '../api/client'
-  import { loadProviderNames, resolveProviderName } from '../lib/providerNames'
+  import { copyToClipboard } from '../lib/clipboard'
   import { TAB_ROUTES, type ActiveTab } from '../lib/router'
 
   export type { ActiveTab }
-
   let {
     activeTab = $bindable('endpoint'),
     navigate = (tab: ActiveTab) => {
@@ -13,89 +12,24 @@
     activeConnections = 0,
     totalConnections = 0,
     onClose,
+    showUpdateModal = $bindable(false),
+    updateInfo = $bindable(null),
+    version = $bindable(''),
   }: {
     activeTab: ActiveTab
     navigate?: (tab: ActiveTab, replace?: boolean) => void
     activeConnections?: number
     totalConnections?: number
     onClose?: () => void
+    showUpdateModal?: boolean
+    updateInfo?: SystemVersionInfo | null
+    version?: string
   } = $props()
-
-  let version = $state('')
-  let updateInfo = $state<SystemVersionInfo | null>(null)
-  let showUpdateModal = $state(false)
-  let isUpdating = $state(false)
-  let updateStatus = $state<'idle' | 'updating' | 'success' | 'error'>('idle')
-  let updateMsg = $state('')
-  let copied = $state(false)
-  let shutdownCountdown = $state(0)
-  let isDisconnected = $state(false)
-
   const INSTALL_CMD = '9router-go update'
+  let copied = $state(false)
 
   // Media providers accordion (collapsed by default)
   let isMediaOpen = $state(false)
-
-  // Live request card: in-flight provider/model + last completed tokens in/out
-  let liveReq = $state<{
-    provider: string
-    model: string
-    inflight: boolean
-    promptTokens: number
-    completionTokens: number
-  } | null>(null)
-
-  // providerNodes.id -> display name, loaded once (shared across components).
-  let providerNames = $state<Record<string, string>>({})
-
-  $effect(() => {
-    loadProviderNames().then((n) => (providerNames = n))
-  })
-
-  function abbrevNum(n: number): string {
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-    return String(n)
-  }
-
-  $effect(() => {
-    if (typeof window === 'undefined') return
-    let cancelled = false
-    const load = () =>
-      api
-        .getUsageStats('today')
-        .then((s: any) => {
-          if (cancelled || !s) return
-          const act = (s.activeRequests || [])[0]
-          const rec = (s.recentRequests || [])[0]
-          if (act) {
-            liveReq = {
-              provider: act.provider || '',
-              model: act.model || '',
-              inflight: true,
-              promptTokens: rec?.promptTokens || 0,
-              completionTokens: rec?.completionTokens || 0,
-            }
-          } else if (rec) {
-            liveReq = {
-              provider: rec.provider || '',
-              model: rec.model || '',
-              inflight: false,
-              promptTokens: rec.promptTokens || 0,
-              completionTokens: rec.completionTokens || 0,
-            }
-          } else {
-            liveReq = null
-          }
-        })
-        .catch(() => {})
-    load()
-    const timer = setInterval(load, 10000)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  })
 
   $effect(() => {
     api
@@ -128,46 +62,11 @@
   })
 
   async function copyInstallCmd() {
-    try {
-      await navigator.clipboard.writeText(INSTALL_CMD)
-    } catch {}
+    await copyToClipboard(INSTALL_CMD)
     copied = true
     setTimeout(() => {
       copied = false
     }, 2000)
-  }
-
-  async function handleAutoUpdate() {
-    isUpdating = true
-    updateStatus = 'updating'
-    updateMsg = 'Downloading and applying binary update...'
-    try {
-      const res = await api.triggerUpdate()
-      updateStatus = 'success'
-      updateMsg = res?.message || 'Update installed successfully. Process is restarting...'
-      setTimeout(() => {
-        globalThis.location.reload()
-      }, 3500)
-    } catch (err: any) {
-      updateStatus = 'error'
-      updateMsg = err?.message || 'Auto update failed. Please run update command manually.'
-      isUpdating = false
-    }
-  }
-
-  async function handleCopyAndShutdown() {
-    await copyInstallCmd()
-    let remaining = 5
-    shutdownCountdown = remaining
-    const timer = setInterval(() => {
-      remaining -= 1
-      shutdownCountdown = remaining
-      if (remaining <= 0) {
-        clearInterval(timer)
-        api.shutdownServer().catch(() => {})
-        isDisconnected = true
-      }
-    }, 1000)
   }
 
   function handleNav(tab: ActiveTab, e?: MouseEvent) {
@@ -177,20 +76,6 @@
     }
     navigate(tab)
     onClose?.()
-  }
-
-  // position:fixed overlays must not render under the sidebar wrapper in
-  // App.svelte: its responsive translate utilities leave a non-none `translate`
-  // on that element even on desktop, which makes it the containing block for
-  // fixed descendants and clips the modal to the 18rem sidebar box. Reparent
-  // the overlay to <body>, where fixed positioning is viewport-relative.
-  function portalToBody(node: HTMLElement) {
-    document.body.appendChild(node)
-    return {
-      destroy() {
-        node.remove()
-      },
-    }
   }
 
   const mainNavLinks = [
@@ -226,43 +111,31 @@
     if (tab === 'console-log') {
       return activeTab === 'console-log' || activeTab === 'terminal'
     }
+    // Cache and Compression Analytics are Usage sections (#200): they left the
+    // sidebar, so the Usage entry has to stay lit while one of them is open.
+    if (tab === 'analytics') {
+      return (
+        activeTab === 'analytics' ||
+        activeTab === 'usage-cache' ||
+        activeTab === 'usage-compression'
+      )
+    }
     return activeTab === tab
   }
 </script>
 
 <aside
-  class="flex w-72 flex-col border-r border-border-subtle bg-sidebar backdrop-blur-xl transition-colors duration-300 min-h-full flex-shrink-0 select-none z-30"
+  class="flex h-full max-h-screen w-72 flex-col overflow-hidden border-r border-border-subtle bg-sidebar backdrop-blur-xl transition-colors duration-300 flex-shrink-0 select-none z-30"
 >
-  <!-- Live request: provider, model, token in/out -->
-  <div class="px-4 pt-4 pb-2">
-    {#if liveReq}
-      <div class="p-2.5 rounded-[10px] bg-surface border border-border-subtle flex flex-col gap-1.5">
-        <div class="flex items-center gap-1.5 min-w-0">
-          {#if liveReq.inflight}
-            <span class="relative flex h-2 w-2 shrink-0">
-              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-          {:else}
-            <span class="h-2 w-2 rounded-full bg-text-muted shrink-0"></span>
-          {/if}
-          <span class="text-[11px] font-semibold text-text-main truncate">{liveReq.model || 'idle'}</span>
-          <span class="text-[10px] text-text-muted truncate" title={liveReq.provider}>{resolveProviderName(liveReq.provider, providerNames)}</span>
-        </div>
-        <div class="flex items-center gap-3 text-[11px] font-mono">
-          <span class="text-text-muted">in <span class="text-text-main font-semibold">{abbrevNum(liveReq.promptTokens)}</span></span>
-          <span class="text-text-muted">out <span class="text-info font-semibold">{abbrevNum(liveReq.completionTokens)}</span></span>
-        </div>
-      </div>
-    {:else}
-      <div class="p-2.5 rounded-[10px] bg-surface border border-border-subtle">
-        <span class="text-[11px] text-text-muted">No requests yet</span>
-      </div>
-    {/if}
+  <!-- Window control / traffic lights -->
+  <div class="flex items-center gap-2 px-6 pt-5 pb-2 shrink-0">
+    <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
+    <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
+    <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
   </div>
 
   <!-- Brand header: 9router-go with official favicon.svg logo -->
-  <div class="px-6 py-4 flex flex-col gap-2">
+  <div class="px-6 py-4 flex flex-col gap-2 shrink-0">
     <a
       href={TAB_ROUTES.endpoint}
       onclick={(e) => handleNav('endpoint', e)}
@@ -282,7 +155,7 @@
           9router-go
         </h1>
         <span class="text-xs text-text-muted leading-tight">
-          {version ? `v${version}` : 'v1.9.1'}
+          {version ? `v${version}` : 'v1.9.9'}
         </span>
       </div>
     </a>
@@ -320,7 +193,7 @@
   </div>
 
   <!-- Navigation -->
-  <nav class="flex-1 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
+  <nav class="flex-1 min-h-0 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
     <!-- 1-7 Main navigation links -->
     {#each mainNavLinks as item (item.tab)}
       {@const active = isLinkActive(item.tab)}
@@ -430,11 +303,28 @@
         </span>
         <span class="text-[13px]">Settings</span>
       </a>
+
+      <a
+        href={TAB_ROUTES.security}
+        onclick={(e) => handleNav('security', e)}
+        class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {isLinkActive('security')
+          ? 'bg-primary/10 text-primary font-medium'
+          : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
+      >
+        <span
+          class="material-symbols-outlined text-[18px] {isLinkActive('security')
+            ? 'fill-1'
+            : 'group-hover:text-primary transition-colors'}"
+        >
+          shield_lock
+        </span>
+        <span class="text-[13px]">Security</span>
+      </a>
     </div>
   </nav>
 
   <!-- Bottom connection summary -->
-  <div class="p-4 border-t border-border-subtle">
+  <div class="p-4 border-t border-border-subtle shrink-0">
     <div
       class="p-2.5 rounded-[10px] bg-surface border border-border-subtle flex items-center justify-between"
     >
@@ -448,139 +338,4 @@
     </div>
   </div>
 </aside>
-
-<!-- Update Modal -->
-{#if showUpdateModal}
-  <div use:portalToBody class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/50 backdrop-blur-sm"
-      onclick={() => (showUpdateModal = false)}
-      onkeydown={(e) => e.key === 'Escape' && (showUpdateModal = false)}
-      role="button"
-      tabindex="-1"
-      aria-label="Close background"
-    ></div>
-
-    <div
-      class="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col gap-4 z-10 animate-in fade-in zoom-in-95"
-    >
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle">
-        <div class="flex items-center gap-2.5">
-          <div class="size-9 rounded-full flex items-center justify-center bg-amber-500/10 text-amber-500">
-            <span class="material-symbols-outlined text-[20px]">upgrade</span>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-text-main">
-              Update 9router-go{updateInfo?.latestVersion ? ` to v${updateInfo.latestVersion}` : ''}
-            </h2>
-            <p class="text-xs text-text-muted">
-              Current version: v{version || '1.9.1'}
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onclick={() => (showUpdateModal = false)}
-          class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          aria-label="Close"
-        >
-          <span class="material-symbols-outlined text-[20px]">close</span>
-        </button>
-      </div>
-
-      {#if updateInfo?.releaseNotes}
-        <div class="p-3 rounded-lg bg-surface-2 border border-border-subtle text-xs text-text-muted leading-relaxed">
-          <p class="font-medium text-text-main mb-1">Release Notes:</p>
-          <p class="whitespace-pre-line">{updateInfo.releaseNotes}</p>
-        </div>
-      {/if}
-
-      <!-- Terminal Command Box -->
-      <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-text-muted">Terminal Command</label>
-        <div class="flex items-center gap-2 p-2.5 rounded-xl bg-surface-2 border border-border-subtle">
-          <code class="text-xs font-mono text-amber-600 dark:text-amber-400 flex-1 truncate select-all">
-            {INSTALL_CMD}
-          </code>
-          <button
-            type="button"
-            onclick={copyInstallCmd}
-            class="px-2.5 py-1 text-xs rounded-lg bg-surface hover:bg-surface-3 border border-border-subtle text-text-main transition-colors cursor-pointer shrink-0 flex items-center gap-1"
-          >
-            <span class="material-symbols-outlined text-[14px]">content_copy</span>
-            <span>{copied ? 'Copied!' : 'Copy'}</span>
-          </button>
-        </div>
-      </div>
-
-      {#if updateStatus === 'updating'}
-        <div class="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
-          <span>{updateMsg}</span>
-        </div>
-      {:else if updateStatus === 'success'}
-        <div class="p-3 rounded-xl bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined text-[18px]">check_circle</span>
-          <span>{updateMsg}</span>
-        </div>
-      {:else if updateStatus === 'error'}
-        <div class="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined text-[18px]">error</span>
-          <span>{updateMsg}</span>
-        </div>
-      {/if}
-
-      <!-- Action buttons -->
-      <div class="flex items-center justify-end gap-2 pt-2 border-t border-border-subtle">
-        <button
-          type="button"
-          onclick={() => (showUpdateModal = false)}
-          disabled={isUpdating}
-          class="px-3.5 py-2 text-xs font-medium rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onclick={handleCopyAndShutdown}
-          disabled={isUpdating || shutdownCountdown > 0}
-          class="px-3.5 py-2 text-xs font-medium rounded-lg border border-border-subtle text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-        >
-          {shutdownCountdown > 0 ? `Stopping in ${shutdownCountdown}s...` : 'Copy & Shutdown'}
-        </button>
-        <button
-          type="button"
-          onclick={handleAutoUpdate}
-          disabled={isUpdating}
-          class="px-4 py-2 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
-        >
-          <span class="material-symbols-outlined text-[16px]">autorenew</span>
-          <span>{isUpdating ? 'Updating...' : 'Auto Update'}</span>
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Disconnected Overlay -->
-{#if isDisconnected}
-  <div use:portalToBody class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
-    <div class="text-center p-8 bg-surface border border-border-subtle rounded-2xl shadow-2xl max-w-sm w-full animate-in fade-in">
-      <div class="flex items-center justify-center size-14 rounded-full bg-red-500/20 text-red-500 mx-auto mb-4">
-        <span class="material-symbols-outlined text-[28px]">power_off</span>
-      </div>
-      <h2 class="text-lg font-semibold text-text-main mb-1">Server Stopped</h2>
-      <p class="text-xs text-text-muted mb-4">
-        Now run <code class="px-1.5 py-0.5 rounded bg-surface-2 font-mono text-amber-500">9router-go update</code> in your terminal.
-      </p>
-      <button
-        type="button"
-        onclick={() => globalThis.location.reload()}
-        class="w-full py-2 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold transition-colors cursor-pointer"
-      >
-        Reload Dashboard
-      </button>
-    </div>
-  </div>
-{/if}
 

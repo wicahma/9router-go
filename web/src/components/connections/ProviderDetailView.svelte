@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import {
     api,
+    normalizeLastError,
     type ConnectionUsageResponse,
     type CreateConnectionPayload,
     type FreebuffSessionStatusResponse,
@@ -11,9 +12,10 @@
     type ProxyPool,
     type Settings
   } from '../../api/client'
-  import { PROVIDER_CATALOG, type ProviderCatalogItem } from '../../lib/providers'
+  import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
   import {
     clearCallback,
+    CODEX_REDIRECT_URI,
     clearPending,
     dashboardCallbackURL,
     loadPendings,
@@ -23,9 +25,16 @@
     readCallback,
     savePending,
     oauthLoopbackCallbackURL,
+    writeCallback,
   } from '../../lib/oauth-handoff'
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
+  import { copyToClipboard } from '../../lib/clipboard'
   import { notifyCustomModelsChanged } from '../../lib/customModels'
+  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
+  import { loadDeprecations, refreshDeprecations, subscribeDeprecations } from '../../lib/modelDeprecations.svelte'
+  import DeprecatedBadge from '../../lib/ui/DeprecatedBadge.svelte'
+  import Menu from '../../lib/ui/Menu.svelte'
+  import MenuItem from '../../lib/ui/MenuItem.svelte'
   import {
     buildAvailableModels,
     fetchProviderModelsData,
@@ -33,15 +42,32 @@
     getIconPath,
     isChatModel,
     type CustomModelData,
-    type ProviderModelItem,
+    type ModelItem,
     type SuggestedModel
   } from './types'
   import { proxyBadgeInfo } from './proxyBadge'
+  import {
+    formatCheckAllSummary,
+    getBlockedModelIds,
+    parseModelTestVerdict,
+    type CheckAllSummary,
+    type ModelTestStatus,
+  } from './modelCheckAll'
+  import {
+    badgeFor,
+    canProbeRow,
+    probeOutcomeFrom,
+    probeOutcomeFromError,
+    testingStatus,
+    type ProbeStatus
+  } from './connectionProbe'
+  import EditConnectionModal, { type ConnectionUpdate } from './EditConnectionModal.svelte'
   import AddConnectionModal from './AddConnectionModal.svelte'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
-  import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
+  import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
+  import ProviderIcon from './ProviderIcon.svelte'
 
   interface Props {
     providerId: string
@@ -49,6 +75,8 @@
     providerNodes: ProviderNode[]
     onBack: () => void
     onRefresh: () => void
+    /** Called with the new id after a URL-suffix rename moves this node. */
+    onSelectProvider?: (id: string) => void
   }
 
   let {
@@ -56,7 +84,8 @@
     connections = [],
     providerNodes = [],
     onBack,
-    onRefresh
+    onRefresh,
+    onSelectProvider
   }: Props = $props()
 
   // Catalog & Node resolution
@@ -67,7 +96,6 @@
     providerNodes.find((n) => n.id === providerId)
   )
   let providerName = $derived(selectedNode?.name || selectedCatalogItem?.name || providerId)
-  let providerIcon = $derived(getIconPath(providerId, selectedNode?.apiType))
   let providerColor = $derived(selectedCatalogItem?.color || '#f59e0b')
   let providerWebsite = $derived(
     selectedCatalogItem?.notice?.apiKeyUrl ||
@@ -110,9 +138,14 @@
   let isDeviceOAuth = $derived(
     providerId === 'qoder' || providerId === 'kilocode' || providerId === 'grok-cli' ||
     providerId === 'github' || providerId === 'kiro' || providerId === 'kimi' ||
-    providerId === 'kimi-coding' || providerId === 'codebuddy-cn' || providerId === 'codebuddy-intl'
+    providerId === 'kimi-coding' || providerId === 'codebuddy-cn' || providerId === 'codebuddy-intl' ||
+    providerId === 'minimax-code' || providerId === 'minimax-code-global'
   )
-  let isNoAuth = $derived(selectedCatalogItem?.noAuth === true || selectedCatalogItem?.category === 'free')
+  // Upstream parity: only the explicit noAuth flag hides the Connections card
+  // ([id]/page.js isFreeNoAuth = !!FREE_PROVIDERS[id]?.noAuth). Category "free"
+  // is NOT equivalent — kiro/gemini-cli are free with noAuth:false and still
+  // need their Connect/OAuth + API Key buttons.
+  let isNoAuth = $derived(selectedCatalogItem?.noAuth === true)
   let hasRiskNotice = $derived(providerId === 'antigravity' || Boolean(selectedCatalogItem?.notice?.text?.includes('RISK_NOTICE')))
 
   // Free provider proxy & rotation state
@@ -164,7 +197,7 @@
       (m) => (m.providerAlias === storageAlias || m.providerAlias === providerId) && isChatModel(m)
     )
   )
-  let allAvailableModels = $derived<ProviderModelItem[]>(
+  let allAvailableModels = $derived<ModelItem[]>(
     buildAvailableModels(builtInModels, providerCustomModels)
   )
   // Registry order, like upstream: `models` there is getModelsByProviderId()
@@ -183,6 +216,8 @@
   let allDisabled = $derived(
     allAvailableModels.length > 0 && disabledModelIds.length >= allAvailableModels.length
   )
+  let isSyncingModels = $state(false)
+  let modelDeprecationCount = $state(0)
 
   // Capabilities + thinking levels are resolved server-side (GET /api/models/caps):
   // the catalog ships as a static bundle, but caps depend on the provider
@@ -237,137 +272,12 @@
       seen.add(full)
       rows.push({ id, source: 'legacyAlias', alias })
     }
+    // Display-only A–Z sort (case-insensitive) so the list order is stable
+    // instead of following the API response object's key order, which varies
+    // between requests. rows is created above on every evaluation, so the
+    // in-place sort is safe.
     return rows.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
   })
-
-  // Pagination & Search for compatible rows
-  let compatibleSearchTerm = $state('')
-  let compatiblePage = $state(1)
-  let compatiblePageSize = $state(50)
-  let compatiblePageSizeOptions = [10, 20, 50, 100, 200, 0] // 0 = all
-
-  let compatibleAllFiltered = $derived(
-    compatibleSearchTerm
-      ? compatibleRows.filter(r => r.id.toLowerCase().includes(compatibleSearchTerm.toLowerCase()))
-      : compatibleRows
-  )
-  let compatibleActiveModels = $derived(compatibleAllFiltered.filter(r => !disabledModelIds.includes(r.id)))
-  let compatibleDisabledModels = $derived(compatibleAllFiltered.filter(r => disabledModelIds.includes(r.id)))
-  let compatibleTotalCount = $derived(compatibleActiveModels.length)
-  let compatibleTotalPages = $derived(
-    compatiblePageSize > 0
-      ? Math.max(1, Math.ceil(compatibleTotalCount / compatiblePageSize))
-      : 1
-  )
-  let compatiblePaginatedRows = $derived(
-    compatiblePageSize > 0
-      ? compatibleActiveModels.slice((compatiblePage - 1) * compatiblePageSize, compatiblePage * compatiblePageSize)
-      : compatibleActiveModels
-  )
-
-  // Reset page when search changes or page exceeds max
-  let _prevCompatSearch = $state('')
-  let _prevCompatCount = $state(0)
-  $effect(() => {
-    if (compatibleSearchTerm !== _prevCompatSearch || compatibleTotalCount !== _prevCompatCount) {
-      if (compatiblePage > compatibleTotalPages) compatiblePage = 1
-      _prevCompatSearch = compatibleSearchTerm
-      _prevCompatCount = compatibleTotalCount
-    }
-  })
-
-  // Bulk selection (pagination-proof — uses Set of all selected IDs)
-  let selectedModelIds = $state<Set<string>>(new Set())
-  let isAllModelPageSelected = $derived(
-    compatiblePaginatedRows.length > 0 && compatiblePaginatedRows.every(r => selectedModelIds.has(r.id))
-  )
-  function toggleModelSelectAll() {
-    const next = new Set(selectedModelIds)
-    if (isAllModelPageSelected) {
-      for (const r of compatiblePaginatedRows) next.delete(r.id)
-    } else {
-      for (const r of compatiblePaginatedRows) next.add(r.id)
-    }
-    selectedModelIds = next
-  }
-  function toggleSelectOne(id: string) {
-    const next = new Set(selectedModelIds)
-    if (next.has(id)) { next.delete(id) } else { next.add(id) }
-    selectedModelIds = next
-  }
-
-  // Bulk actions
-  async function handleBulkCopy() {
-    if (selectedModelIds.size === 0) { alert('No models selected'); return }
-    const prefix = displayAlias()
-    const texts = [...selectedModelIds].map(id => `${prefix}/${id}`).join('\n')
-    await navigator.clipboard.writeText(texts)
-    alert(`Copied ${selectedModelIds.size} model(s)`)
-  }
-  async function handleBulkDelete() {
-    if (selectedModelIds.size === 0) { alert('No models selected'); return }
-    if (!confirm(`Delete ${selectedModelIds.size} model(s)? This cannot be undone.`)) return
-    for (const id of [...selectedModelIds]) {
-      try { await api.deleteCustomModel(`${storageAlias}|${id}|llm`) }
-      catch (e) { console.error('Delete failed:', id, e) }
-    }
-    selectedModelIds = new Set()
-    await refreshCompatibleModels()
-  }
-  async function handleBulkTest() {
-    if (selectedModelIds.size === 0) { alert('No models selected'); return }
-    const ids = [...selectedModelIds]
-    activeModelTestError = null
-    for (const id of ids) {
-      compatibleTestResults[id] = 'ok'
-      compatibleTestErrors[id] = null
-      try {
-        const res = await api.testModel(`${storageAlias}/${id}`)
-        if (!res.ok) {
-          compatibleTestResults[id] = 'error'
-          compatibleTestErrors[id] = res.error || 'Test failed'
-          activeModelTestError = `${id}: ${res.error || 'Test failed'}`
-        }
-      } catch (e) {
-        compatibleTestResults[id] = 'error'
-        const msg = e instanceof Error ? e.message : 'Test failed'
-        compatibleTestErrors[id] = msg
-        activeModelTestError = `${id}: ${msg}`
-      }
-    }
-  }
-  async function handleBulkDisable() {
-    if (selectedModelIds.size === 0) { alert('No models selected'); return }
-    const updated = Array.from(new Set([...disabledModelIds, ...selectedModelIds]))
-    disabledModelIds = updated
-    try { await api.saveDisabledModels(storageAlias, updated) }
-    catch (err) { console.error('Failed to disable models:', err) }
-    selectedModelIds = new Set()
-  }
-
-  // Bulk add via comma-separated
-  let bulkAddInput = $state('')
-  let isBulkAdding = $state(false)
-  async function handleBulkAddModels() {
-    if (!bulkAddInput.trim() || isBulkAdding) return
-    isBulkAdding = true
-    try {
-      const ids = bulkAddInput.split(',')
-        .map(s => s.trim())
-        .filter(s => s && !compatibleRows.some(r => r.id === s))
-      if (ids.length === 0) { alert('No new model IDs to add.'); return }
-      for (const id of ids) {
-        await api.saveCustomModel(`${storageAlias}|${id}|llm`, { id, providerAlias: storageAlias, type: 'llm' })
-      }
-      bulkAddInput = ''
-      await refreshCompatibleModels()
-      notifyCustomModelsChanged()
-      alert(`Added ${ids.length} model(s)`)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Bulk add failed')
-    } finally { isBulkAdding = false }
-  }
-
   let canImportCompatible = $derived(providerConnections.some((c) => c.isActive !== 0))
 
   // Settings & Strategies
@@ -397,31 +307,19 @@
   let oneByOneSummary = $state<
     { total: number; completed: number; passed: number; failed: number; stopped: boolean } | null
   >(null)
-  let oneByOneStatuses = $state<
-    Record<string, { state: 'queued' | 'testing' | 'success' | 'failed'; error?: string | null }>
-  >({})
+  // Written by both the sweep and the per-row refresh (PR #196); the shared
+  // ProbeStatus keeps those two writers from drifting apart.
+  let oneByOneStatuses = $state<Record<string, ProbeStatus>>({})
 
   // Row UI state
   let activeProxyDropdownId = $state<string | null>(null)
-  // Viewport rect of the open proxy dropdown, measured from its trigger button.
-  // The connection list scrolls (overflow-y-auto), so an absolutely positioned
-  // menu is clipped by it; a viewport-fixed menu is not.
-  //
-  // The menu scrolls internally, so its height is clamped to the room actually
-  // available on the side it opens, and it flips above the trigger when there is
-  // more room up there. That keeps both ends inside the viewport regardless of
-  // pool count, without guessing item height.
-  let proxyDropdownRect = $state<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null)
-  let proxyDropdownTrigger = $state<HTMLElement | null>(null)
-  // Menu sizing: never taller than this fraction of the viewport, and flip above
-  // the trigger once less than this much room is left below it.
-  const MAX_MENU_HEIGHT_RATIO = 0.6
-  const MIN_MENU_HEIGHT = 120
+  let dropdownPos = $state<{ top: number; right: number }>({ top: 0, right: 0 })
   let updatingProxyConnId = $state<string | null>(null)
   let copiedModelId = $state<string | null>(null)
-  let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
+  let modelTestStatuses = $state<Record<string, ModelTestStatus>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
   let activeModelTestError = $state<string | null>(null)
+  let checkAllSummary = $state<CheckAllSummary | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -447,9 +345,23 @@
   let deviceSession: Record<string, unknown> = $state({})
   let deviceInterval = $state(5)
   let devicePollTimer: ReturnType<typeof setInterval> | null = $state(null)
+  // Kiro method selection (upstream KiroAuthModal/KiroOAuthWrapper parity):
+  // builder-id | idc | api-key | import | import-cli-proxy | social-google | social-github
+  let kiroMethod = $state<string | null>(null)
+  let kiroIdcStartUrl = $state('')
+  let kiroIdcRegion = $state('us-east-1')
+  let kiroApiKey = $state('')
+  let kiroApiKeyRegion = $state('us-east-1')
+  let kiroRefreshToken = $state('')
+  let kiroCliProxyJson = $state('')
+  let kiroSocialAuthUrl = $state('')
+  let kiroSocialCallback = $state('')
   // OAuth auto-handoff: callback tab writes to storage + BroadcastChannel,
   // this modal restores the pending session and auto-submits.
   let autoSubmitted = $state(false)
+  // Codex completes its login on a server-owned loopback listener, so the
+  // modal watches the server instead of the browser callback page.
+  let codexPollTimer: ReturnType<typeof setInterval> | null = $state(null)
 
   function dashboardCallback(): string {
     return dashboardCallbackURL(dashboardOrigin())
@@ -465,7 +377,7 @@
     try {
       savePending(window.localStorage, { provider: providerId, ...p })
     } catch {
-      /* storage blocked — degradasi ke paste manual */
+      /* storage blocked — degrade to manual paste */
     }
   }
 
@@ -479,7 +391,7 @@
     }
     if (!cb || (!cb.raw && !cb.error)) return false
     if (cb.error) {
-      oauthError = `Login gagal: ${cb.error}${cb.errorDesc ? ` — ${cb.errorDesc}` : ''}`
+      oauthError = `Login failed: ${cb.error}${cb.errorDesc ? ` — ${cb.errorDesc}` : ''}`
       try {
         clearCallback(window.localStorage)
       } catch {
@@ -549,7 +461,7 @@
           errorDescription?: string
         }
         if (data.error) {
-          oauthError = `Login gagal: ${data.error}${data.errorDescription ? ` — ${data.errorDescription}` : ''}`
+          oauthError = `Login failed: ${data.error}${data.errorDescription ? ` — ${data.errorDescription}` : ''}`
           return
         }
         const raw = data.code || data.token || ''
@@ -567,7 +479,7 @@
         showOAuthModal = false
         onRefresh()
       } else if (e.data?.type === '9router-oauth-error' && e.data?.provider === 'antigravity') {
-        oauthError = `Login gagal: ${e.data.error || 'Unknown error'}`
+        oauthError = `Login failed: ${e.data.error || 'Unknown error'}`
       }
     }
     window.addEventListener('message', onWindowMessage)
@@ -581,7 +493,7 @@
           return
         }
         if (e.data?.provider === 'antigravity' && e.data?.error) {
-          oauthError = `Login gagal: ${e.data.error}`
+          oauthError = `Login failed: ${e.data.error}`
           return
         }
         consumeOAuthCallback()
@@ -610,19 +522,31 @@
 
   let showApplyProxyModal = $state(false)
   let isApplyingProxy = $state(false)
+  // Non-null while a reorder request is in flight; the chevrons disable on it
+  // so a second click cannot fire a swap computed from a stale list.
+  let reorderingConnId = $state<string | null>(null)
+  // Bulk-apply progress + abort flag for the Apply Proxy modal.
+  let applyProxyDone = $state(0)
+  let applyProxyAbort = $state(false)
+  let proxyPoolSearch = $state('')
 
+  let filteredProxyPools = $derived.by(() => {
+    const q = proxyPoolSearch.trim().toLowerCase()
+    if (!q) return proxyPools
+    return proxyPools.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.proxyUrl.toLowerCase().includes(q)
+    )
+  })
+
+  // The connection whose Edit Connection modal is open; null when closed. The
+  // modal owns its own fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
-  let editName = $state('')
-  let editPriority = $state<number>(1)
-  let editTestStatus = $state<'ok' | 'error' | null>(null)
-  let editTestError = $state<string | null>(null)
-  let isTestingEdit = $state(false)
-  let isSavingEdit = $state(false)
 
   let showAddKeyModal = $state(false)
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
   let showEditNodeModal = $state(false)
+  let showHeaderOverrides = $state(false)
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
     providerId === 'freebuff' || storageAlias === 'fb' || storageAlias === 'freebuff'
@@ -771,16 +695,16 @@
 
   // Load models, settings, proxy pools
   async function loadData() {
-    suggestedModels = []
     try {
       const [modelsData, settingsData, poolsData, aliasesData, capsData] = await Promise.all([
         fetchProviderModelsData(providerId, storageAlias),
         api.getSettings().catch(() => ({})),
         api.getProxyPools().catch(() => []),
         api.getModelAliases().catch(() => ({ aliases: {} })),
-        // Providers without a static catalog answer 404; the page then shows no
-        // capability icons and hides the thinking picker, same as upstream.
-        api.getModelCaps(providerId).catch(() => ({ caps: {} as Record<string, ModelCaps> })),
+        // Providers without a static catalog or compatible nodes do not have static caps.
+        !isCompatibleNode && (PROVIDER_CATALOG_MAP.has(providerId) || PROVIDER_CATALOG_MAP.has(storageAlias))
+          ? api.getModelCaps(providerId).catch(() => ({ caps: {} as Record<string, ModelCaps> }))
+          : Promise.resolve({ caps: {} as Record<string, ModelCaps> }),
       ])
       customModels = modelsData.customModels
       disabledModelIds = modelsData.disabledModelIds
@@ -808,7 +732,7 @@
       const thinking = (settingsData as any)?.providerThinking?.[providerId]
       thinkingLevel = thinking?.mode || 'auto'
       // Extract free provider proxy & rotation settings
-      if (strategy) {
+      if (strategy && !isSavingFreeProxy) {
         freeProxyPoolId = strategy.proxyPoolId || 'none'
         freeRotateStrategy = (strategy.rotateStrategy as 'none' | 'round-robin' | 'random') || 'none'
       }
@@ -893,15 +817,24 @@
       }
     }
 
-    // 2. Check live quota data for exhausted models (remaining <= 0) and resetAt
+    // 2. Check live quota data for exhausted models (remaining <= 0) and resetAt.
+    //    A pool with total <= 0 is not an exhausted pool — it means the account
+    //    has no allocation at all (Qoder credits report total 0, and its
+    //    "expiresAt" is a 9999-12-31 sentinel), so counting it produced
+    //    "Quota Exhausted (0%): Resets in 2912172d 1h" on a perfectly healthy
+    //    connection. Only a pool that was actually granted something can run
+    //    out of it.
     const usage = connectionQuotas[conn.id]
     if (usage?.quotas) {
       const quotaEntries = Object.entries(usage.quotas)
-      const exhausted = quotaEntries.filter(
-        ([_, q]) =>
-          (q.remainingPercentage !== undefined && q.remainingPercentage <= 0) ||
-          (q.remaining !== undefined && q.remaining <= 0)
-      )
+      const exhausted = quotaEntries.filter(([_, q]) => {
+        const total = Number(q.total)
+        if (!Number.isFinite(total) || total <= 0) return false
+        return (
+          (q.remainingPercentage !== undefined && Number(q.remainingPercentage) <= 0) ||
+          (q.remaining !== undefined && Number(q.remaining) <= 0)
+        )
+      })
       if (exhausted.length > 0) {
         let earliestReset = 0
         let resetModel = ''
@@ -935,7 +868,7 @@
     }
     // 4. Check errorCode 429 or lastError indicating rate limit / quota
     const errCode = (conn as unknown as { errorCode?: number }).errorCode
-    const lastErr = conn.lastError || ''
+    const lastErr = normalizeLastError(conn.lastError) || ''
     if (
       errCode === 429 ||
       lastErr.includes('429') ||
@@ -960,9 +893,17 @@
     return null
   }
 
+  let lastLoadedProviderId = ''
   $effect(() => {
-    if (providerId) {
-      loadData()
+    const pid = providerId
+    if (pid) {
+      untrack(() => {
+        if (lastLoadedProviderId !== pid) {
+          lastLoadedProviderId = pid
+          suggestedModels = []
+        }
+        loadData()
+      })
     }
   })
 
@@ -1099,29 +1040,19 @@
 
         const conn = providerConnections[index]
         oneByOneCurrentId = conn.id
-        oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'testing', error: null } }
+        oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: testingStatus() }
 
         try {
           const res = await api.testConnection(conn.id)
           if (res?.valid) {
             passed += 1
-            oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'success', error: null } }
           } else {
             failed += 1
-            oneByOneStatuses = {
-              ...oneByOneStatuses,
-              [conn.id]: { state: 'failed', error: res?.error || 'Test failed' }
-            }
           }
+          oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFrom(res) }
         } catch (err) {
           failed += 1
-          oneByOneStatuses = {
-            ...oneByOneStatuses,
-            [conn.id]: {
-              state: 'failed',
-              error: err instanceof Error ? err.message : 'Test failed'
-            }
-          }
+          oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFromError(err) }
         }
 
         oneByOneSummary = {
@@ -1151,21 +1082,43 @@
     isStoppingOneByOne = true
   }
 
-  // Priority reordering
-  async function swapPriority(idxA: number, idxB: number) {
-    const connA = providerConnections[idxA]
-    const connB = providerConnections[idxB]
-    if (!connA || !connB) return
-    const priorityA = connA.priority ?? idxA + 1
-    const priorityB = connB.priority ?? idxB + 1
+  // Per-row refresh: probe one account straight from its row instead of
+  // opening the edit modal. Reuses the one-by-one badge state so the row
+  // shows the live testing/success/failed indicator for free.
+  async function refreshOneConnection(conn: ProviderConnection) {
+    if (!canProbeRow(isTestingOneByOne, oneByOneStatuses[conn.id])) return
+    oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: testingStatus() }
     try {
-      await Promise.all([
-        api.updateConnection(connA.id, { priority: priorityB }),
-        api.updateConnection(connB.id, { priority: priorityA })
-      ])
+      const res = await api.testConnection(conn.id)
+      oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFrom(res) }
+    } catch (err) {
+      oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFromError(err) }
+    } finally {
+      onRefresh()
+    }
+  }
+
+  // Priority reordering.
+  // Single server-side transactional call instead of two independent PUTs:
+  // a partial failure between those two writes left two rows sharing a
+  // priority, and a stable sort over tied priorities made every later click a
+  // literal no-op — the pair became permanently un-reorderable through the UI.
+  // The in-flight flag also stops a second click from firing a swap computed
+  // from the same stale list (last-write-wins, so the list appeared frozen).
+  async function swapPriority(idx: number, delta: -1 | 1) {
+    const conn = providerConnections[idx]
+    if (!conn || reorderingConnId) return
+    const target = providerConnections[idx + delta]
+    if (!target) return
+
+    reorderingConnId = conn.id
+    try {
+      await api.reorderConnection(conn.id, delta < 0 ? 'up' : 'down')
       onRefresh()
     } catch (err) {
-      console.error('Error swapping priority:', err)
+      alert(`Reorder failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      reorderingConnId = null
     }
   }
 
@@ -1180,7 +1133,7 @@
   }
 
   async function handleDeleteConnection(conn: ProviderConnection) {
-    if (!confirm(`Delete connection "${conn.name || conn.id}"? This cannot be undone.`)) return
+    if (!confirm(`Delete connection "${formatEmailLabel(conn.name || conn.id, $emailPrivacy)}"? This cannot be undone.`)) return
     try {
       await api.deleteConnection(conn.id)
       onRefresh()
@@ -1205,55 +1158,8 @@
     }
   }
 
-  function closeProxyDropdown() {
-    activeProxyDropdownId = null
-    proxyDropdownRect = null
-    proxyDropdownTrigger = null
-  }
-
-  function toggleProxyDropdown(connId: string, trigger: HTMLElement) {
-    if (activeProxyDropdownId === connId) {
-      closeProxyDropdown()
-      return
-    }
-    activeProxyDropdownId = connId
-    proxyDropdownTrigger = trigger
-  }
-
-  // Anchor the menu to the trigger's viewport rect, flipping above the button
-  // when it would run past the bottom edge. The connection list scrolls, so the
-  // viewport-fixed menu is re-measured while the page moves.
-  function positionProxyDropdown() {
-    if (!proxyDropdownTrigger) return
-    const r = proxyDropdownTrigger.getBoundingClientRect()
-    const GAP = 4
-    const roomBelow = window.innerHeight - r.bottom - GAP
-    const roomAbove = r.top - GAP
-    // Open upward only when there is more room above than below and little
-    // below; otherwise drop down. Either way the height is clamped to the room
-    // that side actually has, so the far end never leaves the viewport.
-    const openUp = roomBelow < MIN_MENU_HEIGHT && roomAbove > roomBelow
-    proxyDropdownRect = {
-      top: openUp ? roomAbove : r.bottom + GAP,
-      left: r.left,
-      minWidth: Math.max(r.width, 160),
-      maxHeight: Math.min(openUp ? roomAbove : roomBelow, window.innerHeight * MAX_MENU_HEIGHT_RATIO)
-    }
-  }
-
-  $effect(() => {
-    if (!activeProxyDropdownId) return
-    positionProxyDropdown()
-    window.addEventListener('scroll', positionProxyDropdown, true)
-    window.addEventListener('resize', positionProxyDropdown)
-    return () => {
-      window.removeEventListener('scroll', positionProxyDropdown, true)
-      window.removeEventListener('resize', positionProxyDropdown)
-    }
-  })
-
   async function assignProxyPool(conn: ProviderConnection, poolId: string | null) {
-    closeProxyDropdown()
+    activeProxyDropdownId = null
     updatingProxyConnId = conn.id
     try {
       await api.updateConnection(conn.id, proxyAssignmentPayload(poolId))
@@ -1267,25 +1173,46 @@
 
   // Upstream applies bulk proxy changes to every connection of the provider,
   // regardless of the checkbox selection.
+  //
+  // Cancel sets the abort flag and the loop stops on the next iteration, so
+  // closing the modal no longer leaves requests firing in the background. The
+  // running counter is shown in the modal: with 100+ connections a sequential
+  // loop is slow enough that the previous label-less "Applying..." read as a
+  // hang.
   async function applyProxyAssignments(assignments: Array<{ id: string; poolId: string | null }>) {
     isApplyingProxy = true
+    applyProxyAbort = false
+    applyProxyDone = 0
     let failed = 0
     try {
       for (const assignment of assignments) {
+        if (applyProxyAbort) break
         try {
           await api.updateConnection(assignment.id, proxyAssignmentPayload(assignment.poolId))
         } catch {
           failed++
         }
+        applyProxyDone++
       }
       onRefresh()
       showApplyProxyModal = false
-      if (failed > 0) {
+      if (applyProxyAbort) {
+        alert(`Cancelled after ${applyProxyDone} of ${assignments.length} connection(s).`)
+      } else if (failed > 0) {
         alert(`Updated with ${failed} failed request(s).`)
       }
     } finally {
       isApplyingProxy = false
+      applyProxyAbort = false
     }
+  }
+
+  function cancelApplyProxy() {
+    if (isApplyingProxy) {
+      applyProxyAbort = true
+      return
+    }
+    showApplyProxyModal = false
   }
 
   async function handleApplyProxyPool(poolId: string | null) {
@@ -1308,51 +1235,17 @@
     )
   }
 
-  // Edit connection modal
+  // Edit connection modal. Every field, the probe and the payload live in
+  // EditConnectionModal; this only decides when it opens and who refreshes.
   function openEditConnection(conn: ProviderConnection) {
     editingConnection = conn
-    editName = conn.name || ''
-    editPriority = conn.priority ?? 1
-    editTestStatus = null
-    editTestError = null
   }
 
-  async function testEditingConnection() {
+  async function saveEditingConnection(payload: ConnectionUpdate) {
     if (!editingConnection) return
-    isTestingEdit = true
-    editTestStatus = null
-    editTestError = null
-    try {
-      const res = await api.testConnection(editingConnection.id)
-      if (res?.valid) {
-        editTestStatus = 'ok'
-      } else {
-        editTestStatus = 'error'
-        editTestError = res?.error || 'Test failed'
-      }
-    } catch (err) {
-      editTestStatus = 'error'
-      editTestError = err instanceof Error ? err.message : 'Test failed'
-    } finally {
-      isTestingEdit = false
-    }
-  }
-
-  async function saveEditingConnection() {
-    if (!editingConnection) return
-    isSavingEdit = true
-    try {
-      await api.updateConnection(editingConnection.id, {
-        name: editName.trim() || undefined,
-        priority: editPriority
-      })
-      editingConnection = null
-      onRefresh()
-    } catch (err) {
-      alert(`Failed to save connection: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      isSavingEdit = false
-    }
+    await api.updateConnection(editingConnection.id, payload)
+    editingConnection = null
+    onRefresh()
   }
 
   // Add Connection Button flow
@@ -1374,7 +1267,16 @@
       openAuthCodeOAuth()
     } else if (isCustomOAuth) {
       openCustomOAuth()
+    } else if (providerId === 'kiro') {
+      openKiroOAuth()
     } else if (isDeviceOAuth) {
+      // Device-code providers (qoder, grok-cli, github, kilocode, kimi,
+      // codebuddy-*) have no authorize endpoint to redirect to: the backend
+      // mints a PKCE/nonce pair locally and hands back a verification URL to
+      // open, then polls for the token. Without this branch they fell through
+      // to openGenericOAuth and the user was asked to paste a token by hand
+      // instead of getting the login page — isDeviceOAuth was computed but
+      // never read, and openDeviceOAuth was never called.
       openDeviceOAuth()
     } else if (isSpecialOAuth) {
       openSpecialOAuth()
@@ -1421,7 +1323,9 @@
     callbackInput = ''
     copiedAuthUrl = false
     try {
-      const cb = dashboardCallback()
+      // Codex cannot use the dashboard callback: OpenAI only accepts the
+      // redirect URI registered for the Codex CLI client.
+      const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
       const res = await api.pkceAuthorize(
         providerId,
         providerId === 'gitlab'
@@ -1435,7 +1339,10 @@
       oauthAuthUrl = res.url || res.authUrl
       pkceCodeVerifier = res.codeVerifier || ''
       pkceState = res.state || ''
-      pkceRedirectUri = res.redirectUri || ''
+      pkceRedirectUri = res.redirectUri || cb
+      if (providerId === 'codex') {
+        await startCodexLoopback()
+      }
       rememberPending({
         state: pkceState,
         verifier: pkceCodeVerifier,
@@ -1453,6 +1360,68 @@
       }
     } catch (err) {
       alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Codex redirects the browser to a fixed loopback port, so the server needs
+  // that listener running before the popup opens — otherwise the callback dies
+  // on a closed port and the login can never complete.
+  async function startCodexLoopback() {
+    stopCodexPoll()
+    const proxy = await api.codexStartProxy({
+      appPort: window.location.port || (window.location.protocol === 'https:' ? '443' : '80'),
+      state: pkceState,
+      codeVerifier: pkceCodeVerifier,
+      redirectUri: CODEX_REDIRECT_URI,
+    })
+    if (!proxy.success) {
+      throw new Error(
+        proxy.reason === 'port_busy'
+          ? 'Port 1455 is in use; close the conflicting process and retry'
+          : 'Could not start the local login listener',
+      )
+    }
+    codexPollTimer = setInterval(pollCodexStatus, 1500)
+  }
+
+  async function pollCodexStatus() {
+    try {
+      const res = await api.codexPollStatus(pkceState)
+      if (res.status === 'done') {
+        stopCodexPoll()
+        showOAuthModal = false
+        onRefresh()
+      } else if (res.status === 'error') {
+        stopCodexPoll()
+        oauthError = res.error || 'Authorization failed'
+      } else if (res.status === 'unknown') {
+        // The server no longer tracks this login. Stop polling, but say so:
+        // silently freezing the modal on "Waiting for popup authorization…"
+        // leaves the user with a login that can never finish and no way to
+        // tell that apart from simply being slow.
+        stopCodexPoll()
+        oauthError = 'The local login listener is no longer running. Close this window and click Login again.'
+      }
+    } catch {
+      // Biarkan polling berikutnya mencoba lagi.
+    }
+  }
+
+  function stopCodexPoll() {
+    if (codexPollTimer) {
+      clearInterval(codexPollTimer)
+      codexPollTimer = null
+    }
+  }
+
+  // Dismissing the modal abandons the login, so any loopback listener and
+  // poll loop it started have to be released with it.
+  function closeOAuthModal() {
+    showOAuthModal = false
+    stopDevicePoll()
+    stopCodexPoll()
+    if (providerId === 'codex') {
+      void api.codexStopProxy().catch(() => {})
     }
   }
 
@@ -1501,6 +1470,186 @@
       alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+  function resetKiroMethod() {
+    kiroMethod = null
+    kiroIdcStartUrl = ''
+    kiroIdcRegion = 'us-east-1'
+    kiroApiKey = ''
+    kiroApiKeyRegion = 'us-east-1'
+    kiroRefreshToken = ''
+    kiroCliProxyJson = ''
+    kiroSocialAuthUrl = ''
+    kiroSocialCallback = ''
+  }
+
+  async function openKiroOAuth() {
+    oauthError = null
+    callbackInput = ''
+    copiedAuthUrl = false
+    stopDevicePoll()
+    resetKiroMethod()
+    showOAuthModal = true
+  }
+
+  async function startKiroDeviceFlow(authMethod: 'builder-id' | 'idc') {
+    oauthError = null
+    copiedAuthUrl = false
+    stopDevicePoll()
+    isConnecting = true
+    try {
+      const res = await api.deviceStart(
+        'kiro',
+        authMethod === 'idc'
+          ? { startUrl: kiroIdcStartUrl.trim(), region: kiroIdcRegion.trim() || 'us-east-1', authMethod: 'idc' }
+          : { authMethod: 'builder-id' }
+      )
+      oauthAuthUrl = res.verification_uri_complete || res.verification_uri || ''
+      deviceUserCode = res.user_code || ''
+      deviceCode = res.device_code || ''
+      deviceSession = res.session || {}
+      deviceInterval = res.interval && res.interval > 0 ? res.interval : 5
+      if (typeof window !== 'undefined' && oauthAuthUrl) {
+        window.open(oauthAuthUrl, '_blank')
+      }
+      pollDeviceOnce()
+      devicePollTimer = setInterval(pollDeviceOnce, deviceInterval * 1000)
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroApiKey() {
+    if (!kiroApiKey.trim()) {
+      oauthError = 'Enter your Kiro/CodeWhisperer API key'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroApiKey(kiroApiKey.trim(), kiroApiKeyRegion.trim() || 'us-east-1')
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroImport() {
+    if (!kiroRefreshToken.trim()) {
+      oauthError = 'Enter the refresh token from Kiro IDE'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroImport(kiroRefreshToken.trim())
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroCliProxyImport() {
+    if (!kiroCliProxyJson.trim()) {
+      oauthError = 'Paste CLIProxyAPI auth JSON'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroImportCliProxy(kiroCliProxyJson.trim())
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function startKiroAutoImport() {
+    oauthError = null
+    isConnecting = true
+    try {
+      const res = await api.kiroAutoImport()
+      if (res?.found && res?.refreshToken) {
+        kiroRefreshToken = res.refreshToken as string
+      } else {
+        oauthError = (res as { error?: string })?.error || 'No token detected on this host'
+      }
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function startKiroSocial(provider: 'google' | 'github') {
+    oauthError = null
+    kiroSocialAuthUrl = ''
+    kiroSocialCallback = ''
+    isConnecting = true
+    try {
+      const res = await api.kiroSocialAuthorize(provider)
+      kiroSocialAuthUrl = res.authUrl || res.url || ''
+      if (typeof window !== 'undefined' && kiroSocialAuthUrl) {
+        window.open(kiroSocialAuthUrl, '_blank', 'width=600,height=700')
+      }
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroSocialCallback() {
+    const raw = kiroSocialCallback.trim()
+    if (!raw) {
+      oauthError = 'Paste the callback URL / code from the browser'
+      return
+    }
+    // Accept a full kiro:// callback URL or a bare code (upstream
+    // KiroSocialOAuthModal parity: code + state query params).
+    let code = raw
+    try {
+      const url = new URL(raw)
+      const errParam = url.searchParams.get('error')
+      if (errParam) {
+        oauthError = url.searchParams.get('error_description') || errParam
+        return
+      }
+      code = url.searchParams.get('code') || raw
+    } catch {
+      // Not a URL — treat the input as a bare code.
+    }
+    if (!code) {
+      oauthError = 'No authorization code found in the callback URL'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroSocialExchange(code)
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
 
   async function openDeviceOAuth() {
     oauthError = null
@@ -1598,7 +1747,7 @@
     try {
       const res = await api.cursorAutoImport()
       if (!res || (res as { error?: string })?.error || !(res as { success?: boolean })?.success) {
-        oauthError = (res as { error?: string })?.error || 'Auto-import gagal. Pastikan Cursor IDE terinstall & login di host ini.'
+        oauthError = (res as { error?: string })?.error || 'Auto-import failed. Make sure Cursor IDE is installed and signed in on this host.'
       } else {
         showOAuthModal = false
         onRefresh()
@@ -1612,12 +1761,12 @@
 
   function dashboardOrigin(): string {
     if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin
-    return 'http://localhost:20128'
+    return 'http://localhost:20130'
   }
 
   function openGenericOAuth() {
-    // Tidak ada authorize endpoint generik: JANGAN arahkan ke Google/Antigravity.
-    // Tampilkan modal dengan panduan import token manual.
+    // No generic authorize endpoint: never redirect to Google/Antigravity.
+    // Show the modal with manual-token import instructions instead.
     oauthError = null
     oauthAuthUrl = ''
     callbackInput = ''
@@ -1648,7 +1797,7 @@
 
   function copyAuthUrl() {
     if (!oauthAuthUrl) return
-    navigator.clipboard.writeText(oauthAuthUrl)
+    copyToClipboard(oauthAuthUrl)
     copiedAuthUrl = true
     setTimeout(() => (copiedAuthUrl = false), 2000)
   }
@@ -1696,14 +1845,14 @@
             loadFreebuffSession()
             return
           } else if (res?.status === 'pending') {
-            oauthError = 'Status masih pending. Jika tab Freebuff terbuka di halaman /onboard, pastikan selesaikan langkah onboarding di tab tersebut, lalu klik Check & Connect lagi.'
+            oauthError = 'Status is still pending. If the Freebuff tab opened on the /onboard page, finish the onboarding step in that tab, then click Check & Connect again.'
           } else if (res?.status === 'expired') {
-            oauthError = 'Sesi otorisasi telah kedaluwarsa. Silakan tutup modal ini dan klik Authorize Freebuff CLI ulang.'
+            oauthError = 'The authorization session has expired. Close this modal and click Authorize Freebuff CLI again.'
           } else {
-            oauthError = `Status: ${res?.status || 'pending'}. Pastikan login di browser sudah selesai.`
+            oauthError = `Status: ${res?.status || 'pending'}. Make sure the browser login is complete.`
           }
         } else {
-          oauthError = 'Sesi Freebuff belum diinisiasi. Silakan klik Authorize Freebuff CLI ulang.'
+          oauthError = 'The Freebuff session has not been started yet. Click Authorize Freebuff CLI again.'
         }
         return
       }
@@ -1732,7 +1881,7 @@
       }
       if (isClineOAuth) {
         if (!clineCodeVerifier) {
-          oauthError = 'Sesi otorisasi belum diinisiasi. Tutup modal ini lalu klik Login ulang.'
+          oauthError = 'The authorization session has not been started yet. Close this modal and click Log in again.'
           return
         }
         try {
@@ -1750,7 +1899,7 @@
       }
       if (isPKCEOAuth) {
         if (!pkceCodeVerifier) {
-          oauthError = 'Sesi otorisasi belum diinisiasi. Tutup modal ini lalu klik Login ulang.'
+          oauthError = 'The authorization session has not been started yet. Close this modal and click Log in again.'
           return
         }
         try {
@@ -1824,7 +1973,7 @@
           let res: { success?: boolean; status?: string; error?: string } | null = null
           if (providerId === 'cursor') {
             if (!tok || !specialExtra.trim()) {
-              oauthError = 'Isi access token dan machine ID.'
+              oauthError = 'Enter the access token and machine ID.'
               return
             }
             res = await api.cursorImport(tok, specialExtra.trim())
@@ -1832,7 +1981,7 @@
             res = await api.kimchiExchange(tok)
           } else if (providerId === 'xiaomi-mimo') {
             if (!customVerifier) {
-              oauthError = 'Sesi otorisasi belum diinisiasi. Tutup modal ini lalu klik Login ulang.'
+              oauthError = 'The authorization session has not been started yet. Close this modal and click Log in again.'
               return
             }
             res = await api.mimoExchange(tok, customVerifier)
@@ -1880,13 +2029,13 @@
       }
       if (providerId !== 'antigravity') {
         if (raw.includes('code=') || raw.includes('http')) {
-          oauthError = `Login OAuth langsung belum didukung untuk ${providerName}. Tempel access token / refresh token sebagai gantinya.`
+          oauthError = `Direct OAuth login is not supported for ${providerName}. Paste an access token / refresh token instead.`
           return
         }
         try {
           const res = await api.importOAuthToken(providerId, raw)
           if (!res || (res as { error?: string })?.error) {
-            oauthError = (res as { error?: string })?.error || 'Import token gagal'
+            oauthError = (res as { error?: string })?.error || 'Token import failed'
           } else {
             showOAuthModal = false
             onRefresh()
@@ -1921,31 +2070,33 @@
   function copyModelId(modelId: string) {
     const level = resolveThinkingSuffix(modelId)
     const full = `${storageAlias}/${modelId}${level ? `(${level})` : ''}`
-    navigator.clipboard.writeText(full)
+    copyToClipboard(full)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
   }
 
-  async function testModel(modelId: string) {
+  async function testModel(modelId: string, silent = false) {
+    // Probes take seconds; if the panel switches provider mid-flight the
+    // verdict belongs to the old provider and must not be written here.
+    const pid = providerId
     modelTestStatuses[modelId] = 'testing'
     modelTestErrors[modelId] = null
-    activeModelTestError = null
+    if (!silent) activeModelTestError = null
     try {
       const res = await api.testModel(`${storageAlias}/${modelId}`)
-      if (res.ok) {
-        modelTestStatuses[modelId] = 'ok'
-        modelTestErrors[modelId] = null
-      } else {
-        modelTestStatuses[modelId] = 'error'
-        const err = res.error || 'Model test failed'
-        modelTestErrors[modelId] = err
-        activeModelTestError = `${modelId}: ${err}`
+      if (pid !== providerId) return
+      const verdict = parseModelTestVerdict(res)
+      modelTestStatuses[modelId] = verdict.status
+      modelTestErrors[modelId] = verdict.error
+      if (!silent && verdict.error) {
+        activeModelTestError = `${modelId}: ${verdict.error}`
       }
     } catch (err) {
+      if (pid !== providerId) return
       modelTestStatuses[modelId] = 'error'
       const msg = err instanceof Error ? err.message : 'Model test failed'
       modelTestErrors[modelId] = msg
-      activeModelTestError = `${modelId}: ${msg}`
+      if (!silent) activeModelTestError = `${modelId}: ${msg}`
     }
   }
 
@@ -1990,13 +2141,19 @@
   }
 
   // Custom Model & Node handlers
-  async function submitAddCustomModel(modelId: string, caps?: { vision?: boolean; reasoning?: boolean }) {
+  async function submitAddCustomModel(
+    modelId: string,
+    caps?: { vision?: boolean; reasoning?: boolean },
+    limits?: { contextWindow?: number; maxOutput?: number },
+  ) {
     try {
       await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
         id: modelId,
         providerAlias: storageAlias,
         type: 'llm',
-        ...(caps ? { caps } : {})
+        ...(caps ? { caps } : {}),
+        ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
+        ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
       })
       showAddCustomModelModal = false
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)
@@ -2040,16 +2197,30 @@
   }
 
   // Upstream parity: PUT /api/provider-nodes/[id] then refresh the node list.
-  async function handleSaveEditedNode(data: { name: string; prefix: string; apiType?: string; baseUrl: string }) {
+  //
+  // A changed URL suffix renames the provider id, and this page is routed by
+  // that id — so a rename has to navigate to the new one or the user lands on a
+  // node that no longer exists.
+  async function handleSaveEditedNode(data: {
+    name: string
+    prefix: string
+    apiType?: string
+    baseUrl: string
+    urlSuffix: string
+  }) {
     if (!selectedNode) return
     try {
-      await api.updateProviderNode(selectedNode.id, {
+      const res = await api.updateProviderNode(selectedNode.id, {
         name: data.name,
         prefix: data.prefix,
         ...(selectedNode.type === 'openai-compatible' && data.apiType ? { apiType: data.apiType } : {}),
         baseUrl: data.baseUrl,
+        urlSuffix: data.urlSuffix || undefined
       })
       showEditNodeModal = false
+      if (res?.node?.id && res.node.id !== selectedNode.id) {
+        onSelectProvider?.(res.node.id)
+      }
       onRefresh()
     } catch (err) {
       alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -2092,6 +2263,9 @@
       await refreshCompatibleModels()
       notifyCustomModelsChanged()
     } catch (err) {
+      // A refusal (the id already addresses a combo or a model alias) has to
+      // reach the user, like the other import paths on this page.
+      alert(err instanceof Error ? err.message : 'Failed to add model')
       console.error('Error adding model:', err)
     } finally {
       isAddingCompatibleModel = false
@@ -2138,7 +2312,7 @@
   }
 
   function copyCompatibleModel(modelId: string) {
-    navigator.clipboard.writeText(`${displayAlias()}/${modelId}`)
+    copyToClipboard(`${displayAlias()}/${modelId}`)
     copiedModelId = modelId
     setTimeout(() => (copiedModelId = null), 2000)
   }
@@ -2175,6 +2349,24 @@
     }
   }
 
+  // Port of upstream ConnectionRow's secondaryDisplayName: the email when the
+  // stored name differs from it, otherwise the displayName when that differs.
+  // The Qoder device flow stores name === email, so the displayName ("Luqmanul
+  // Hakim") is what upstream shows underneath — the same reason our card used to
+  // show the email twice over.
+  function secondaryConnLabel(c: {
+    name?: string | null
+    email?: string | null
+    displayName?: string | null
+  }): string {
+    const name = c.name?.trim() ?? ''
+    const email = c.email?.trim() ?? ''
+    const display = c.displayName?.trim() ?? ''
+    if (name && email && name !== email) return email
+    if (name && display && name !== display) return display
+    return ''
+  }
+
   async function handleImportLiveCatalogModels() {
     if (isImportingLiveCatalogModels) return
     const active = providerConnections.find((c) => c.isActive !== 0)
@@ -2205,11 +2397,24 @@
           typeof m.capabilities === 'object'
             ? (m.capabilities as { vision?: boolean; reasoning?: boolean })
             : undefined
+        // An endpoint that reports its own limits is the authoritative source;
+        // saving them means /v1/models keeps publishing them after the row
+        // outlives this import.
+        const declaredCtxLen =
+          typeof m === 'object' && m !== null && 'context_length' in m
+            ? Number(m.context_length) || 0
+            : 0
+        const declaredMaxOut =
+          typeof m === 'object' && m !== null && 'max_completion_tokens' in m
+            ? Number(m.max_completion_tokens) || 0
+            : 0
         await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
           id: modelId,
           providerAlias: storageAlias,
           type: 'llm',
           ...(caps ? { caps } : {}),
+          ...(declaredCtxLen > 0 ? { contextWindow: declaredCtxLen } : {}),
+          ...(declaredMaxOut > 0 ? { maxOutput: declaredMaxOut } : {}),
         })
         imported++
       }
@@ -2222,6 +2427,231 @@
       isImportingLiveCatalogModels = false
     }
   }
+
+  // --- Feature: check latest models / accessibility / prune unusable ----------
+
+  let latestModels = $state<Array<{ id: string; name?: string }>>([])
+  let isCheckingLatest = $state(false)
+  let latestError = $state<string | null>(null)
+  let isCheckingAll = $state(false)
+  let checkAllProgress = $state({ done: 0, total: 0 })
+
+  // ConnectionsView renders this panel without a {#key providerId}, so the
+  // instance survives a provider switch. Everything computed for the old
+  // provider is dropped before the new provider's DOM commits — otherwise the
+  // stale "new models" list stays clickable and Add would save a model from
+  // provider A into provider B's store.
+  $effect.pre(() => {
+    if (!providerId) return
+    latestModels = []
+    latestError = null
+    isCheckingLatest = false
+    isCheckingAll = false
+    checkAllProgress = { done: 0, total: 0 }
+    modelTestStatuses = {}
+    modelTestErrors = {}
+    checkAllSummary = null
+    activeModelTestError = null
+  })
+
+  // Providers whose /models the backend can enumerate
+  // (internal/providers.modelsListURL + compatible nodes + live-catalog
+  // providers). Kept in sync so the button only renders where it can work.
+  const ModelsListURLs = new Set([
+    'tokenharbor',
+    'dahl',
+    'atria',
+    'agnes',
+    'bai',
+    'muse',
+  ])
+
+  // canListLiveModels mirrors the backend's list of providers with a live
+  // catalogue (HandleGetConnectionModels): a button that cannot work should
+  // not render.
+  let canListLiveModels = $derived(
+    providerId.startsWith('openai-compatible-') ||
+      isCompatibleNode ||
+      ['antigravity', 'gemini-cli', 'cline', 'clinepass', 'qoder', 'qoder-cn'].includes(providerId) ||
+      ModelsListURLs.has(providerId)
+  )
+
+  async function handleCheckLatestModels() {
+    if (isCheckingLatest) return
+    // Captured up front: a provider switch mid-fetch invalidates the response.
+    const pid = providerId
+    const active = providerConnections.find((c) => c.isActive !== 0)
+    if (!active) {
+      alert('Add an active connection first to fetch models.')
+      return
+    }
+    isCheckingLatest = true
+    latestError = null
+    latestModels = []
+    try {
+      const res = await api.getConnectionModels(active.id)
+      if (pid !== providerId) return
+      const known = new Set<string>([
+        ...builtInModels.map((m) => m.id),
+        ...providerCustomModels.map((m) => m.id),
+      ])
+      for (const m of res.models || []) {
+        const item = typeof m === 'string'
+          ? { id: m }
+          : { id: (m.id || m.model || m.name || '') as string, name: (m.name || '') as string | undefined }
+        if (!item.id || known.has(item.id)) continue
+        latestModels.push(item)
+      }
+      latestModels.sort((a, b) => a.id.localeCompare(b.id))
+      if (latestModels.length === 0) {
+        latestError = 'Catalog is up to date — no new models found.'
+      }
+    } catch (err) {
+      if (pid !== providerId) return
+      latestError = err instanceof Error ? err.message : 'Failed to fetch models'
+    } finally {
+      if (pid === providerId) isCheckingLatest = false
+    }
+  }
+
+  async function handleAddLatestModel(id: string, name?: string) {
+    try {
+      await api.saveCustomModel(`${storageAlias}|${id}|llm`, {
+        id,
+        providerAlias: storageAlias,
+        type: 'llm',
+        ...(name ? { name } : {}),
+      })
+      latestModels = latestModels.filter((m) => m.id !== id)
+      const modelsData = await fetchProviderModelsData(providerId, storageAlias)
+      customModels = modelsData.customModels
+      notifyCustomModelsChanged()
+    } catch (err) {
+      alert(`Failed to add model: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Bounded concurrency pool: each probe is a real chat completion that can
+  // take seconds, so running all of them at once would hammer the provider and
+  // the browser (a ~30-model provider fires 30 simultaneous fetches).
+  const TEST_CONCURRENCY = 6
+
+  // Runs ids through the bounded pool, then publishes the sweep summary. A
+  // run that outlives its provider panel publishes nothing: the verdicts it
+  // produced belong to a provider this panel no longer shows.
+  async function runModelSweep(ids: string[]) {
+    const pid = providerId
+    isCheckingAll = true
+    checkAllProgress = { done: 0, total: ids.length }
+    try {
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(TEST_CONCURRENCY, ids.length) }, async () => {
+        while (cursor < ids.length && pid === providerId) {
+          const i = cursor++
+          await testModel(ids[i], true)
+          if (pid !== providerId) return
+          checkAllProgress = { ...checkAllProgress, done: checkAllProgress.done + 1 }
+        }
+      })
+      await Promise.allSettled(workers)
+      if (pid !== providerId) return
+      const summary = formatCheckAllSummary(modelTestStatuses)
+      checkAllSummary = summary
+      activeModelTestError = summary.message
+    } finally {
+      if (pid === providerId) isCheckingAll = false
+    }
+  }
+
+  async function handleCheckAllModels() {
+    if (isCheckingAll) return
+    // Reset previous verdicts so the run is not confused with stale ones.
+    // Only the full sweep clears them — a retry must keep the passed and
+    // failed verdicts it is not re-testing.
+    modelTestStatuses = {}
+    modelTestErrors = {}
+    checkAllSummary = null
+    // visibleModels, not allAvailableModels: the table below renders exactly
+    // this list, so probing a disabled model produced a verdict no row could
+    // show and spent an upstream request on a model the operator switched off.
+    await runModelSweep(visibleModels.map((m) => m.id))
+  }
+
+  // A blocked model was never asked anything, so re-testing only those is
+  // cheap. It reuses the same bounded pool: a serial loop would leave the
+  // button looking hung for as long as the cooldown, which is exactly the
+  // wait the operator is sitting through.
+  async function handleRetryBlockedModels() {
+    if (isCheckingAll) return
+    const blockedIds = getBlockedModelIds(modelTestStatuses)
+    if (blockedIds.length === 0) return
+    await runModelSweep(blockedIds)
+  }
+
+  // Delete is only real for custom models; registry models are static, so an
+  // unusable built-in model is disabled instead (the existing disable path).
+  async function handleDeleteModel(modelId: string) {
+    const custom = providerCustomModels.find((m) => m.id === modelId)
+    if (custom) {
+      if (!confirm(`Delete custom model "${modelId}"?`)) return
+      try {
+        await api.deleteCustomModel(`${storageAlias}|${modelId}|llm`)
+        const modelsData = await fetchProviderModelsData(providerId, storageAlias)
+        customModels = modelsData.customModels
+        notifyCustomModelsChanged()
+      } catch (err) {
+        alert(`Failed to delete model: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return
+    }
+    await handleDisableModel(modelId)
+  }
+
+  // Deprecated models of this provider, so the section can say how many of
+  // the listed models are dead upstream instead of leaving the operator to
+  // count the badges.
+  async function reloadDeprecations() {
+    const pid = providerId
+    const deps = await loadDeprecations()
+    if (pid !== providerId) return
+    modelDeprecationCount = Object.values(deps).filter(
+      (d) => d.provider === providerId && visibleModels.some((m) => m.id === d.model)
+    ).length
+  }
+
+  /**
+   * Re-reads the provider's live catalogue and clears the badge from any model
+   * it still serves. Only revival is decided here: a model missing from the
+   * catalogue is not badged on that evidence, because catalogues are routinely
+   * partial and a healthy model would be blacklisted with it.
+   */
+  async function handleSyncModelDeprecations() {
+    if (isSyncingModels) return
+    const pid = providerId
+    isSyncingModels = true
+    try {
+      const res = await api.syncProviderModels(providerId)
+      if (pid !== providerId) return
+      await refreshDeprecations()
+      if (res.revived > 0) {
+        await reloadDeprecations()
+        alert(`Sync complete — ${res.revived} model(s) are serving again and no longer marked Deprecated.`)
+      } else {
+        await reloadDeprecations()
+        alert('Sync complete. Models the provider no longer serves stay marked until a live request confirms they are gone.')
+      }
+    } catch (err) {
+      alert(`Model sync failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      if (pid === providerId) isSyncingModels = false
+    }
+  }
+
+  $effect(() => {
+    const unsubscribe = subscribeDeprecations(reloadDeprecations)
+    void reloadDeprecations()
+    return unsubscribe
+  })
 </script>
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:gap-8 sm:px-0">
@@ -2241,14 +2671,11 @@
         class="flex size-12 shrink-0 items-center justify-center rounded-lg"
         style="background-color: {providerColor}15;"
       >
-        <img
-          alt={providerName}
-          loading="lazy"
-          width="48"
-          height="48"
-          decoding="async"
-          class="max-h-12 max-w-12 rounded-lg object-contain"
-          src={providerIcon}
+        <ProviderIcon
+          id={providerId}
+          apiType={selectedNode?.apiType}
+          size="lg"
+          class="border-transparent bg-transparent"
         />
       </div>
 
@@ -2507,6 +2934,15 @@
               />
             </div>
           {/if}
+
+          <button
+            type="button"
+            onclick={() => (showHeaderOverrides = true)}
+            class="inline-flex h-7 items-center gap-1.5 rounded-[8px] px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+          >
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">tune</span>
+            Custom headers
+          </button>
         </div>
       </div>
     </div>
@@ -2524,16 +2960,16 @@
           {/if}
           {#if isTestingOneByOne && oneByOneCurrentId}
             <span>
-              Running: {providerConnections.find((conn) => conn.id === oneByOneCurrentId)?.name || oneByOneCurrentId}
+              Running: {formatEmailLabel(providerConnections.find((conn) => conn.id === oneByOneCurrentId)?.name || oneByOneCurrentId, $emailPrivacy)}
             </span>
           {/if}
         </div>
       </div>
     {/if}
 
-    <!-- Select All Checkbox -->
+    <!-- Select All Checkbox & Sensor Email Toggle -->
     {#if providerConnections.length > 0}
-      <div class="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
+      <div class="mb-3 flex items-center justify-between gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
         <label class="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
           <input
             type="checkbox"
@@ -2543,6 +2979,19 @@
           />
           Select All
         </label>
+
+        <!-- Sensor Email Toggle Button -->
+        <button
+          type="button"
+          onclick={() => emailPrivacy.toggle()}
+          class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors cursor-pointer {$emailPrivacy ? 'border-brand-500/40 bg-brand-500/10 text-brand-500 font-medium' : 'border-border-subtle bg-surface text-text-muted hover:text-text-main hover:bg-surface-2'}"
+          title={$emailPrivacy ? 'Tampilkan email lengkap' : 'Sensor / sembunyikan email'}
+        >
+          <span class="material-symbols-outlined text-[15px]">
+            {$emailPrivacy ? 'visibility_off' : 'visibility'}
+          </span>
+          <span>{$emailPrivacy ? 'Email Disensor' : 'Sensor Email'}</span>
+        </button>
       </div>
     {/if}
 
@@ -2582,6 +3031,15 @@
             <span class="material-symbols-outlined text-[18px]">login</span>
             Connect Google Account
           </button>
+        {:else if providerId === 'kiro'}
+          <button
+            type="button"
+            onclick={handleAddConnectionClick}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
+          >
+            <span class="material-symbols-outlined text-[18px]">login</span>
+            Connect Kiro
+          </button>
         {:else if hasDualAuthModes}
           <button
             type="button"
@@ -2612,7 +3070,10 @@
         </div>
       </div>
     {:else}
-      <div class="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
+      <!-- relative z-50: the open row proxy dropdown paints a fixed inset-0
+           click-away backdrop over the whole viewport, which otherwise swallows
+           the first click on any priority chevron. -->
+      <div class="relative z-50 flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
         {#each providerConnections as conn, idx (conn.id)}
           {@const isFirst = idx === 0}
           {@const isLast = idx === providerConnections.length - 1}
@@ -2621,10 +3082,14 @@
           {@const specificData = conn.providerSpecificData as Record<string, unknown> | undefined}
           {@const assignedPoolId = (typeof specificData?.proxyPoolId === 'string' ? specificData.proxyPoolId : null)}
           {@const proxyBadge = proxyBadgeFor(conn)}
-          {@const lastErr = conn.lastError || status?.error}
+          {@const lastErr = normalizeLastError(conn.lastError || status?.error) || ''}
           {@const priorityNum = conn.priority ?? idx + 1}
           {@const isConnActive = conn.isActive === 1}
           {@const cooldownInfo = getCooldownInfo(conn)}
+          <!-- badgeFor owns the precedence between the live probe and the
+               connection's persisted testStatus; the markup below only renders
+               the verdict it returns. -->
+          {@const connBadge = badgeFor(status, conn.testStatus, lastErr)}
           <div class="flex min-w-0 items-stretch">
             <!-- Multi-select checkbox -->
             <div class="flex shrink-0 items-center pl-1 sm:pl-2">
@@ -2641,21 +3106,27 @@
               <div class="group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between">
                 <!-- Left info -->
                 <div class="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
-                  <!-- Reorder buttons -->
-                  <div class="flex shrink-0 flex-col">
+                  <!-- Reorder buttons. z-[60] sits above the row proxy
+                       dropdown's fixed inset-0 click-away backdrop (z-40): a
+                       positioned backdrop paints above unpositioned content, so
+                       without this the first chevron click after opening a
+                       dropdown is always swallowed. -->
+                  <div class="relative z-[60] flex shrink-0 flex-col">
                     <button
                       type="button"
-                      disabled={isFirst}
-                      onclick={() => swapPriority(idx, idx - 1)}
-                      class="p-0.5 rounded {isFirst ? 'text-text-muted/30 cursor-not-allowed' : 'hover:bg-sidebar text-text-muted hover:text-primary cursor-pointer'}"
+                      disabled={isFirst || !!reorderingConnId}
+                      title={isFirst ? 'Already first' : 'Move up'}
+                      onclick={() => swapPriority(idx, -1)}
+                      class="p-1 rounded disabled:opacity-40 {isFirst || reorderingConnId ? 'text-text-muted/30 cursor-not-allowed' : 'hover:bg-sidebar text-text-muted hover:text-primary cursor-pointer'}"
                     >
                       <span class="material-symbols-outlined text-sm">keyboard_arrow_up</span>
                     </button>
                     <button
                       type="button"
-                      disabled={isLast}
-                      onclick={() => swapPriority(idx, idx + 1)}
-                      class="p-0.5 rounded {isLast ? 'text-text-muted/30 cursor-not-allowed' : 'hover:bg-sidebar text-text-muted hover:text-primary cursor-pointer'}"
+                      disabled={isLast || !!reorderingConnId}
+                      title={isLast ? 'Already last' : 'Move down'}
+                      onclick={() => swapPriority(idx, 1)}
+                      class="p-1 rounded disabled:opacity-40 {isLast || reorderingConnId ? 'text-text-muted/30 cursor-not-allowed' : 'hover:bg-sidebar text-text-muted hover:text-primary cursor-pointer'}"
                     >
                       <span class="material-symbols-outlined text-sm">keyboard_arrow_down</span>
                     </button>
@@ -2667,11 +3138,16 @@
                   <!-- Title & badges -->
                   <div class="flex-1 min-w-0">
                     <p class="text-sm font-medium truncate">
-                      {conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot')}
+                      {formatEmailLabel(conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot'), $emailPrivacy)}
                     </p>
+                    <!-- Secondary label: upstream ConnectionRow shows the email
+                         under a name, or the displayName when the stored name is
+                         the email (which is what the Qoder device flow writes). -->
+                    {#if secondaryConnLabel(conn)}
+                      <p class="truncate text-xs text-text-muted">{formatEmailLabel(secondaryConnLabel(conn), $emailPrivacy)}</p>
+                    {/if}
                     <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-                      <!-- Status badge (queued/testing/success/failed while a one-by-one run is in flight) -->
-                      {#if status?.state === 'queued'}
+                      {#if connBadge === 'queued'}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-surface-2 text-text-muted px-2 py-0.5 text-[10px]"
                           title="Waiting for its turn"
@@ -2679,12 +3155,12 @@
                           <span class="size-1.5 rounded-full bg-text-muted/50"></span>
                           queued
                         </span>
-                      {:else if status?.state === 'testing'}
+                      {:else if connBadge === 'testing'}
                         <span class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 text-[10px]">
                           <span class="material-symbols-outlined text-[10px] animate-spin">progress_activity</span>
                           testing
                         </span>
-                      {:else if (status?.state === 'failed' && status.error !== 'Provider test not supported') || ((conn.testStatus === 'failed' || conn.testStatus === 'error') && conn.lastError !== 'Provider test not supported')}
+                      {:else if connBadge === 'error'}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-0.5 text-[10px]"
                           title={status?.state === 'failed' && status.error ? `failed: ${status.error}` : undefined}
@@ -2695,7 +3171,7 @@
                       {:else}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 text-[10px]"
-                          title={status?.state === 'success' ? 'last one-by-one probe passed' : undefined}
+                          title={status?.state === 'success' ? 'last probe passed' : undefined}
                         >
                           <span class="size-1.5 rounded-full bg-green-500"></span>
                           active
@@ -2774,9 +3250,19 @@
                       {/if}
                       <!-- Last error tooltip -->
                       {#if lastErr && lastErr !== 'Provider test not supported'}
-                        <span class="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={lastErr}>
-                          {lastErr.length > 50 ? lastErr.slice(0, 50) + '...' : lastErr}
-                        </span>
+                        {@const isModelScoped = Boolean(conn.lastErrorModel)}
+                        {@const isHealthy = connBadge !== 'error'}
+                        <div
+                          class="flex items-center gap-1 min-w-0 max-w-full sm:max-w-[360px]"
+                          title={isModelScoped ? `[${conn.lastErrorModel}] ${lastErr}` : lastErr}
+                        >
+                          {#if isModelScoped}
+                            <span class="font-mono text-[11px] text-text-muted shrink-0">[{conn.lastErrorModel}]</span>
+                          {/if}
+                          <span class="truncate text-xs {isHealthy ? 'text-text-muted' : 'text-red-500'}">
+                            {lastErr.length > 50 ? lastErr.slice(0, 50) + '...' : lastErr}
+                          </span>
+                        </div>
                       {/if}
 
                       <!-- Priority tag -->
@@ -2786,7 +3272,12 @@
                     {#if lastErr && lastErr !== 'Provider test not supported' && (status?.state === 'failed' || conn.testStatus === 'failed' || conn.testStatus === 'error')}
                       <div class="mt-1.5 flex items-start gap-1.5 text-xs text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-md border border-red-500/20 max-w-full">
                         <span class="material-symbols-outlined text-sm shrink-0 mt-0.5">error</span>
-                        <span class="break-words font-medium leading-relaxed">{lastErr}</span>
+                        <span class="break-words font-medium leading-relaxed">
+                          {#if conn.lastErrorModel}
+                            <span class="font-mono text-[11px] mr-1">[{conn.lastErrorModel}]</span>
+                          {/if}
+                          {lastErr}
+                        </span>
                       </div>
                     {/if}
                     <!-- Proxy detail line: pool/legacy label, masked endpoint, no_proxy -->
@@ -2820,13 +3311,29 @@
 
                 <!-- Right actions -->
                 <div class="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                  <div class="grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none">
-                    <!-- Proxy dropdown (upstream: hidden while no pools exist) -->
-                    {#if proxyPools.length > 0}
+                  <!-- The proxy picker stays a control of its own: it is a
+                       two-tap choice between pools, not a verb. Everything that
+                       runs and is done moved into one menu, because four to five
+                       labelled buttons in a row left the connection name almost
+                       no width (issue #224). -->
+                  <div class="grid flex-1 grid-flow-col auto-cols-fr gap-1 sm:flex sm:flex-none">
+                    <!-- Proxy dropdown -->
                     <div class="relative">
                       <button
                         type="button"
-                        onclick={(e) => toggleProxyDropdown(conn.id, e.currentTarget as HTMLElement)}
+                        onclick={(e) => {
+                          e.stopPropagation()
+                          if (activeProxyDropdownId === conn.id) {
+                            activeProxyDropdownId = null
+                          } else {
+                            activeProxyDropdownId = conn.id
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            dropdownPos = {
+                              top: rect.bottom + 4,
+                              right: Math.max(8, window.innerWidth - rect.right)
+                            }
+                          }
+                        }}
                         disabled={updatingProxyConnId === conn.id}
                         class="flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 {proxyBadge.hasAnyProxy ? 'text-primary' : 'text-text-muted hover:text-primary'} cursor-pointer"
                       >
@@ -2836,72 +3343,79 @@
                         <span class="text-[10px] leading-tight">Proxy</span>
                       </button>
 
-                      {#if activeProxyDropdownId === conn.id && proxyDropdownRect}
+                      {#if activeProxyDropdownId === conn.id}
                         <!-- Backdrop -->
                         <div
-                          class="fixed inset-0 z-40"
-                          onclick={closeProxyDropdown}
+                          class="fixed inset-0 z-[80]"
+                          onclick={() => (activeProxyDropdownId = null)}
                           role="presentation"
                         ></div>
                         <div
-                          class="fixed z-50 overflow-y-auto rounded-lg border border-border bg-bg py-1 shadow-lg"
-                          style="top: {proxyDropdownRect.top}px; left: {proxyDropdownRect.left}px; min-width: max({proxyDropdownRect.minWidth}px, 160px); max-height: {proxyDropdownRect.maxHeight}px"
+                          class="fixed z-[85] max-w-[78vw] min-w-[180px] rounded-lg border border-border bg-bg py-1 shadow-lg"
+                          style="top: {dropdownPos.top}px; right: {dropdownPos.right}px;"
                         >
-                          <button
-                            type="button"
-                            onclick={() => assignProxyPool(conn, null)}
-                            class="flex w-full items-center px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors cursor-pointer {!assignedPoolId ? 'text-primary font-medium' : 'text-text-main'}"
-                          >
-                            None
-                          </button>
-                          {#each proxyPools as pool}
+                          {#if proxyPools.length === 0}
+                            <div class="px-3 py-2 text-xs text-text-muted">
+                              <p>No proxy pools available.</p>
+                              <a
+                                href="/dashboard/proxypools"
+                                class="mt-1.5 inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                              >
+                                <span class="material-symbols-outlined text-sm">add</span>
+                                Create proxy pool
+                              </a>
+                            </div>
+                          {:else}
                             <button
                               type="button"
-                              onclick={() => assignProxyPool(conn, pool.id)}
-                              class="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors cursor-pointer {assignedPoolId === pool.id ? 'text-primary font-medium' : 'text-text-main'}"
+                              onclick={() => assignProxyPool(conn, null)}
+                              class="flex w-full items-center px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors cursor-pointer {!assignedPoolId ? 'text-primary font-medium' : 'text-text-main'}"
                             >
-                              <span class="truncate">{pool.name}</span>
-                              {#if !pool.isActive}
-                                <span class="text-[10px] text-text-muted shrink-0">(inactive)</span>
-                              {/if}
+                              None
                             </button>
-                          {/each}
+                            {#each proxyPools as pool}
+                              <button
+                                type="button"
+                                onclick={() => assignProxyPool(conn, pool.id)}
+                                class="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors cursor-pointer {assignedPoolId === pool.id ? 'text-primary font-medium' : 'text-text-main'}"
+                              >
+                                <span class="truncate">{pool.name}</span>
+                                {#if !pool.isActive}
+                                  <span class="text-[10px] text-text-muted shrink-0">(inactive)</span>
+                                {/if}
+                              </button>
+                            {/each}
+                          {/if}
                         </div>
                       {/if}
                     </div>
-                    {/if}
-                    <!-- Freebuff session manage button -->
-                    {#if isFreebuff}
-                    <button
-                      type="button"
-                      onclick={() => selectFreebuffAccount(conn.id)}
-                      class="flex flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 {targetFreebuffConn?.id === conn.id ? 'text-primary font-medium' : 'text-text-muted hover:text-primary'} cursor-pointer"
-                      title="Manage session for this account"
+                    <Menu
+                      label="Actions for this connection"
+                      triggerIcon="more_horiz"
+                      hideLabel
+                      minWidth="13rem"
                     >
-                      <span class="material-symbols-outlined text-[18px]">lock_clock</span>
-                      <span class="text-[10px] leading-tight">Session</span>
-                    </button>
-                    {/if}
+                      {#if isFreebuff}
+                        <MenuItem
+                          label="Manage session"
+                          icon="lock_clock"
+                          onSelect={() => selectFreebuffAccount(conn.id)}
+                        />
+                        <div class="my-1 border-t border-border-subtle" role="separator"></div>
+                      {/if}
 
-                    <!-- Edit button -->
-                    <button
-                      type="button"
-                      onclick={() => openEditConnection(conn)}
-                      class="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-[18px]">edit</span>
-                      <span class="text-[10px] leading-tight">Edit</span>
-                    </button>
+                      <MenuItem
+                        label="Refresh"
+                        icon="sync"
+                        disabled={isTestingOneByOne || status?.state === 'testing'}
+                        onSelect={() => refreshOneConnection(conn)}
+                      />
+                      <MenuItem label="Edit" icon="edit" onSelect={() => openEditConnection(conn)} />
 
-                    <!-- Delete button -->
-                    <button
-                      type="button"
-                      onclick={() => handleDeleteConnection(conn)}
-                      class="flex flex-col items-center rounded px-2 py-1 text-red-500 hover:bg-red-500/10 cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-[18px]">delete</span>
-                      <span class="text-[10px] leading-tight">Delete</span>
-                    </button>
+                      <div class="my-1 border-t border-border-subtle" role="separator"></div>
+
+                      <MenuItem label="Delete" icon="delete" danger onSelect={() => handleDeleteConnection(conn)} />
+                    </Menu>
                   </div>
 
                   <!-- Active toggle switch -->
@@ -2939,6 +3453,15 @@
         >
           <span class="material-symbols-outlined text-[18px]">vpn_key</span>
           {isAuthorizingFreebuff ? 'Polling Authorization...' : 'Authorize Freebuff CLI'}
+        </button>
+      {:else if providerId === 'kiro'}
+        <button
+          type="button"
+          onclick={handleAddConnectionClick}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">login</span>
+          Connect Kiro
         </button>
       {:else if hasDualAuthModes}
         <button
@@ -3013,129 +3536,18 @@
       {#if !canImportCompatible}
         <p class="text-xs text-text-muted">Add a connection to enable importing models.</p>
       {/if}
-      {#if compatibleAllFiltered.length > 0}
-        <!-- Search & Page size controls -->
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div class="flex items-center gap-2">
-            <div class="relative flex-1 min-w-[180px] sm:flex-initial">
-              <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-text-muted pointer-events-none">search</span>
-              <input
-                type="text"
-                bind:value={compatibleSearchTerm}
-                placeholder="Search models…"
-                class="w-full pl-8 pr-3 py-1.5 text-xs border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-              />
-            </div>
-            <select
-              bind:value={compatiblePageSize}
-              class="rounded-md border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:border-primary cursor-pointer"
-              title="Items per page"
-            >
-              {#each compatiblePageSizeOptions as opt}
-                <option value={opt}>{opt === 0 ? 'All' : opt}</option>
-              {/each}
-            </select>
-          </div>
-          <div class="flex items-center gap-2 text-xs text-text-muted">
-            <span>{compatibleTotalCount} model(s)</span>
-            {#if compatiblePageSize > 0}
-              <div class="flex items-center gap-1">
-                <button
-                  type="button"
-                  onclick={() => { if (compatiblePage > 1) compatiblePage-- }}
-                  disabled={compatiblePage <= 1}
-                  class="p-1 rounded hover:bg-sidebar disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-                ><span class="material-symbols-outlined text-sm">chevron_left</span></button>
-                <span class="tabular-nums min-w-[5ch] text-center">{compatiblePage} / {compatibleTotalPages}</span>
-                <button
-                  type="button"
-                  onclick={() => { if (compatiblePage < compatibleTotalPages) compatiblePage++ }}
-                  disabled={compatiblePage >= compatibleTotalPages}
-                  class="p-1 rounded hover:bg-sidebar disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-                ><span class="material-symbols-outlined text-sm">chevron_right</span></button>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <!-- Bulk add row -->
-        <div class="flex items-end gap-2 flex-wrap">
-          <div class="flex-1 min-w-[240px]">
-            <label for="bulk-add-input" class="text-xs text-text-muted mb-1 block">Bulk Add (comma-separated)</label>
-            <input
-              id="bulk-add-input"
-              type="text"
-              bind:value={bulkAddInput}
-              onkeydown={(e) => { if (e.key === 'Enter') handleBulkAddModels() }}
-              placeholder="model-1, model-2, model-3"
-              class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-            />
-          </div>
-          <button
-            type="button"
-            onclick={handleBulkAddModels}
-            disabled={!bulkAddInput.trim() || isBulkAdding}
-            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span class="material-symbols-outlined text-[18px]">add</span>
-            {isBulkAdding ? 'Adding...' : 'Bulk Add'}
-          </button>
-        </div>
-
-        <!-- Bulk action bar -->
-        {#if selectedModelIds.size > 0}
-          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-brand-500/10 border border-brand-500/20">
-            <span class="text-xs font-medium text-brand-500">{selectedModelIds.size} selected</span>
-            <div class="flex items-center gap-1 ml-auto">
-              <button type="button" onclick={handleBulkCopy} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
-                <span class="material-symbols-outlined text-sm">content_copy</span> Copy
-              </button>
-              <button type="button" onclick={handleBulkDelete} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 cursor-pointer">
-                <span class="material-symbols-outlined text-sm">delete</span> Delete
-              </button>
-              <button type="button" onclick={handleBulkTest} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
-                <span class="material-symbols-outlined text-sm">science</span> Test
-              </button>
-              <button type="button" onclick={handleBulkDisable} class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-surface-2 hover:bg-surface-3 border border-border cursor-pointer">
-                <span class="material-symbols-outlined text-sm">block</span> Disable
-              </button>
-            </div>
-          </div>
-        {/if}
-
+      {#if compatibleRows.length > 0}
         <div class="flex flex-col gap-3">
-          <!-- Active model rows -->
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium">Active Models ({compatibleActiveModels.length})</span>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                onclick={toggleModelSelectAll}
-                class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer"
-              >
-                <span class="material-symbols-outlined text-sm">{isAllModelPageSelected ? 'deselect' : 'select_all'}</span>
-                {isAllModelPageSelected ? 'Deselect Page' : 'Select Page'}
-              </button>
-            </div>
-          </div>
-          {#each compatiblePaginatedRows as row (row.source + ':' + row.id)}
+          {#each compatibleRows as row (row.source + ':' + row.id)}
             {@const tStatus = compatibleTestResults[row.id]}
             {@const tError = compatibleTestErrors[row.id]}
             {@const isTestingRow = compatibleTestId === row.id}
-            {@const isSelected = selectedModelIds.has(row.id)}
-            <div
-              class="flex items-start gap-3 p-3 rounded-lg border {tStatus === 'ok' ? 'border-green-500/40' : tStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 {isSelected ? 'ring-2 ring-primary/30' : ''} cursor-pointer"
-              onclick={() => toggleSelectOne(row.id)}
-              role="checkbox"
-              aria-checked={isSelected}
-              tabindex="0"
-              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelectOne(row.id) }}}
-            >
+            <div class="flex items-start gap-3 p-3 rounded-lg border {tStatus === 'ok' ? 'border-green-500/40' : tStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50">
               <span
-                class="material-symbols-outlined text-base shrink-0 mt-0.5"
-                style={isSelected ? 'color:#e56a4a' : tStatus === 'ok' ? 'color:#22c55e' : tStatus === 'error' ? 'color:#ef4444' : undefined}
+                class="material-symbols-outlined text-base text-text-muted mt-0.5"
+                style={tStatus === 'ok' ? 'color:#22c55e' : tStatus === 'error' ? 'color:#ef4444' : undefined}
               >
-                {isSelected ? 'check_box' : tStatus === 'ok' ? 'check_circle' : tStatus === 'error' ? 'cancel' : 'check_box_outline_blank'}
+                {tStatus === 'ok' ? 'check_circle' : tStatus === 'error' ? 'cancel' : 'smart_toy'}
               </span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
@@ -3144,7 +3556,7 @@
                   <div class="relative group/btn">
                     <button
                       type="button"
-                      onclick={(e) => { e.stopPropagation(); copyCompatibleModel(row.id) }}
+                      onclick={() => copyCompatibleModel(row.id)}
                       class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary cursor-pointer"
                     >
                       <span class="material-symbols-outlined text-sm">{copiedModelId === row.id ? 'check' : 'content_copy'}</span>
@@ -3157,7 +3569,7 @@
                     <div class="relative group/btn">
                       <button
                         type="button"
-                        onclick={(e) => { e.stopPropagation(); handleTestCompatibleModel(row.id) }}
+                        onclick={() => handleTestCompatibleModel(row.id)}
                         disabled={isTestingRow}
                         class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-colors cursor-pointer"
                       >
@@ -3180,7 +3592,7 @@
               </div>
               <button
                 type="button"
-                onclick={(e) => { e.stopPropagation(); handleDeleteCompatibleModel(row) }}
+                onclick={() => handleDeleteCompatibleModel(row)}
                 class="p-1 hover:bg-red-50 rounded text-red-500 cursor-pointer"
                 title="Remove model"
               >
@@ -3188,42 +3600,6 @@
               </button>
             </div>
           {/each}
-
-          <!-- Disabled models section -->
-          {#if compatibleDisabledModels.length > 0}
-            <div class="mt-4 pt-4 border-t border-border-subtle">
-              <div class="flex items-center justify-between mb-3">
-                <span class="text-sm font-medium text-text-muted">Disabled Models ({compatibleDisabledModels.length})</span>
-              </div>
-              <div class="flex flex-col gap-2">
-                {#each compatibleDisabledModels as row (row.id)}
-                  <div class="flex items-center gap-3 p-2 px-3 rounded-lg border border-border bg-sidebar/30 opacity-60">
-                    <span class="material-symbols-outlined text-base text-text-muted">block</span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-sm font-medium truncate text-text-muted">{row.id}</p>
-                      <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{displayAlias()}/{row.id}</code>
-                    </div>
-                    <button
-                      type="button"
-                      onclick={(e) => { e.stopPropagation(); handleEnableModel(row.id) }}
-                      class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer"
-                      title="Enable this model"
-                    >
-                      <span class="material-symbols-outlined text-sm">undo</span> Enable
-                    </button>
-                    <button
-                      type="button"
-                      onclick={(e) => { e.stopPropagation(); handleDeleteCompatibleModel(row) }}
-                      class="p-1 hover:bg-red-50 rounded text-red-500 cursor-pointer"
-                      title="Remove model"
-                    >
-                      <span class="material-symbols-outlined text-sm">delete</span>
-                    </button>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
         </div>
       {/if}
     </div>
@@ -3234,6 +3610,15 @@
     <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
         <h2 class="text-lg font-semibold">Available Models</h2>
+        {#if modelDeprecationCount > 0}
+          <span
+            class="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning border border-warning/25"
+            title="These models were retired by the provider and cannot serve a request"
+          >
+            <span class="material-symbols-outlined text-[13px] leading-none" aria-hidden="true">error</span>
+            {modelDeprecationCount} deprecated
+          </span>
+        {/if}
         {#if providerThinkingLevels}
         <select
           title="Appends (level) suffix to copied model names"
@@ -3261,15 +3646,27 @@
     </div>
 
     {#if activeModelTestError}
-      <div class="mb-3 flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400">
-        <span class="material-symbols-outlined shrink-0 text-base">error</span>
-        <div class="flex-1 font-medium leading-relaxed">
-          {activeModelTestError}
+      {@const isBlockedSeverity = checkAllSummary?.severity === 'blocked'}
+      {@const blockedCount = getBlockedModelIds(modelTestStatuses).length}
+      <div class="mb-3 flex items-start gap-2.5 rounded-lg border {isBlockedSeverity ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'} p-3 text-xs">
+        <span class="material-symbols-outlined shrink-0 text-base">{isBlockedSeverity ? 'schedule' : 'error'}</span>
+        <div class="flex-1 font-medium leading-relaxed flex items-center justify-between gap-2 flex-wrap">
+          <span>{activeModelTestError}</span>
+          {#if blockedCount > 0}
+            <button
+              type="button"
+              onclick={handleRetryBlockedModels}
+              disabled={isCheckingAll}
+              class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold text-xs cursor-pointer disabled:opacity-50"
+            >
+              Retry blocked ({blockedCount})
+            </button>
+          {/if}
         </div>
         <button
           type="button"
-          onclick={() => (activeModelTestError = null)}
-          class="text-red-600 dark:text-red-400 hover:opacity-75 cursor-pointer"
+          onclick={() => { activeModelTestError = null; checkAllSummary = null; }}
+          class="hover:opacity-75 cursor-pointer shrink-0"
           title="Dismiss"
         >
           <span class="material-symbols-outlined text-sm">close</span>
@@ -3289,7 +3686,7 @@
             const specific = c.providerSpecificData as Record<string, any> | undefined
             return {
               id: c.id,
-              name: c.name || c.email || 'Freebuff Account',
+              name: formatEmailLabel(c.name || c.email || 'Freebuff Account', $emailPrivacy),
               isActive: c.isActive === 1,
               currentModel: freebuffSessions[c.id]?.currentModel || (specific?.freebuffModel as string) || (specific?.assignedModel as string),
               status: freebuffSessions[c.id]?.status,
@@ -3310,7 +3707,7 @@
         {@const isTestingThis = testStatus === 'testing'}
         {@const isSessionActive = checkIsActiveSession(model.id)}
         <div
-          class="group min-w-0 max-w-full rounded-lg border px-3 py-2 {testStatus === 'ok' ? 'border-green-500/40' : testStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 transition-colors"
+          class="group min-w-0 max-w-full rounded-lg border px-3 py-2 {testStatus === 'ok' ? 'border-green-500/40' : testStatus === 'blocked' ? 'border-amber-500/40' : testStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 transition-colors"
         >
           <div class="flex min-w-0 items-start gap-2 sm:items-center">
             <span class="material-symbols-outlined shrink-0 text-base text-text-muted">smart_toy</span>
@@ -3319,34 +3716,21 @@
                 <code class="max-w-[72vw] truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-xs text-text-muted sm:max-w-[360px]">
                   {fullModelId}
                 </code>
+                {#if rowCaps?.free}
+                  <span class="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                    FREE
+                  </span>
+                {/if}
                 {#if isSessionActive}
                   <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
                     <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                     Active Session
                   </span>
                 {/if}
+                <DeprecatedBadge provider={providerId} model={model.id} />
               </div>
               <span class="flex min-w-0 items-center text-[9px] gap-1 pl-1">
                 <span class="truncate text-[9px] italic text-text-muted/70">{model.name}</span>
-                {#if model.inputCostPer1M || model.outputCostPer1M || model.cacheCostPer1M || model.contextWindow || model.maxOutputTokens}
-                  <span class="block text-[8px] text-text-muted/60 mt-0.5">
-                    {#if model.inputCostPer1M}
-                      ${model.inputCostPer1M.toFixed(2)}/1M in
-                    {/if}
-                    {#if model.outputCostPer1M}
-                      ${model.outputCostPer1M.toFixed(2)}/1M out
-                    {/if}
-                    {#if model.cacheCostPer1M}
-                      ${model.cacheCostPer1M.toFixed(2)}/1M cache
-                    {/if}
-                    {#if model.contextWindow}
-                      {(model.contextWindow / 1000 | 0)}K ctx
-                    {/if}
-                    {#if model.maxOutputTokens}
-                      {(model.maxOutputTokens / 1000 | 0)}K max out
-                    {/if}
-                  </span>
-                {/if}
                 <span class="inline-flex items-center gap-0.5">
                   {#if rowCaps?.vision}
                     <div class="relative inline-flex group/tt">
@@ -3368,7 +3752,7 @@
               </span>
             </div>
               {#if modelTestErrors[model.id]}
-                <span class="text-[9px] text-red-500 dark:text-red-400 font-medium pl-1 truncate max-w-[280px]" title={modelTestErrors[model.id]}>
+                <span class="text-[9px] {testStatus === 'blocked' ? 'text-amber-500 dark:text-amber-400' : 'text-red-500 dark:text-red-400'} font-medium pl-1 truncate max-w-[280px]" title={modelTestErrors[model.id]}>
                   {modelTestErrors[model.id]}
                 </span>
               {/if}
@@ -3386,6 +3770,8 @@
                   <span class="material-symbols-outlined text-sm animate-spin text-primary">progress_activity</span>
                 {:else if testStatus === 'ok'}
                   <span class="material-symbols-outlined text-sm text-green-500">check</span>
+                {:else if testStatus === 'blocked'}
+                  <span class="material-symbols-outlined text-sm text-amber-500">schedule</span>
                 {:else if testStatus === 'error'}
                   <span class="material-symbols-outlined text-sm text-red-500">error</span>
                 {:else}
@@ -3397,6 +3783,8 @@
                   Testing...
                 {:else if testStatus === 'ok'}
                   Passed
+                {:else if testStatus === 'blocked'}
+                  {modelTestErrors[model.id] || 'Blocked — account in cooldown'}
                 {:else if testStatus === 'error'}
                   {modelTestErrors[model.id] || 'Failed'}
                 {:else}
@@ -3431,6 +3819,19 @@
             >
               <span class="material-symbols-outlined text-sm">close</span>
             </button>
+            {#if testStatus === 'error'}
+              <!-- Unusable model: delete it. Custom models are removed from the
+                   store; built-in registry models are static, so those are
+                   disabled instead (the closest equivalent). -->
+              <button
+                type="button"
+                onclick={() => handleDeleteModel(model.id)}
+                class="rounded p-0.5 text-red-500 opacity-100 transition-opacity hover:bg-red-500/10 hover:text-red-600 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
+                title={model.isCustom ? 'Delete unusable model' : 'Unusable — disable this registry model'}
+              >
+                <span class="material-symbols-outlined text-sm">delete</span>
+              </button>
+            {/if}
           </div>
         </div>
       {/each}
@@ -3452,11 +3853,85 @@
           disabled={isImportingLiveCatalogModels}
           class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
         >
-          <span class="material-symbols-outlined text-sm">download</span>
-          {isImportingLiveCatalogModels ? 'Fetching...' : 'Import from /models'}
+          <span class="material-symbols-outlined text-sm {isImportingLiveCatalogModels ? 'animate-spin' : ''}">
+            {isImportingLiveCatalogModels ? 'progress_activity' : 'download'}
+          </span>
+          {isImportingLiveCatalogModels
+            ? 'Fetching...'
+            : providerId === 'qoder' || providerId === 'qoder-cn'
+              ? 'Fetch Qoder Models'
+              : 'Import from /models'}
+        </button>
+      {/if}
+
+      {#if visibleModels.length > 0}
+        <button
+          type="button"
+          onclick={handleCheckAllModels}
+          disabled={isCheckingAll}
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
+          title="Send a minimal request to every model and mark the ones that fail"
+        >
+          <span class="material-symbols-outlined text-sm">{isCheckingAll ? 'progress_activity' : 'troubleshoot'}</span>
+          {isCheckingAll
+            ? `Checking ${checkAllProgress.done}/${checkAllProgress.total}...`
+            : `Check All Models (${visibleModels.length})`}
+        </button>
+      {/if}
+
+      {#if canListLiveModels && providerConnections.some((c) => c.isActive !== 0)}
+        <button
+          type="button"
+          onclick={handleCheckLatestModels}
+          disabled={isCheckingLatest}
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
+          title="Fetch the provider's live catalog and list models you have not added yet"
+        >
+          <span class="material-symbols-outlined text-sm">{isCheckingLatest ? 'progress_activity' : 'cached'}</span>
+          {isCheckingLatest ? 'Checking...' : 'Check Latest Models'}
+        </button>
+      {/if}
+
+      {#if providerConnections.some((c) => c.isActive !== 0)}
+        <button
+          type="button"
+          onclick={handleSyncModelDeprecations}
+          disabled={isSyncingModels}
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
+          title="Re-read the provider's live catalog and clear the Deprecated badge from any model it still serves"
+        >
+          <span class="material-symbols-outlined text-sm {isSyncingModels ? 'animate-spin' : ''}">
+            {isSyncingModels ? 'progress_activity' : 'sync'}
+          </span>
+          {isSyncingModels ? 'Syncing...' : 'Sync Models'}
         </button>
       {/if}
     </div>
+
+    {#if latestModels.length > 0 || latestError}
+      <div class="w-full mt-2 rounded-lg border border-border bg-surface-2 p-3">
+        {#if latestModels.length > 0}
+          <p class="text-xs text-text-muted mb-2">{latestModels.length} new model(s) not yet added:</p>
+          <div class="flex flex-col gap-1.5">
+            {#each latestModels as m (m.id)}
+              <div class="flex items-center gap-2">
+                <code class="flex-1 truncate text-xs font-mono bg-sidebar px-1.5 py-1 rounded">{m.id}</code>
+                <button
+                  type="button"
+                  onclick={() => handleAddLatestModel(m.id, m.name)}
+                  class="shrink-0 inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 border border-primary/40 cursor-pointer"
+                >
+                  <span class="material-symbols-outlined text-[13px]">add</span>
+                  Add
+                </button>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="text-xs text-text-muted">{latestError}</p>
+        {/if}
+      </div>
+    {/if}
     <!-- Suggested models from provider API — show only models not yet added -->
     {#if suggestedNotAdded.length > 0}
       <div class="w-full mt-2">
@@ -3548,7 +4023,7 @@
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         class="absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in"
-        onclick={() => { showOAuthModal = false; stopDevicePoll() }}
+        onclick={closeOAuthModal}
         role="presentation"
       ></div>
     <div class="relative w-full bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-lg p-6">
@@ -3556,13 +4031,121 @@
         <h2 class="text-lg font-semibold text-text-main">Connect {providerName}</h2>
         <button
           type="button"
-          onclick={() => { showOAuthModal = false; stopDevicePoll() }}
+          onclick={closeOAuthModal}
           class="p-1 rounded text-text-muted hover:text-text-main cursor-pointer"
         >
           <span class="material-symbols-outlined text-lg">close</span>
         </button>
       </div>
-
+      {#if providerId === 'kiro' && !kiroMethod && !deviceUserCode}
+        <p class="text-sm text-text-muted mb-3">Choose your authentication method:</p>
+        <div class="space-y-2 mb-4">
+          <button type="button" onclick={() => { kiroMethod = 'builder-id'; startKiroDeviceFlow('builder-id') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">shield</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">AWS Builder ID</h3><p class="text-xs text-text-muted">Recommended. Free AWS account, device-code flow.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'idc' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">business</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">AWS IAM Identity Center</h3><p class="text-xs text-text-muted">Enterprise with your organization start URL.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'api-key' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">key</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">API Key</h3><p class="text-xs text-text-muted">Long-lived headless Kiro/CodeWhisperer key.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'social-google'; startKiroSocial('google') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">account_circle</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Google Account</h3><p class="text-xs text-text-muted">Log in with Google, paste callback manually.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'social-github'; startKiroSocial('github') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">code</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">GitHub Account</h3><p class="text-xs text-text-muted">Log in with GitHub, paste callback manually.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'import' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">file_upload</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Import Token</h3><p class="text-xs text-text-muted">Paste refresh token from Kiro IDE.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'import-cli-proxy' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">data_object</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Import CLIProxyAPI JSON</h3><p class="text-xs text-text-muted">external_idp auth JSON (Microsoft login).</p></div>
+            </div>
+          </button>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'idc' && !deviceUserCode}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <div>
+            <p class="text-xs font-medium mb-1">IDC Start URL <span class="text-red-500">*</span></p>
+            <input bind:value={kiroIdcStartUrl} placeholder="https://your-org.awsapps.com/start" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          </div>
+          <div>
+            <p class="text-xs font-medium mb-1">AWS Region</p>
+            <input bind:value={kiroIdcRegion} placeholder="us-east-1" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          </div>
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={() => startKiroDeviceFlow('idc')} disabled={isConnecting || !kiroIdcStartUrl.trim()} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Connecting…' : 'Continue'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'api-key'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <input bind:value={kiroApiKey} type="password" placeholder="Kiro / CodeWhisperer API key" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <input bind:value={kiroApiKeyRegion} placeholder="Region (default us-east-1)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={submitKiroApiKey} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'import'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <button type="button" onclick={startKiroAutoImport} disabled={isConnecting} class="w-full py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 border border-border disabled:opacity-50 cursor-pointer">{isConnecting ? 'Reading…' : 'Auto-detect from this host'}</button>
+          <input bind:value={kiroRefreshToken} placeholder="Refresh token (aorAAAAAG…)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={submitKiroImport} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Importing…' : 'Import'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'import-cli-proxy'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <textarea bind:value={kiroCliProxyJson} rows={4} placeholder="Paste CLIProxyAPI auth JSON (external_idp)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"></textarea>
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={submitKiroCliProxyImport} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Importing…' : 'Import'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && (kiroMethod === 'social-google' || kiroMethod === 'social-github')}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          {#if kiroSocialAuthUrl}
+            <p class="text-xs text-text-muted">Open this URL, log in, then paste the callback URL (kiro://…) below:</p>
+            <div class="flex gap-2">
+              <input readonly value={kiroSocialAuthUrl} class="flex-1 px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-muted select-all font-mono" />
+              <button type="button" onclick={() => window.open(kiroSocialAuthUrl, '_blank')} class="px-3 py-1.5 text-xs font-semibold rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Open</button>
+            </div>
+          {/if}
+          <input bind:value={kiroSocialCallback} placeholder="kiro://kiro.kiroAgent/authenticate-success?code=…" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null; kiroSocialAuthUrl = '' }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Back</button>
+            <button type="button" onclick={submitKiroSocialCallback} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Exchanging…' : 'Exchange code'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId !== 'kiro' || kiroMethod || deviceUserCode}
       <div class="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50 mb-4">
         <span class="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
         <span class="text-sm">
@@ -3580,7 +4163,7 @@
           {providerId === 'freebuff'
             ? 'Authorization link & manual check'
             : isClineOAuth
-              ? 'Login di Cline, lalu paste callback'
+              ? 'Log in via Cline, then paste the callback'
               : oauthAuthUrl
                 ? 'Or paste callback URL manually'
                 : 'Manual token import'}
@@ -3591,7 +4174,7 @@
       <div class="space-y-4">
         {#if providerId === 'cursor'}
           <div class="space-y-2 p-3 border border-border rounded-md bg-sidebar/50">
-            <p class="text-[11px] text-text-muted">Ambil dari <span class="font-mono">state.vscdb</span> Cursor IDE (<span class="font-mono">cursorAuth/accessToken</span> + <span class="font-mono">storage.serviceMachineId</span>):</p>
+            <p class="text-[11px] text-text-muted">Get it from Cursor IDE's <span class="font-mono">state.vscdb</span> (<span class="font-mono">cursorAuth/accessToken</span> + <span class="font-mono">storage.serviceMachineId</span>):</p>
             <input
               bind:value={specialToken}
               placeholder="Access token (cursorAuth/accessToken)"
@@ -3608,13 +4191,13 @@
               disabled={isConnecting}
               class="w-full py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border disabled:opacity-50 cursor-pointer"
             >
-              {isConnecting ? 'Reading…' : 'Auto-import dari Cursor di host ini'}
+              {isConnecting ? 'Reading…' : 'Auto-import from Cursor on this host'}
             </button>
           </div>
         {/if}
         {#if providerId === 'gitlab'}
           <div class="space-y-2 p-3 border border-border rounded-md bg-sidebar/50">
-            <p class="text-[11px] text-text-muted">Atau pakai Personal Access Token (disamping login OAuth di atas):</p>
+            <p class="text-[11px] text-text-muted">Or use a Personal Access Token (in addition to the OAuth login above):</p>
             <input
               bind:value={specialToken}
               type="password"
@@ -3630,17 +4213,17 @@
         {/if}
         {#if providerId === 'iflow'}
           <div class="space-y-2 p-3 border border-border rounded-md bg-sidebar/50">
-            <p class="text-[11px] text-text-muted">Atau pakai cookie platform.iflow.cn (disamping login OAuth di atas):</p>
+            <p class="text-[11px] text-text-muted">Or use a platform.iflow.cn cookie (in addition to the OAuth login above):</p>
             <input
               bind:value={specialToken}
-              placeholder="Cookie (harus mengandung BXAuth=...)"
+              placeholder="Cookie (must contain BXAuth=...)"
               class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
             />
           </div>
         {/if}
         {#if deviceUserCode}
           <div class="p-3 border border-border rounded-md bg-sidebar/50 text-center">
-            <p class="text-[11px] text-text-muted mb-1">Masukkan kode ini di halaman login yang terbuka:</p>
+            <p class="text-[11px] text-text-muted mb-1">Enter this code on the login page that opened:</p>
             <p class="text-2xl font-mono font-bold tracking-[0.3em] text-text-main select-all">{deviceUserCode}</p>
           </div>
         {/if}
@@ -3675,7 +4258,7 @@
 
         {#if providerId === 'gitlab'}
           <div class="grid grid-cols-1 gap-2 p-3 border border-border rounded-md bg-sidebar/50 mb-1">
-            <p class="text-[11px] text-text-muted">GitLab self-hosted / OAuth app sendiri (opsional — default gitlab.com tanpa client):</p>
+            <p class="text-[11px] text-text-muted">Self-hosted GitLab / own OAuth app (optional — defaults to gitlab.com without a client):</p>
             <input
               bind:value={gitlabBaseUrl}
               placeholder="Base URL (default https://gitlab.com)"
@@ -3699,28 +4282,28 @@
         <div>
           <p class="text-sm font-medium mb-1">
             {providerId === 'freebuff'
-              ? 'Step 2: Selesaikan di browser / paste URL / Code / Token'
+              ? 'Step 2: Finish in the browser / paste URL / Code / Token'
               : isClineOAuth
                 ? 'Step 2: Paste the callback URL here'
                 : oauthAuthUrl
                   ? 'Step 2: Paste the callback URL here'
-                  : 'Import token manual (belum ada login browser untuk provider ini)'}
+                  : 'Manual token import (no browser login for this provider)'}
           </p>
           <input
             bind:value={callbackInput}
             placeholder={providerId === 'freebuff'
-              ? 'https://freebuff.com/onboard?auth_code=... atau paste authToken'
+              ? 'https://freebuff.com/onboard?auth_code=... or paste authToken'
               : `${dashboardCallback()}?code=...&state=...`}
             class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
           />
           <p class="text-[11px] text-text-muted mt-1">
             {providerId === 'freebuff'
-              ? 'Jika browser diarahkan ke /onboard, selesaikan onboarding di tab Freebuff lalu paste URL di atas atau langsung klik Check & Connect.'
+              ? 'If the browser lands on /onboard, finish onboarding in the Freebuff tab, then paste the URL above or click Check & Connect.'
               : isClineOAuth
-                ? 'Login di tab Cline yang terbuka — koneksi tersambung otomatis. Kalau gagal, copy URL redirect (berisi code=...) ke sini dan klik Connect.'
+                ? 'Log in via the Cline tab that opened — the connection completes automatically. If it fails, copy the redirect URL (containing code=...) here and click Connect.'
                 : oauthAuthUrl
-                  ? 'Selesaikan login di tab browser — koneksi tersambung otomatis. Kalau gagal, copy full URL dari browser ke sini.'
-                  : 'Tempel access token di sini lalu klik Connect.'}
+                  ? 'Complete the login in the browser tab — the connection completes automatically. If it fails, copy the full URL from the browser here.'
+                  : 'Paste the access token here, then click Connect.'}
           </p>
         </div>
 
@@ -3760,6 +4343,7 @@
           </button>
         </div>
       </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -3769,24 +4353,29 @@
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div
       class="absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in"
-      onclick={() => (showApplyProxyModal = false)}
+      onclick={cancelApplyProxy}
       role="presentation"
     ></div>
-    <div class="relative flex max-h-[90vh] w-full flex-col bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-lg p-6">
-      <div class="flex shrink-0 items-center justify-between pb-3 border-b border-border-subtle mb-4">
+    <div class="relative flex max-h-[85vh] w-full flex-col bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-lg">
+      <div class="flex shrink-0 items-center justify-between px-6 pt-5 pb-3 border-b border-border-subtle">
         <h2 class="text-lg font-semibold text-text-main">
           Apply Proxy ({providerConnections.length} connections)
         </h2>
         <button
           type="button"
-          onclick={() => (showApplyProxyModal = false)}
-          class="p-1 rounded text-text-muted hover:text-text-main cursor-pointer"
+          onclick={cancelApplyProxy}
+          disabled={isApplyingProxy}
+          aria-label="Close"
+          class="p-1 rounded text-text-muted hover:text-text-main disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
         >
           <span class="material-symbols-outlined text-lg">close</span>
         </button>
       </div>
 
-      <div class="min-h-0 flex-1 space-y-2 overflow-y-auto">
+      <!-- The pool list scrolls on its own. With 100+ imported pools an
+           unbounded list grew this centred panel past the viewport, which
+           clipped the title and every action above the fold. -->
+      <div class="min-h-0 flex-1 space-y-2 overflow-y-auto custom-scrollbar px-6 py-4">
         <button
           type="button"
           onclick={handleApplyProxyRotate}
@@ -3813,7 +4402,15 @@
           </div>
         </button>
 
-        {#each proxyPools as pool}
+        <input
+          type="search"
+          bind:value={proxyPoolSearch}
+          placeholder="Filter {proxyPools.length} pools by name or URL"
+          disabled={isApplyingProxy}
+          class="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none disabled:opacity-50"
+        />
+
+        {#each filteredProxyPools as pool}
           <button
             type="button"
             onclick={() => handleApplyProxyPool(pool.id)}
@@ -3831,20 +4428,25 @@
               <div class="text-[11px] text-text-muted truncate">{pool.proxyUrl}</div>
             </div>
           </button>
+        {:else}
+          <p class="py-6 text-center text-xs text-text-muted">No proxy pool matches “{proxyPoolSearch}”.</p>
         {/each}
       </div>
 
-      {#if isApplyingProxy}
-        <p class="mt-4 shrink-0 text-xs text-text-muted">Applying...</p>
-      {/if}
-
-      <div class="mt-6 flex shrink-0 justify-end">
+      <div class="flex shrink-0 items-center justify-between gap-3 px-6 py-4 border-t border-border-subtle">
+        <p class="text-xs text-text-muted" aria-live="polite">
+          {#if isApplyingProxy}
+            Applying {applyProxyDone} / {providerConnections.length}…
+          {:else}
+            {filteredProxyPools.length} of {proxyPools.length} pools
+          {/if}
+        </p>
         <button
           type="button"
-          onclick={() => (showApplyProxyModal = false)}
+          onclick={cancelApplyProxy}
           class="px-3 py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border cursor-pointer"
         >
-          Cancel
+          {isApplyingProxy ? 'Stop' : 'Cancel'}
         </button>
       </div>
     </div>
@@ -3853,92 +4455,12 @@
 
 <!-- 4. Edit Connection Modal -->
 {#if editingConnection}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in"
-      onclick={() => (editingConnection = null)}
-      role="presentation"
-    ></div>
-    <div class="relative w-full bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] fade-in max-w-md p-6">
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
-        <h2 class="text-lg font-semibold text-text-main">Edit Connection</h2>
-        <button
-          type="button"
-          onclick={() => (editingConnection = null)}
-          class="p-1 rounded text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <span class="material-symbols-outlined text-lg">close</span>
-        </button>
-      </div>
-
-      <div class="space-y-4">
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-conn-name">Name</label>
-          <input
-            id="edit-conn-name"
-            bind:value={editName}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {#if editingConnection.email}
-          <div>
-            <span class="block text-xs font-medium text-text-muted mb-1">Email</span>
-            <p class="text-xs text-text-main font-medium">{editingConnection.email}</p>
-          </div>
-        {/if}
-
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-conn-priority">Priority</label>
-          <input
-            id="edit-conn-priority"
-            type="number"
-            min="1"
-            bind:value={editPriority}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {#if editTestStatus}
-          <div class="text-xs {editTestStatus === 'ok' ? 'text-green-500' : 'text-red-500'}">
-            {editTestStatus === 'ok' ? 'Connection valid!' : editTestError || 'Test failed'}
-          </div>
-        {/if}
-
-        <div class="flex items-center justify-between pt-2">
-          <button
-            type="button"
-            onclick={testEditingConnection}
-            disabled={isTestingEdit}
-            class="px-3 py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-          >
-            {#if isTestingEdit}
-              <span class="material-symbols-outlined text-sm animate-spin">progress_activity</span>
-            {/if}
-            Test Connection
-          </button>
-
-          <div class="flex gap-2">
-            <button
-              type="button"
-              onclick={() => (editingConnection = null)}
-              class="px-3 py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onclick={saveEditingConnection}
-              disabled={isSavingEdit}
-              class="px-3 py-1.5 text-xs font-semibold rounded-[8px] bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:opacity-50 cursor-pointer"
-            >
-              Save
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <EditConnectionModal
+    connection={editingConnection}
+    onClose={() => (editingConnection = null)}
+    onSave={saveEditingConnection}
+    onSaveError={(message) => alert(message)}
+  />
 {/if}
 
 <!-- 5. Add Custom Model Modal -->
@@ -3950,6 +4472,13 @@
   onSave={submitAddCustomModel}
 />
 {/if}
+
+<!-- 5a. Per-provider header overrides (upstream CustomConfigCard parity) -->
+<ProviderHeaderOverridesModal
+  isOpen={showHeaderOverrides}
+  providerId={providerId}
+  onClose={() => (showHeaderOverrides = false)}
+/>
 
 <!-- 5b. Edit Compatible Node Modal (upstream EditCompatibleNodeModal parity) -->
 <EditCompatibleNodeModal

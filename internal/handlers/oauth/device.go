@@ -13,13 +13,15 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/providers"
 )
 
 // deviceProviders lists providers supporting the device-code family.
 // kimi-coding aliases to kimi (dual-auth merge, like upstream).
 var deviceProviders = []string{
-	"qoder", "kilocode", "grok-cli", "github", "kiro", "kimi", "kimi-coding",
-	"codebuddy-cn", "codebuddy-intl",
+	"qoder", "qoder-cn", "kilocode", "grok-cli", "github", "kiro", "kimi", "kimi-coding",
+	"codebuddy-cn", "codebuddy-intl", "muse", "minimax-code", "minimax-code-global",
 }
 
 func deviceSupported(p string) bool {
@@ -40,6 +42,20 @@ func deviceCanonical(p string) string {
 
 var awsRegionPattern = regexp.MustCompile(`^[a-z]{2}-[a-z]+-\d{1,2}$`)
 
+// deviceClient is the HTTP client every device-code exchange uses.
+//
+// It wraps the environment transport in proxy.FallbackTransport for the same
+// reason the chat path does (internal/proxy/fallback_transport.go): a sandbox
+// or corporate HTTP(S)_PROXY refuses the CONNECT tunnel to provider hosts with
+// 403 Forbidden, and Go renders that as `Get "https://…": Forbidden` — a
+// transport error, not a status. A bare &http.Client{} has no direct-connection
+// retry, so a Qoder login could open the login page and then fail every poll
+// with exactly that message, leaving the modal stuck on "waiting".
+var deviceClient = &http.Client{
+	Transport: proxy.NewFallbackTransport(http.DefaultTransport),
+	Timeout:   15 * time.Second,
+}
+
 func postJSON(url string, body any, headers map[string]string) (map[string]any, int, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -54,8 +70,7 @@ func postJSON(url string, body any, headers map[string]string) (map[string]any, 
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -81,8 +96,7 @@ func postForm(url string, form url.Values, headers map[string]string) (map[strin
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -107,8 +121,7 @@ func getJSON(url string, headers map[string]string) (map[string]any, int, error)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -171,8 +184,8 @@ func (h *OAuthHandler) HandleDeviceStart(w http.ResponseWriter, r *http.Request)
 
 func deviceStart(provider, region, startURL, authMethod string) (map[string]any, error) {
 	switch provider {
-	case "qoder":
-		return qoderStart()
+	case "qoder", "qoder-cn":
+		return qoderStart(provider)
 	case "kilocode":
 		return kilocodeStart()
 	case "grok-cli":
@@ -185,6 +198,10 @@ func deviceStart(provider, region, startURL, authMethod string) (map[string]any,
 		return kimiStart()
 	case "codebuddy-cn", "codebuddy-intl":
 		return codebuddyStart(provider)
+	case "muse":
+		return museStart()
+	case "minimax-code", "minimax-code-global":
+		return minimaxCodeStart(provider)
 	default:
 		return nil, fmt.Errorf("unsupported provider")
 	}
@@ -192,18 +209,28 @@ func deviceStart(provider, region, startURL, authMethod string) (map[string]any,
 
 // --- qoder: local PKCE + nonce, poll openapi.qoder.sh ---
 
-func qoderStart() (map[string]any, error) {
+// qoderLoginURL is the account-selection page for the provider's own
+// deployment; Qoder CN signs in on qoder.com.cn.
+func qoderLoginURL(provider string) string {
+	if provider == "qoder-cn" {
+		return "https://qoder.com.cn/device/selectAccounts"
+	}
+	return "https://qoder.com/device/selectAccounts"
+}
+
+func qoderStart(provider string) (map[string]any, error) {
 	verifier := pkceVerifier()
 	challenge := sha256Base64(verifier)
 	nonce, machineID := randomUUID(), randomUUID()
+	loginURL := qoderLoginURL(provider)
 	p := url.Values{
 		"challenge": {challenge}, "challenge_method": {"S256"},
 		"machine_id": {machineID}, "nonce": {nonce},
 	}
 	return map[string]any{
 		"device_code": nonce, "user_code": strings.ToUpper(firstN(nonce, 8)),
-		"verification_uri":          "https://qoder.com/device/selectAccounts",
-		"verification_uri_complete": "https://qoder.com/device/selectAccounts?" + p.Encode(),
+		"verification_uri":          loginURL,
+		"verification_uri_complete": loginURL + "?" + p.Encode(),
 		"expires_in":                300, "interval": 2,
 		"session": map[string]any{"nonce": nonce, "verifier": verifier, "machineId": machineID},
 	}, nil
@@ -240,7 +267,7 @@ func kilocodeStart() (map[string]any, error) {
 
 // --- grok-cli: standard device flow, referrer=grok-build ---
 
-var grokcliUA = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)"
+var grokcliUA = providers.GrokCLIPagerUserAgent
 
 func grokcliStart() (map[string]any, error) {
 	form := url.Values{
@@ -427,8 +454,8 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 	var t deviceTokens
 	var err error
 	switch provider {
-	case "qoder":
-		t, err = qoderPoll(session, code)
+	case "qoder", "qoder-cn":
+		t, err = qoderPoll(provider, session, code)
 	case "kilocode":
 		t, err = kilocodePoll(code)
 	case "grok-cli":
@@ -441,6 +468,10 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 		t, err = kimiPoll(session, code)
 	case "codebuddy-cn", "codebuddy-intl":
 		t, err = codebuddyPoll(provider, code)
+	case "muse":
+		t, err = musePoll(code)
+	case "minimax-code", "minimax-code-global":
+		t, err = minimaxCodePoll(provider, code, session)
 	default:
 		return t, "error", "unsupported provider"
 	}
@@ -468,8 +499,8 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 		email = extractEmailFromJWT(t.access)
 	}
 	name := connectionDisplayName(provider, t.name, email, map[string]string{
-		"qoder": "Qoder", "kilocode": "KiloCode", "grok-cli": "Grok CLI",
-		"github": "GitHub", "kiro": "Kiro", "kimi": "Kimi",
+		"qoder": "Qoder", "qoder-cn": "Qoder CN", "kilocode": "KiloCode", "grok-cli": "Grok CLI",
+		"github": "GitHub", "kiro": "Kiro", "kimi": "Kimi", "muse": "Muse",
 		"codebuddy-cn": "CodeBuddy", "codebuddy-intl": "CodeBuddy",
 	}[provider])
 	id := provider + "-" + shortHash(t.access)
@@ -487,6 +518,11 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 	dataMap["providerSpecificData"] = psd
 	if t.expiresIn > 0 {
 		dataMap["expiresAt"] = time.Now().Add(time.Duration(t.expiresIn) * time.Second).UTC().Format(time.RFC3339)
+	} else {
+		// Upstream persists expiresAt=null when the token endpoint omits
+		// expiry; keep the same shape so readers can tell "unknown" apart
+		// from a stale timestamp.
+		dataMap["expiresAt"] = nil
 	}
 	if h.Repo != nil && h.Repo.RawDB() != nil {
 		now := currentTimestamp()
@@ -507,20 +543,28 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 
 // --- polls ---
 
-func qoderPoll(session map[string]any, nonce string) (deviceTokens, error) {
+// qoderOpenAPIBase is the openapi host for the provider's own deployment.
+func qoderOpenAPIBase(provider string) string {
+	if provider == "qoder-cn" {
+		return "https://openapi.qoder.com.cn"
+	}
+	return "https://openapi.qoder.sh"
+}
+
+func qoderPoll(provider string, session map[string]any, nonce string) (deviceTokens, error) {
 	var t deviceTokens
 	verifier, _ := session["verifier"].(string)
 	machineID, _ := session["machineId"].(string)
 	if nonce == "" || verifier == "" {
 		return t, fmt.Errorf("invalid_request: missing nonce/verifier")
 	}
-	u := "https://openapi.qoder.sh/api/v1/deviceToken/poll?nonce=" + url.QueryEscape(nonce) +
+	openapi := qoderOpenAPIBase(provider)
+	u := openapi + "/api/v1/deviceToken/poll?nonce=" + url.QueryEscape(nonce) +
 		"&verifier=" + url.QueryEscape(verifier) + "&challenge_method=S256"
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
@@ -542,18 +586,30 @@ func qoderPoll(session map[string]any, nonce string) (deviceTokens, error) {
 	}
 	t.access = token
 	t.refresh = strVal(data, "refresh_token")
+	// machineId is generated at start and persisted so every later request from
+	// this auth presents the same machine (upstream cosy.js generateMachineId).
 	t.extra = map[string]any{"machineId": machineID}
-	if ui, _, _ := getJSON("https://openapi.qoder.sh/api/v1/userinfo",
+	// The COSY signature is bound to the account's user id, so it must be
+	// persisted at login. Upstream stores it in providerSpecificData.userId
+	// (src/lib/oauth/providers/qoder.js mapTokens); without it every later
+	// request is signed with a placeholder and Qoder answers
+	// 403 {"code":"105","message":"Login expired"}.
+	uid := strVal(data, "user_id")
+	if uid != "" {
+		t.extra["userId"] = uid
+	}
+	if ui, _, _ := getJSON(openapi+"/api/v1/userinfo",
 		map[string]string{"Authorization": "Bearer " + token, "User-Agent": "Go-http-client/2.0"}); ui != nil {
 		t.name = strVal(ui, "name", "username")
 		t.email = strVal(ui, "email")
-		uid := strVal(data, "user_id")
-		if t.email == "" && uid != "" {
-			t.email = "qoder-user-" + uid
-		}
 		if oid := strVal(ui, "organization_id"); oid != "" {
 			t.extra["organizationId"] = oid
 		}
+	}
+	// Upstream falls back to a stable synthetic email so a re-login updates the
+	// existing row instead of piling up "Account N" duplicates.
+	if t.email == "" && uid != "" {
+		t.email = "qoder-user-" + uid
 	}
 	return t, nil
 }
@@ -562,8 +618,7 @@ func kilocodePoll(code string) (deviceTokens, error) {
 	var t deviceTokens
 	req, _ := http.NewRequest(http.MethodGet, "https://api.kilo.ai/api/device-auth/codes/"+code, nil)
 	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
@@ -712,8 +767,7 @@ func kiroProfileArn(accessToken string) string {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -777,8 +831,7 @@ func codebuddyPoll(provider, state string) (deviceTokens, error) {
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := deviceClient.Do(req)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}

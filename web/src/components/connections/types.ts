@@ -35,12 +35,6 @@ export interface ModelItem {
   isCustom?: boolean
   caps: { vision: boolean; reasoning: boolean }
   kind?: string
-  // Additional model metadata from synced catalog
-  inputCostPer1M?: number
-  outputCostPer1M?: number
-  cacheCostPer1M?: number
-  contextWindow?: number
-  maxOutputTokens?: number
 }
 
 export interface CustomModelData {
@@ -52,6 +46,18 @@ export interface CustomModelData {
   caps?: { vision?: boolean; reasoning?: boolean }
 }
 
+// Artwork is filed under another provider's id when the two genuinely share a
+// brand. `zai-search` is a Go registry entry with no upstream counterpart: it is
+// a web-search seat on the GLM/Zhipu account pool (CredentialFallbacks maps it
+// to `glm`), so it wears GLM's mark. Without this the tile asks for a file that
+// is never shipped and pays a 404 before the badge fallback hides it. Upstream
+// aliases several other ids the same way (`perplexity-agent`, `vercel-ai-gateway`,
+// `minimax-code`, `opencode-zen`, `ollama-search`) but this repo ships distinct
+// artwork for all of those, so aliasing them here would throw away a real logo.
+const ICON_ALIASES: Record<string, string> = {
+  'zai-search': 'glm',
+}
+
 export function getIconPath(id?: string | null, apiType?: string): string {
   if (!id) return '/providers/oai-cc.png'
   const clean = id.trim()
@@ -61,14 +67,33 @@ export function getIconPath(id?: string | null, apiType?: string): string {
   if (clean.startsWith('anthropic-compatible') || clean.includes('anthropic')) {
     return '/providers/anthropic-m.png'
   }
-  if (PROVIDER_CATALOG_MAP.has(clean)) {
-    return `/providers/${clean}.png`
-  }
-  const byAlias = PROVIDER_CATALOG.find((p) => p.alias === clean)
-  if (byAlias) {
-    return `/providers/${byAlias.id}.png`
+  // A catalog id or a uiAlias both resolve to the id the artwork is filed
+  // under; neither matching is the signal to use the generic OpenAI glyph.
+  const fileId = ICON_ALIASES[clean]
+    ?? (PROVIDER_CATALOG_MAP.has(clean) ? clean : PROVIDER_CATALOG.find((p) => p.alias === clean)?.id)
+  if (fileId) {
+    return `/providers/${fileId}.png`
   }
   return apiType === 'responses' ? '/providers/oai-r.png' : '/providers/oai-cc.png'
+}
+
+// Provider initials badge, used when a provider has no shipped PNG. The
+// catalog already carries a brand colour for every entry, so the badge is drawn
+// in the provider's own colour rather than a neutral grey — the tile reads as
+// intentional instead of as a failed image load.
+export function getProviderGlyph(
+  id?: string | null
+): { name: string; color: string; initials: string } {
+  const clean = id?.trim()
+  const entry = clean
+    ? (PROVIDER_CATALOG_MAP.get(clean) ?? PROVIDER_CATALOG.find((p) => p.alias === clean))
+    : undefined
+  const name = entry?.name ?? clean ?? 'OpenAI'
+  // Take the initials of the leading words, so "B.AI" reads "BA" rather than
+  // collapsing to a single letter, and "Dahl Inference" reads "DI".
+  const words = name.split(/[\s._/-]+/).filter(Boolean)
+  const initials = (words.length > 1 ? words[0][0] + words[1][0] : words[0]?.slice(0, 2) ?? '?').toUpperCase()
+  return { name, color: entry?.color ?? '#6B7280', initials }
 }
 
 export function getProviderStats(
@@ -85,10 +110,15 @@ export function getProviderStats(
   })
 
   const total = list.length
-  const connected = list.filter((c) => c.isActive === 1 && c.testStatus !== 'error' && !c.lastError).length
-  const errorCount = list.filter((c) => c.testStatus === 'error' || !!c.lastError).length
+  const isConnError = (c: ProviderConnection) =>
+    c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && !!c.lastError)
+  const isConnConnected = (c: ProviderConnection) =>
+    c.isActive === 1 && (c.testStatus === 'active' || c.testStatus === 'passed' || (c.testStatus !== 'error' && c.testStatus !== 'failed' && !c.lastError))
+
+  const connected = list.filter(isConnConnected).length
+  const errorCount = list.filter(isConnError).length
   const allDisabled = total > 0 && list.every((c) => c.isActive === 0)
-  const latestError = list.find((c) => !!c.lastError)?.lastError
+  const latestError = list.find(isConnError)?.lastError
 
   return { total, connected, errorCount, allDisabled, latestError, connections: list }
 }
@@ -102,9 +132,19 @@ export function matchesFilter(stats: ProviderStats, statusFilter: string, noAuth
   return true
 }
 
-export function matchesSearch(name: string, searchQuery: string): boolean {
-  if (!searchQuery.trim()) return true
-  return name.toLowerCase().includes(searchQuery.trim().toLowerCase())
+// matchesSearch matches a provider by display name, id, and alias.
+// Matching the name alone made providers unsearchable by their own identifier:
+// typing "bai" returned "Baidu Qianfan" (a substring collision) but never "B.AI",
+// and "atria-asi" / "tokenharbor" returned nothing at all — the user then
+// concluded the provider was missing and built a custom node instead.
+export function matchesSearch(
+  name: string,
+  searchQuery: string,
+  ...identifiers: (string | null | undefined)[]
+): boolean {
+  const q = searchQuery.trim().toLowerCase()
+  if (!q) return true
+  return [name, ...identifiers].some((v) => v && v.toLowerCase().includes(q))
 }
 
 export async function fetchProviderModelsData(

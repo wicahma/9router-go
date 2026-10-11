@@ -1,0 +1,1305 @@
+### [1] internal/app/server.go:132  (ours 11L / theirs 2L)
+O| // pricing cannot import providers (cycle), so the catalog is handed
+O| 			// over as a lookup function at startup.
+O| 			pricing.CatalogPriceLookup = func(model string) (float64, float64, bool) {
+O| 				p, ok := providers.GetCatalogPrice(model)
+O| 				return p.InputPer1M, p.OutputPer1M, ok
+O| 			}
+O| 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+O| ...(+4L)
+T| oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+T| 			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
+
+### [2] internal/db/accounts.go:56  (ours 33L / theirs 47L)
+O| until, _, ok := ConnectionCooldownStatus(rawData)
+O| 	return until, ok
+O| }
+O| 
+O| // ConnectionCooldownStatus is ConnectionCooldownUntil plus the status code of
+O| // the error that wrote the cooldown, read from the stored lastError record.
+O| // The status matters at the call sites that treat a 429 as a quota signal:
+O| ...(+26L)
+T| raw, ok := parseConnData(rawData)
+T| 	if !ok {
+T| 		return time.Time{}, false
+T| 	}
+T| 	return readTimestampField(raw, "rateLimitedUntil")
+T| }
+T| 
+T| ...(+40L)
+
+### [3] internal/db/client_test.go:4  (ours 2L / theirs 2L)
+O| "context"
+O| 	"database/sql"
+T| "database/sql"
+T| 	"net/url"
+
+### [4] internal/db/schema.go:413  (ours 4L / theirs 18L)
+O| // built from dbtest.CreateTables get the same shape as a real database instead
+O| // of silently missing the round-robin bookkeeping columns.
+O| func EnsureAdditiveColumns(db *sql.DB) error {
+O| 	for _, c := range goOnlyColumns {
+T| // get the same shape as a real database instead of silently missing the
+T| // round-robin bookkeeping columns or the KeiRouter per-key columns.
+T| //
+T| // A column whose table does not exist is skipped rather than treated as an
+T| // error. In production EnsureCoreSchema has created every core table before
+T| // this runs, so nothing is ever skipped; a test fixture that deliberately
+T| // builds only the tables it exercises has no use for the other columns, and
+T| ...(+11L)
+
+### [5] internal/db/settings.go:51  (ours 4L / theirs 19L)
+O| CavemanEnabled             bool                            `json:"cavemanEnabled"`
+O| 	CavemanLevel               string                          `json:"cavemanLevel"`
+O| 	PonytailEnabled            bool                            `json:"ponytailEnabled"`
+O| 	PonytailLevel              string                          `json:"ponytailLevel"`
+T| RTKMode                    string                          `json:"rtkMode,omitempty"`
+T| 	RTKIntensity               string                          `json:"rtkIntensity,omitempty"`
+T| 	RTKMaxLines                int                             `json:"rtkMaxLines,omitempty"`
+T| 	RTKMaxChars                int                             `json:"rtkMaxChars,omitempty"`
+T| 	RTKDeduplicate             bool                            `json:"rtkDeduplicate,omitempty"`
+T| 	RTKCategories              map[string]bool                 `json:"rtkCategories,omitempty"`
+T| 	RTKFilters                 map[string]bool                 `json:"rtkFilters,omitempty"`
+T| ...(+12L)
+
+### [6] internal/db/settings.go:81  (ours 3L / theirs 7L)
+O| AutoUpdate                 bool                            `json:"autoUpdate"`
+O| 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
+O| 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
+T| SemanticCacheEnabled       bool                            `json:"semanticCacheEnabled"`
+T| 	SemanticCacheTTL           int                             `json:"semanticCacheTTL,omitempty"`
+T| 	SemanticCacheMaxEntries    int                             `json:"semanticCacheMaxEntries,omitempty"`
+T| 	AutoUpdate                 bool                            `json:"autoUpdate"`
+T| 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
+T| 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
+T| 	ForceFallback              bool                            `json:"forceFallback,omitempty"`
+
+### [7] internal/db/usage.go:265  (ours 103L / theirs 60L)
+O| // LatencyStats is the latency distribution for one model+provider pair.
+O| //
+O| // Samples counts only requests that actually recorded a duration (the meta
+O| // column is populated from a known wave onwards, so older rows are invisible
+O| // here by design rather than counted as zero).
+O| type LatencyStats struct {
+O| 	Model    string
+O| ...(+96L)
+T| // RequestDetailListRow is one row of the Details table: every value the table
+T| // renders, and nothing else.
+T| //
+T| // The stored payload also carries the request messages and the response body —
+T| // up to MaxLoggedMessages × MaxMessageContentLen plus MaxResponseContentLen
+T| // characters, which measured ~20 KB per row. A page of 20 is 400 KB that the
+T| // table never reads: it shows timestamps, provider, model, latency and token
+T| ...(+53L)
+
+### [8] internal/db/usage.go:462  (ours 34L / theirs 12L)
+O| func (r *Repo) PruneRequestDetailsBefore(cutoff string) (int64, error) {
+O| 	res, err := r.db.Exec(`DELETE FROM requestDetails WHERE timestamp < ?`, cutoff)
+O| 	if err != nil {
+O| 		return 0, fmt.Errorf("prune request details before %s: %w", cutoff, err)
+O| 	}
+O| 	n, err := res.RowsAffected()
+O| 	if err != nil {
+O| ...(+27L)
+T| // GetRequestDetailByID returns the full stored payload for one request, which
+T| // is what the inspector shows. It is a primary-key lookup, so opening a row
+T| // costs the same whether the table holds ten rows or ten million.
+T| func (r *Repo) GetRequestDetailByID(id string) (string, error) {
+T| 	if id == "" {
+T| 		return "", fmt.Errorf("get request detail: empty id")
+T| 	}
+T| ...(+5L)
+
+### [9] internal/dbtest/dbtest.go:10  (ours 6L / theirs 95L)
+O| // CreateTables builds the schema a test fixture needs. It delegates to the
+O| // production bootstrap so a fixture has the same shape as a real database —
+O| // a second copy of the DDL here is how tests kept passing against tables the
+O| // server never creates (settings was missing until EnsureCoreSchema landed).
+O| func CreateTables(database *sql.DB) error {
+O| 	return db.EnsureCoreSchema(database)
+T| // SchemaStatements returns all CREATE TABLE statements used by 9router-go tests.
+T| // Matches the canonical schema shared with the Next.js dashboard.
+T| func SchemaStatements() []string {
+T| 	return []string{
+T| 		`CREATE TABLE apiKeys (
+T| 			id TEXT PRIMARY KEY,
+T| 			key TEXT UNIQUE NOT NULL,
+T| ...(+88L)
+
+### [10] internal/handlers/chat/antigravity_project_test.go:133  (ours 21L / theirs 79L)
+O| func TestAntigravityProjectID(t *testing.T) {
+O| 	cases := []struct {
+O| 		name string
+O| 		data map[string]any
+O| 		want string
+O| 	}{
+O| 		{"top level projectId", map[string]any{"projectId": "p1"}, "p1"},
+O| ...(+14L)
+T| func TestAntigravityProbe_HeadersAndMetadata(t *testing.T) {
+T| 	var gotUA, gotGoogClient, gotClientMeta string
+T| 	var gotBodyMeta map[string]any
+T| 
+T| 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+T| 		gotUA = r.Header.Get("User-Agent")
+T| 		gotGoogClient = r.Header.Get("X-Goog-Api-Client")
+T| ...(+72L)
+
+### [11] internal/handlers/chat/chat.go:579  (ours 7L / theirs 15L)
+O| handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+O| 		"object":      "list",
+O| 		"data":        result.Models,
+O| 		"models":      result.Models,
+O| 		"mode":        result.Mode,
+O| 		"connections": result.Connections,
+O| 	})
+T| visible, err := h.filterModelsByAccess(requestKey(r), result.Models)
+T| 	if err != nil {
+T| 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+T| 		return
+T| 	}
+T| 	modelsJSON, err := json.Marshal(visible)
+T| 	if err != nil {
+T| ...(+8L)
+
+### [12] internal/handlers/chat/combo.go:1040  (ours 13L / theirs 14L)
+O| // can skip this account before spending a request on later requests
+O| 	// (upstream applyErrorState). Within this request the cooldown is not
+O| 	// what stops the failed model from re-firing — its own per-model lock is.
+O| 	until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+O| 	if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
+O| 		log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
+O| 	}
+O| ...(+6L)
+T| // can skip this account before spending a request (upstream applyErrorState).
+T| 	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
+T| 	// so unrelated models stay available.
+T| 	if isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model) {
+T| 		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+T| 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
+T| 		}
+T| ...(+7L)
+
+### [13] internal/handlers/chat/connections.go:182  (ours 48L / theirs 4L)
+O| return h.getBestConnectionForModel(provider, connectionID, excludeIDs, model, false)
+O| }
+O| 
+O| // GetBestConnectionPerModelCooldown is the combo-failover lookup. A 429
+O| // cooldown written for one model must not hide the account from a different
+O| // model in the same combo: rate limits are metered per model on several
+O| // plans (per-model RPM), so the model below in the combo gets its one
+O| ...(+41L)
+T| return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model)
+T| }
+T| 
+T| func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+
+### [14] internal/handlers/chat/connections.go:363  (ours 20L / theirs 23L)
+O| // Account-scoped cooldown. An account whose quota is spent or
+O| 			// whose auth already failed is skipped before it is selected, so
+O| 			// the request does not have to be spent on a call that is going
+O| 			// to fail — round-robin otherwise kept handing out dead
+O| 			// accounts until a live 429/401 locked them. Upstream parity:
+O| 			// filterAvailableAccounts. In the combo lookups a 429 cooldown
+O| 			// lifts for a model that carries no lock of its own — a per-model
+O| ...(+13L)
+T| // The strategy sweep reorders the whole candidate list, so the
+T| 			// account filter runs again on the row actually reached.
+T| 			if !codexAccountServesModel(c, model) {
+T| 				continue
+T| 			}
+T| 			// Per-model lock and quota cache first: an account parked for
+T| 			// this model carries no cooldown to shorten, so it must not enter
+T| ...(+16L)
+
+### [15] internal/handlers/chat/fallback.go:184  (ours 7L / theirs 17L)
+O| // (upstream applyErrorState).
+O| 			until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+O| 			if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
+O| 				log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
+O| 			}
+O| 			log.Warn("fallback", "connection locked", "conn", connObj.ID, "provider", provider, "model", model, "lockKey", lockKey, "status", ue.StatusCode, "cooldown_s", cooldownSec)
+O| 			excludeIDs = append(excludeIDs, c.ID)
+T| // (upstream applyErrorState). Only lock if error is account-scoped,
+T| 			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
+T| 			if isModelScopedError(ue.StatusCode, errorText, model) {
+T| 				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+T| 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
+T| 				}
+T| 			} else {
+T| ...(+10L)
+
+### [16] internal/handlers/chat/forward.go:111  (ours 8L / theirs 17L)
+O| // Fail over before committing 200: an upstream error body (often under a
+O| 	// 200) would otherwise be piped to the client as a successful empty stream
+O| 	// and no combo/account fallback would fire. See proxy.PeekStreamError.
+O| 	peeked, perr := internalproxy.PeekStreamError(upstream)
+O| 	if perr != nil {
+O| 		return perr
+O| 	}
+O| ...(+1L)
+T| // A /v1/responses client needs Responses events, and translate marks a
+T| 	// Claude client, so this branch is decided by the client format alone. It
+T| 	// runs before the header write because the bridge owns its own writer.
+T| 	if translator.NeedsResponsesBridge(ctx) {
+T| 		// The bridge defers response.completed until the upstream's usage
+T| 		// trailer arrives, so once that wait begins the generic six-minute
+T| 		// stall window is far too generous: an upstream that never sends the
+T| ...(+10L)
+
+### [17] internal/handlers/chat/live_catalog.go:136  (ours 14L / theirs 26L)
+O| discovered := fetch(ctx, accessToken)
+O| 	refreshToken := liveCatalogRefreshToken(conn)
+O| 	if len(discovered) == 0 && refreshToken != "" {
+O| 		// Upstream refreshes the credential on 401/403 and retries once.
+O| 		if refreshed, _, err := h.forceRefreshOAuthToken(conn.ID); err == nil && refreshed != "" {
+O| 			discovered = fetch(ctx, refreshed)
+O| 		} else if err != nil {
+O| ...(+7L)
+T| // One upstream call per credential even when many requests race a cold
+T| 	// cache: the losers wait for the winner's result instead of each fanning
+T| 	// out to the provider API.
+T| 	result, err, _ := liveCatalogFlight.Do(cacheKey, func() (any, error) {
+T| 		if cached, ok := liveCatalogCached(cacheKey); ok {
+T| 			return cached, nil
+T| 		}
+T| ...(+19L)
+
+### [18] internal/handlers/chat/live_catalog_handler_test.go:7  (ours 1L / theirs 5L)
+O| "testing"
+T| "sync/atomic"
+T| 	"testing"
+T| 	"time"
+T| 
+T| 	json "encoding/json/v2"
+
+### [19] internal/handlers/chat/models_available_test.go:161  (ours 7L / theirs 23L)
+O| joined := strings.Join(ids, "\n")
+O| 	if strings.Contains(joined, "cx/gpt-6-astra") {
+O| 		t.Errorf("disabled builtin cx/gpt-6-astra must be excluded, got:\n%s", joined)
+O| 	}
+O| 	if !strings.Contains(joined, "cx/gpt-5.6-sol") {
+O| 		t.Errorf("non-disabled cx/gpt-5.6-sol must stay, got:\n%s", joined)
+O| 	}
+T| // Membership, not substring: cx/gpt-6-astra[1m] contains cx/gpt-6-astra as a
+T| 	// prefix, and disabling one must not disable the other.
+T| 	if containsID(ids, "cx/gpt-6-astra") {
+T| 		t.Errorf("disabled builtin cx/gpt-6-astra must be excluded, got:\n%s", strings.Join(ids, "\n"))
+T| 	}
+T| 	if !containsID(ids, "cx/gpt-6-astra[1m]") {
+T| 		t.Errorf("only cx/gpt-6-astra was disabled, so cx/gpt-6-astra[1m] must stay, got:\n%s", strings.Join(ids, "\n"))
+T| ...(+16L)
+
+### [20] internal/handlers/chat/models_list.go:80  (ours 12L / theirs 31L)
+O| // isLLMModelID mirrors upstream inferKindFromUnknownModelId.
+O| func isLLMModelID(modelID string) bool {
+O| 	switch {
+O| 	case embeddingIDHint.MatchString(modelID):
+O| 		return false
+O| 	case ttsIDHint.MatchString(modelID):
+O| 		return false
+O| ...(+5L)
+T| var llmModelIDCache = struct {
+T| 	sync.RWMutex
+T| 	m   map[string]bool
+T| 	max int
+T| }{m: make(map[string]bool), max: 20000}
+T| 
+T| func isLLMModelID(modelID string) bool {
+T| ...(+24L)
+
+### [21] internal/handlers/chat/models_list.go:215  (ours 3L / theirs 10L)
+O| func isCompatibleProviderID(providerID string) bool {
+O| 	return strings.HasPrefix(providerID, "openai-compatible-") ||
+O| 		strings.HasPrefix(providerID, "anthropic-compatible-")
+T| // isCompatibleProviderID reports whether a provider id belongs to a custom
+T| // endpoint the user registered. All three node shapes qualify, including
+T| // custom-embedding: a custom embedding node published under its own id is
+T| // served by the same OpenAI-compatible transport, and without it a node whose
+T| // connection pins enabledModels would fall back to the registry catalog and
+T| // answer /v1/models with providers the node does not serve.
+T| func isCompatibleProviderID(providerID string) bool {
+T| ...(+3L)
+
+### [22] internal/handlers/chat/models_list.go:371  (ours 9L / theirs 27L)
+O| usable := h.connectedProviderIDs(allConns)
+O| 
+O| 	data := h.buildModelsListForMode(ctx, mode, allConns, usable)
+O| 	return ModelsListResult{Models: data, Mode: modelsListModeString(mode), Connections: activeCount}
+O| }
+O| 
+O| // buildModelsList is the upstream-faithful entry point used by model lookup.
+O| ...(+2L)
+T| activeConns := activeConnections(allConns)
+T| 	usable := h.connectedProviderIDs(allConns)
+T| 
+T| 	data := h.buildModelsListForMode(ctx, mode, allConns, activeConns, usable)
+T| 	return ModelsListResult{Models: data, Mode: modelsListModeString(mode), Connections: activeCount}
+T| }
+T| 
+T| ...(+20L)
+
+### [23] internal/handlers/chat/models_list.go:441  (ours 5L / theirs 19L)
+O| // 2. No connection rows at all: static catalog dump + custom models, so a
+O| 	// fresh install still has a usable picker (upstream connections.length === 0).
+O| 	// In connected mode the dump is narrowed to providers that are actually
+O| 	// usable, so the endpoint stops advertising the whole catalog.
+O| 	if len(allConns) == 0 || mode == modeListCatalog {
+T| // 2. Nothing to scope to: static catalog dump + custom models, so a fresh
+T| 	// install still has a usable picker (upstream connections.length === 0).
+T| 	// In connected mode the dump is narrowed to providers that are actually
+T| 	// usable, so the endpoint stops advertising the whole catalog.
+T| 	//
+T| 	// Rows exist but none of them is active — every connection disabled in the
+T| 	// dashboard — is the same situation, and gating on row count answered it
+T| ...(+12L)
+
+### [24] internal/handlers/chat/models_list.go:848  (ours 4L / theirs 6L)
+O| // registerCustomModelCaps publishes the capability flags saved on a custom model
+O| // so capability lookups elsewhere see them, like upstream customModelCaps.
+O| func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.CustomModel) {
+O| 	if len(cm.Caps) == 0 {
+T| // registerCustomModelCaps publishes the capability flags and token limits
+T| // saved on a custom model so capability lookups elsewhere see them, like
+T| // upstream customModelCaps.
+T| func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.CustomModel) {
+T| 	ctxLen, maxOut := declaredTokenLimits(cm)
+T| 	if len(cm.Caps) == 0 && ctxLen == 0 && maxOut == 0 {
+
+### [25] internal/handlers/chat/models_list.go:890  (ours 2L / theirs 164L)
+O| // appendCombos lists combo names with the union of their leaf capabilities,
+O| // matching upstream aggregateComboCapabilities.
+T| // declaredTokenLimits reads the limits the operator set on a custom model
+T| // row. Zero means "not declared" and hands the decision back to the substring
+T| // table, so a row saved before these fields existed keeps behaving exactly as
+T| // it did.
+T| func declaredTokenLimits(cm *db.CustomModel) (contextWindow int, maxOutput int) {
+T| 	if cm == nil {
+T| 		return 0, 0
+T| ...(+157L)
+
+### [26] internal/handlers/chat/models_list.go:1088  (ours 5L / theirs 10L)
+O| // Upstream combo entries carry capabilities only — no
+O| 		// context_length / max_completion_tokens.
+O| 		if caps, ok := h.aggregateComboCapabilities(combo.Name); ok {
+O| 			entry.Capabilities = caps
+O| 		}
+T| if caps, ok := h.aggregateComboCapabilities(combo); ok {
+T| 			entry.Capabilities = caps
+T| 		}
+T| 		// Upstream publishes the combo-wide limits at the top level too (any
+T| 		// seat can serve the request, so the window is the smallest one in the
+T| 		// tree). A combo with no LLM seat at all publishes neither key rather
+T| 		// than a guess.
+T| ...(+3L)
+
+### [27] internal/handlers/chat/models_lookup_scope_test.go:49  (ours 6L / theirs 6L)
+O| if !fetchModels(t, h, "?connected=1").idSet()["oc/union-alpha"] {
+O| 		t.Fatal("?connected=1 did not advertise oc/union-alpha")
+O| 	}
+O| 
+O| 	w := httptest.NewRecorder()
+O| 	h.HandleModelLookup(w, httptest.NewRequest("GET", "/v1/models/oc/union-alpha", nil))
+T| if !fetchModels(t, h, "?connected=1").idSet()["oc/jev-1.13-free"] {
+T| 		t.Fatal("?connected=1 did not advertise oc/jev-1.13-free")
+T| 	}
+T| 
+T| 	w := httptest.NewRecorder()
+T| 	h.HandleModelLookup(w, httptest.NewRequest("GET", "/v1/models/oc/jev-1.13-free", nil))
+
+### [28] internal/handlers/chat/usage.go:217  (ours 14L / theirs 41L)
+O| cost, costSource := pricing.EstimateCostWithSource(info.Model, usage.PromptTokens, usage.CompletionTokens)
+O| 
+O| 	cachedTokens := usage.GetCachedTokens()
+O| 	cacheCreationTokens := usage.CacheCreationInputTokens
+O| 
+O| 	// This path only runs for a completed exchange, so the upstream status is
+O| 	// 200 by construction; the status is carried in meta for shape parity with
+O| ...(+7L)
+T| cachedTokens := usage.GetCachedTokens()
+T| 	cacheCreationTokens := usage.CacheCreationInputTokens
+T| 
+T| 	// prompt_tokens is cache-inclusive, so the cached and cache-creation counts
+T| 	// are handed over too: the formula takes them out of the input rate and
+T| 	// charges them at their own, cheaper rate. The provider matters because
+T| 	// gateways can price the same model differently.
+T| ...(+34L)
+
+### [29] internal/handlers/chat/usage.go:606  (ours 8L / theirs 49L)
+O| // MaskAPIKey returns a masked version of an API key for storage.
+O| // NOTE: kept as if/else, not lo.Ternary — Ternary evaluates both branches
+O| // eagerly and the slicing panics on short keys.
+O| func MaskAPIKey(key string) string {
+O| 	if len(key) <= 8 {
+O| 		return "***"
+O| 	}
+O| ...(+1L)
+T| // maskAPIKey returns a masked version of an API key for storage. The canonical
+T| // implementation lives in handlerutil so the usage-stats reader can derive the
+T| // same mask from a stored row to recover the key's name.
+T| func maskAPIKey(key string) string {
+T| 	return handlerutil.MaskAPIKey(key)
+T| }
+T| 
+T| ...(+42L)
+
+### [30] internal/handlers/dashboard/model_caps.go:5  (ours 3L / theirs 26L)
+O| "9router/proxy/internal/handlerutil"
+O| 	"9router/proxy/internal/providers"
+O| )
+T| "slices"
+T| 	"strings"
+T| 
+T| 	"9router/proxy/internal/db"
+T| 	"9router/proxy/internal/handlerutil"
+T| 	"9router/proxy/internal/pricing"
+T| 	"9router/proxy/internal/providers"
+T| ...(+19L)
+
+### [31] internal/handlers/usage_stats.go:268  (ours 25L / theirs 12L)
+O| // Map the masked key recorded in usage rows back to the key's label.
+O| 		keyNameMap := make(map[string]string)
+O| 		if keys, err := repo.GetApiKeys(); err == nil {
+O| 			for _, k := range keys {
+O| 				if k.Key == "" {
+O| 					continue
+O| 				}
+O| ...(+18L)
+T| // Friendly names for the API-key breakdown. The stored value is not
+T| 		// uniform across the shared database: rows this build writes keep only
+T| 		// the masked key, while rows the Next.js dashboard wrote keep the full
+T| 		// one. Index both forms so a stored row resolves either way.
+T| 		keyNames := make(map[string]string)
+T| 		if keys, err := repo.GetApiKeys(); err == nil {
+T| 			for _, k := range keys {
+T| ...(+5L)
+
+### [32] internal/handlers/usage_stats.go:407  (ours 31L / theirs 13L)
+O| // byAccount
+O| 					if ba, ok := dayData["byAccount"].(map[string]any); ok {
+O| 						for connID, aVal := range ba {
+O| 							if am, ok := aVal.(map[string]any); ok {
+O| 								prov, _ := am["provider"].(string)
+O| 								accName := connMap[connID]
+O| 								if accName == "" {
+O| ...(+24L)
+T| // byAccount
+T| 				if ba, ok := dayData["byAccount"].(map[string]any); ok {
+T| 					for connID, aVal := range ba {
+T| 						if am, ok := aVal.(map[string]any); ok {
+T| 							rawModel, _ := am["rawModel"].(string)
+T| 							prov, _ := am["provider"].(string)
+T| 							accName := connMap[connID]
+T| ...(+6L)
+
+### [33] internal/handlerutil/response.go:193  (ours 35L / theirs 22L)
+O| type attemptCountKey struct{}
+O| 
+O| // WithAttemptCounter installs a per-request upstream attempt counter. Install it
+O| // where the request context is created: fallback and combo loops rebuild the
+O| // connection on every retry but keep the context, so the counter is the only
+O| // place the total number of upstream tries survives to logging time.
+O| func WithAttemptCounter(ctx context.Context) context.Context {
+O| ...(+28L)
+T| type clientBetaKey struct{}
+T| 
+T| // WithClientAnthropicBeta carries the caller's own anthropic-beta flags on the
+T| // context. They have to be merged into the upstream request rather than dropped:
+T| // a client asking for a beta the gateway does not list would otherwise fail
+T| // without ever being told why. (Upstream mergeAnthropicBeta, v0.5.91.)
+T| func WithClientAnthropicBeta(ctx context.Context, beta string) context.Context {
+T| ...(+15L)
+
+### [34] internal/pricing/cost.go:123  (ours 32L / theirs 117L)
+O| bestLen := 0
+O| 	bestPricing := defaultPricing
+O| 	for prefix, p := range pricingTable {
+O| 		if strings.HasPrefix(model, prefix) && len(prefix) > bestLen {
+O| 			bestLen = len(prefix)
+O| 			bestPricing = p
+O| 		}
+O| ...(+25L)
+T| // GetPricingForModel resolves the rates for a model, mirroring upstream's
+T| // four-step chain (open-sse/providers/pricing.js getPricingForModel):
+T| //
+T| //  1. the provider's own table, so a gateway can price a model differently
+T| //  2. a free namespace, which must not fall through to a paid rate
+T| //  3. the canonical table, tried with and without the vendor prefix stripped
+T| //  4. the ordered pattern table
+T| ...(+110L)
+
+### [35] internal/pricing/cost_test.go:169  (ours 85L / theirs 46L)
+O| func TestEstimateCostWithSource_CatalogFillsUnconfiguredModels(t *testing.T) {
+O| 	withCatalog(t, func(model string) (float64, float64, bool) {
+O| 		if model == "kimi-k3" {
+O| 			return 3, 15, true
+O| 		}
+O| 		return 0, 0, false
+O| 	})
+O| ...(+78L)
+T| func TestEstimateCost_ZeroTokens(t *testing.T) {
+T| 	if cost := EstimateCost("openai", "gpt-4o", TokenCounts{}); cost != 0 {
+T| 		t.Errorf("cost = %v, want 0", cost)
+T| 	}
+T| }
+T| 
+T| // TestMatchPricingPattern covers the glob rule: `*` has to cross a `/`, because
+T| ...(+39L)
+
+### [36] internal/providers/capabilities.go:231  (ours 4L / theirs 7L)
+O| "deepseek-flash":                   {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+O| 	"muse-spark-1.2-contributor-free":  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+O| 	"muse-spark-1.3-contributor-free":  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+O| 	"union-alpha":                      {Vision: true, Tools: true},
+T| // Some gateways publish this model under the hyphenated id (dash instead
+T| 	// of dot); without the row it fell through to the text-only `*deepseek-v4*`
+T| 	// pattern and lost its vision and 1M window.
+T| 	"deepseek-v4-1-flash":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+T| 	"deepseek-flash":                   {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+T| 	"muse-spark-1.2-contributor-free":  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+T| 	"muse-spark-1.3-contributor-free":  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+
+### [37] internal/providers/capabilities.go:328  (ours 20L / theirs 33L)
+O| "glm-5.2":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true)},
+O| 		"glm-5.1":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+O| 		"glm-5.0-turbo":       {Reasoning: true, Tools: true},
+O| 		"glm-5v-turbo":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+O| 		"minimax-m3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+O| 		"minimax-m2.7":        {Vision: true, Reasoning: true, Tools: true},
+O| 		"kimi-k2.7":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
+O| ...(+13L)
+T| "glm-5.2":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1000000, MaxOutput: 131072},
+T| 		"glm-5.1":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 48000},
+T| 		"glm-5.0-turbo":       {Reasoning: true, Tools: true},
+T| 		"minimax-m3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 512000, MaxOutput: 524288},
+T| 		"minimax-m2.7":        {Reasoning: true, Tools: true},
+T| 		"kimi-k2.5":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 164000, MaxOutput: 32000},
+T| 		// Upstream #4614 drops glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from the
+T| ...(+26L)
+
+### [38] internal/providers/catalog_sync.go:39  (ours 22L / theirs 9L)
+O| // SyncedModelPrice holds the consensus upstream price for a model, in USD per
+O| // million tokens.
+O| //
+O| // models.dev lists a model once per provider, and those entries disagree:
+O| // kimi-k3 is served by 32 providers carrying 13 different prices. A single
+O| // model id therefore has no single price, so the value kept here is the one
+O| // most providers agree on, and Agreement records how strong that consensus was.
+O| ...(+15L)
+T| // SyncedCatalog represents the processed catalog file written to disk / kept in
+T| // memory. The file is shared with upstream, whose writer emits `syncedAt` as
+T| // epoch milliseconds and adds `v`/`etag` fields — so SyncedAt is written as an
+T| // ISO string and decoded leniently, and the modality map is keyed
+T| // "<provider>:<model>" the way upstream keys it.
+T| type SyncedCatalog struct {
+T| 	Version   int                                     `json:"v,omitempty"`
+T| ...(+2L)
+
+### [39] internal/providers/registry_models.go:9  (ours 44L / theirs 60L)
+O| "aai":                  {"universal-3-pro", "universal-2", "best", "nano"},
+O| 	"af":                   {"gpt-oss-120b", "gpt-oss-20b", "kimi-k2.7-code"},
+O| 	"ag":                   {"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low", "gemini-3.8-flash", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low", "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low", "gemini-3.5-flash-high", "gemini-3-flash-agent", "gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "gemini-pro-agent", "gemini-3.1-pro-low", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium", "gemini-3-flash", "gemini-3.1-flash-image"},
+O| 	"aionlabs":             {"aion-labs/aion-3.5", "aion-labs/aion-3.5-mini", "aion-labs/aion-3.0", "aion-labs/aion-3.0-mini", "aion-labs/aion-2.0", "aion-labs/aion-rp-llama-3.1-8b"},
+O| 	"alicode":              {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-max-2026-01-23", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+O| 	"alicode-intl":         {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+O| 	"alims-intl":           {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+O| ...(+37L)
+T| "aai":               {"universal-3-pro", "universal-2", "best", "nano"},
+T| 	"agnes":             {"agnes-2.5-flash", "agnes-2.5-pro", "agnes-2.5-pro-beta", "agnes-3.0-flash", "agnes-3.0-pro"},
+T| 	"af":                {"gpt-oss-120b", "gpt-oss-20b", "kimi-k2.7-code"},
+T| 	"ag":                {"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low", "gemini-3.8-flash", "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low", "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low", "gemini-3.1-pro-high", "gemini-pro-agent", "gemini-3.1-pro-low", "claude-sonnet-5-5-high", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-low", "claude-sonnet-5-5", "claude-opus-5-5-high", "claude-opus-5-5-medium", "claude-opus-5-5-low", "claude-opus-5-5", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium", "gemini-3.1-flash-image"},
+T| 	"alicode":           {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-max-2026-01-23", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+T| 	"alicode-intl":      {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+T| 	"alims-intl":        {"qwen3.5-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"},
+T| ...(+53L)
+
+### [40] internal/providers/registry_models.go:125  (ours 3L / theirs 7L)
+O| "gc":                   {"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+O| 	"gcli":                 {"grok-build", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
+O| 	"gemini":               {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-4-31b-it", "gemini-embedding-2-preview", "gemini-embedding-001", "text-embedding-005", "text-embedding-004", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "embedding-001"},
+T| // ElevenLabs declares one catalogue for both service kinds, so the STT ids
+T| 	// sit beside the TTS ones (open-sse/providers/registry/elevenlabs.js models[]).
+T| 	"elevenlabs": {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
+T| 	"el":         {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
+T| 	"gc":                   {"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+T| 	"gcli":                 {"grok-build", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
+T| 	"gemini":               {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-4-31b-it", "gemini-embedding-2-preview", "gemini-embedding-001", "text-embedding-005", "text-embedding-004", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-native-audio-preview-09-17", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "embedding-001"},
+
+### [41] internal/providers/registry_models.go:180  (ours 8L / theirs 8L)
+O| "oc":                   {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "union-alpha", "jev-1.13-free"},
+O| 	"ocg":                  {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "kimi-k3", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "longcat-2.0", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "hy4-preview", "hy3", "grok-4.6", "gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor"},
+O| 	"ocz":                  {"claude-fable-5", "claude-fable-5-1", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5", "gpt-5-codex", "gpt-5-nano", "grok-build-0.1", "grok-4.6", "grok-4.5", "muse-spark-1.3", "muse-spark-1.2", "qwen3.6-plus", "qwen3.5-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "big-pickle", "union-alpha", "deepseek-v4-flash-free", "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.0-flash-fin-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free", "jev-1.13", "jev-1.13-free"},
+O| 	"ollama":               {"gpt-oss:120b", "kimi-k2.5", "glm-5", "minimax-m2.5", "glm-4.7-flash", "qwen3.5", "minimax-m3", "deepseek-v4.1-flash:cloud"},
+O| 	"openai":               {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o3-mini", "o3-pro", "o4-mini", "o1", "o1-mini", "text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002", "tts-1", "tts-1-hd", "gpt-4o-mini-tts", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-1", "dall-e-3", "dall-e-2"},
+O| 	"opencode":             {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "union-alpha", "jev-1.13-free"},
+O| 	"opencode-go":          {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "kimi-k3", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "longcat-2.0", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "hy4-preview", "hy3", "grok-4.6", "gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor"},
+O| ...(+1L)
+T| "oc":                   {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "jev-1.13-free"},
+T| 	"ocg":                  {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-k3", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash", "longcat-2.0", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "space-bunny-free", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "omen-alpha", "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor"},
+T| 	"ocz":                  {"claude-fable-5", "claude-fable-5-1", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-haiku-4-5", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5", "gpt-5-codex", "gpt-5-nano", "grok-build-0.1", "grok-4.6", "grok-4.5", "muse-spark-1.3", "muse-spark-1.2", "qwen3.6-plus", "qwen3.5-plus", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "big-pickle", "deepseek-v4-flash-free", "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.0-flash-fin-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free", "jev-1.13", "jev-1.13-free"},
+T| 	"ollama":               {"gpt-oss:120b", "kimi-k2.5", "glm-5", "minimax-m2.5", "glm-4.7-flash", "qwen3.5", "minimax-m3", "deepseek-v4.1-flash:cloud"},
+T| 	"openai":               {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o3-mini", "o3-pro", "o4-mini", "o1", "o1-mini", "text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002", "tts-1", "tts-1-hd", "gpt-4o-mini-tts", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-1", "dall-e-3", "dall-e-2"},
+T| 	"opencode":             {"muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free", "jev-1.13-free"},
+T| 	"opencode-go":          {"deepseek-flash", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-k3", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash", "longcat-2.0", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "space-bunny-free", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "omen-alpha", "grok-4.7", "grok-4.6", "grok-4.5", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor"},
+T| ...(+1L)
+
+### [42] internal/providers/thinking_levels.go:21  (ours 5L / theirs 11L)
+O| levelMax     = []string{"none", "low", "medium", "high", "max"}              // claude-adaptive, kimi
+O| 	levelBudgetX = []string{"none", "low", "medium", "high", "xhigh", "max"}     // claude-budget
+O| 	levelGemini  = []string{"minimal", "low", "medium", "high"}                  // gemini-3 thinkingLevel (no disable)
+O| 	levelHiMax   = []string{"none", "high", "max"}                               // deepseek (low/med→high, xhigh→max)
+O| 	levelCMDCode = []string{"none", "low", "medium", "high", "xhigh", "max"}     // commandcode
+T| levelMax     = []string{"none", "low", "medium", "high", "max"}              // kimi
+T| 	levelBudgetX = []string{"none", "low", "medium", "high", "xhigh", "max"}     // claude-budget, claude-adaptive
+T| 	levelGemini  = []string{"minimal", "low", "medium", "high"}                  // gemini-3 thinkingLevel (no disable)
+T| 	levelHiMax   = []string{"none", "high", "max"}                               // deepseek (low/med→high, xhigh→max)
+T| 	levelCMDCode = []string{"none", "low", "medium", "high", "xhigh", "max"}     // commandcode
+T| 
+T| 	// Opus/Sonnet 4.6 lack xhigh (Anthropic + Kiro docs) — keep the 4-level+max
+T| ...(+4L)
+
+### [43] internal/providers/thinking_levels.go:89  (ours 3L / theirs 14L)
+O| // DeepSeek v4.* (Alibaba MaaS, probed live): effort low|medium|high|xhigh|max
+O| 	// all 200 via output_config.effort; "none" is a 400 on the anthropic route
+O| 	// (disable thinking instead). none kept for the picker = disable.
+T| {Pattern: "*mimo*v2.6*", Levels: []string{"none", "low", "medium", "high", "xhigh"}},
+T| 	// mimo-v2.5-pro on opencode-go rejects reasoning_effort "max" (probed live);
+T| 	// v2.5 accepts it.
+T| 	{Pattern: "*mimo*v2.5-pro*", Levels: []string{"none", "low", "medium", "high", "xhigh"}},
+T| 	// DeepSeek v4.* (Alibaba MaaS, probed live): effort low|medium|high|xhigh|max
+T| 	// all 200 via output_config.effort; "none" is a 400 on the anthropic route
+T| 	// (disable thinking instead). none kept for the picker = disable.
+T| ...(+7L)
+
+### [44] internal/providers/thinking_levels.go:115  (ours 9L / theirs 53L)
+O| // that publish no supportedEfforts (glm-5.1 / glm-5v-turbo / kimi-k2.x /
+O| 	// kimi-k3-1 / minimax-m3) fall through to the openai format default.
+O| 	{Provider: "codebuddy-cn", Pattern: "glm-5.3*", Levels: []string{"low", "high", "max"}},
+O| 	{Provider: "codebuddy-cn", Pattern: "glm-5.2", Levels: []string{"high", "xhigh"}},
+O| 	{Provider: "codebuddy-cn", Pattern: "deepseek-v4*", Levels: []string{"low", "high", "xhigh"}},
+O| 	{Provider: "codebuddy-cn", Pattern: "hy3*", Levels: []string{"low", "high"}},
+O| 	{Provider: "codebuddy-cn", Pattern: "hy4*", Levels: []string{"high"}},
+O| ...(+2L)
+T| // that publish no supportedEfforts (glm-5.1 / kimi-k3-1 / minimax-m3)
+T| 	// fall through to the openai format default.
+T| 	{Provider: "codebuddy-cn", Pattern: "glm-5.3", Levels: []string{"low", "high", "max"}},
+T| 	{Provider: "codebuddy-cn", Pattern: "glm-5.3-flash", Levels: []string{"low", "high", "max"}},
+T| 	{Provider: "codebuddy-cn", Pattern: "glm-5.2", Levels: []string{"high", "xhigh"}},
+T| 	{Provider: "codebuddy-cn", Pattern: "kimi-k2.8-preview", Levels: []string{"low", "medium", "high"}},
+T| 	{Provider: "codebuddy-cn", Pattern: "hy3", Levels: []string{"low", "high"}},
+T| ...(+46L)
+
+### [45] internal/providers/thinking_levels.go:194  (ours 11L / theirs 16L)
+O| levels := formatLevels[caps.ThinkingFormat]
+O| 	if levels == nil {
+O| 		levels = levelBase
+O| 	}
+O| 	for _, entry := range patternThinking {
+O| 		if entry.Provider != "" && entry.Provider != provider {
+O| 			continue
+O| ...(+4L)
+T| // A registry-declared per-model set wins over everything, then the pattern
+T| 	// table, then the wire format's default — the order upstream resolves in.
+T| 	levels := codexModelLevels(provider, model)
+T| 	if levels == nil {
+T| 		levels = formatLevels[caps.ThinkingFormat]
+T| 		if levels == nil {
+T| 			levels = levelBase
+T| ...(+9L)
+
+### [46] internal/providers/thinking_levels_fixture_test.go:84  (ours 6L / theirs 12L)
+O| var want map[string]map[string][]string
+O| 	if err := json.Unmarshal(raw, &want); err != nil {
+O| 		t.Fatalf("parse fixture: %v", err)
+O| 	}
+O| 
+O| 	var checked, mismatched int
+T| var fixture thinkingLevelsFixture
+T| 	if err := json.Unmarshal(raw, &fixture); err != nil {
+T| 		t.Fatalf("parse fixture: %v", err)
+T| 	}
+T| 	if fixture.UpstreamVersion != upstreamLevelsFixtureVersion {
+T| 		t.Fatalf("fixture captured from %s, test expects %s — re-capture it",
+T| 			fixture.UpstreamVersion, upstreamLevelsFixtureVersion)
+T| ...(+5L)
+
+### [47] internal/proxy/executor/kiro_test.go:83  (ours 19L / theirs 31L)
+O| // kiroEventFrame builds one AWS EventStream frame. The reader in
+O| // internal/providers skips both CRCs, so only the prelude lengths and the
+O| // header encoding have to be right.
+O| func kiroEventFrame(eventType, payload string) []byte {
+O| 	name := ":event-type"
+O| 	headers := make([]byte, 0, 32)
+O| 	headers = append(headers, byte(len(name)))
+O| ...(+12L)
+T| func TestKiroUpstreamBody_StripsProviderPrefixAndSuffixes(t *testing.T) {
+T| 	var sent string
+T| 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+T| 		data, _ := io.ReadAll(r.Body)
+T| 		sent = string(data)
+T| 		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+T| 		w.WriteHeader(http.StatusOK)
+T| ...(+24L)
+
+### [48] internal/proxy/executor/openai.go:127  (ours 10L / theirs 8L)
+O| // Read the first upstream line before committing 200: an upstream that
+O| 	// rejects a request often answers 200 with an error object in the body,
+O| 	// which used to be streamed to the client as a successful empty
+O| 	// completion. Returning the error here keeps the response uncommitted so
+O| 	// combo/account fallback can still try the next provider.
+O| 	peeked, perr := proxy.PeekStreamError(upstream)
+O| 	if perr != nil {
+O| ...(+3L)
+T| // A /v1/responses client on a Chat Completions upstream needs the answer
+T| 	// replayed as Responses events. The branch sits ahead of the header write
+T| 	// because the bridge owns its own writer, and ahead of the Claude branch
+T| 	// because translateResponse describes a Claude client, which a Responses
+T| 	// client never sets.
+T| 	if translator.NeedsResponsesBridge(ctx) {
+T| 		return streamChatToResponses(o)
+T| ...(+1L)
+
+### [49] internal/proxy/executor/qoder.go:485  (ours 20L / theirs 19L)
+O| // qoderSSEUpstreamError surfaces the failure Qoder hides inside its
+O| // always-SSE response. A `data:` frame carries an envelope shaped
+O| // {"statusCodeValue":400,"statusCode":"BAD_REQUEST","body":"{...}"} that used
+O| // to be written verbatim under an `application/json` header: the client got
+O| // HTTP 200, JSON.parse failed on the SSE text, and the real upstream error was
+O| // never readable. Only a non-streaming request is affected — a streaming one
+O| // passes the frames through and the client sees them.
+O| ...(+13L)
+T| // qoderRewoundStreamError surfaces a failure Qoder reported inside its
+T| // always-SSE response.
+T| //
+T| // A non-200 envelope becomes an error chunk carrying `qoder_error`, and the
+T| // envelope is gone by the time this sees the stream — so the unwrapped chunk
+T| // is what has to be recognized. Folding it as a completion would hand the
+T| // client a 200 with the error text as the answer (issue #41).
+T| ...(+12L)
+
+### [50] internal/proxy/executor/sse_body_test.go:45  (ours 9L / theirs 25L)
+O| ue, ok := err.(*proxy.UpstreamError)
+O| 	if !ok {
+O| 		t.Fatalf("expected *proxy.UpstreamError, got %T (%v)", err, err)
+O| 	}
+O| 	if ue.StatusCode != 404 {
+O| 		t.Errorf("status: got %d want 404", ue.StatusCode)
+O| 	}
+O| ...(+2L)
+T| if err == nil {
+T| 		t.Fatal("jsonResponse served an error envelope as a completion")
+T| 	}
+T| 	var ue *proxy.UpstreamError
+T| 	if !errors.As(err, &ue) {
+T| 		t.Fatalf("error is %T, want *proxy.UpstreamError", err)
+T| 	}
+T| ...(+18L)
+
+### [51] internal/proxy/oauth/background.go:14  (ours 3L / theirs 4L)
+O| )
+O| 
+O| // Refresh when expiry is within 30 minutes of now.
+T| "9router/proxy/internal/providers"
+T| )
+T| 
+T| // Refresh when expiry is within 30 minutes (upstream BACKGROUND_REFRESH_LEAD_MS parity).
+
+### [52] internal/proxy/oauth/background.go:30  (ours 8L / theirs 7L)
+O| // defaultBackgroundExpiresIn covers a token endpoint that omits expiresIn:
+O| 	// ExpiresIn=0 would stamp expiresAt=now and re-select this connection on
+O| 	// every tick, refreshing in a loop.
+O| 	defaultBackgroundExpiresIn = 3600
+O| )
+O| 
+O| // sensitiveProviders get a longer gap between refreshes so a burst of Google
+O| ...(+1L)
+T| // defaultBackgroundExpiresIn is used when a token endpoint omits
+T| 	// expiresIn, so the refreshed token is not stamped as already-expired.
+T| 	defaultBackgroundExpiresIn = 3600
+T| )
+T| 
+T| // sensitiveProviders mirrors upstream SENSITIVE_PROVIDERS: Google Cloud accounts
+T| // get a longer gap between refreshes to avoid bursting the token endpoint.
+
+### [53] internal/proxy/oauth/background.go:71  (ours 12L / theirs 40L)
+O| // SelectConnectionsNeedingRefresh is the pure selection step, exported for
+O| // tests. Connections without a parsable expiry are skipped: refreshing blind
+O| // risks churning a token endpoint for a token that never expires.
+O| func SelectConnectionsNeedingRefresh(conns []*models.ProviderConnection, now time.Time) []ConnectionNeedingRefresh {
+O| 	var out []ConnectionNeedingRefresh
+O| 	for _, c := range conns {
+O| 		if c == nil || !strings.EqualFold(strings.ReplaceAll(c.AuthType, "_", ""), "oauth") {
+O| ...(+5L)
+T| // SelectConnectionsNeedingRefresh is the pure selection step, exported for tests.
+T| func SelectConnectionsNeedingRefresh(conns []*models.ProviderConnection, now time.Time) []ConnectionNeedingRefresh {
+T| 	var out []ConnectionNeedingRefresh
+T| 	for _, c := range conns {
+T| 		if c == nil {
+T| 			continue
+T| 		}
+T| ...(+33L)
+
+### [54] internal/proxy/oauth/background.go:131  (ours 34L / theirs 4L)
+O| func connectionDue(c *models.ProviderConnection, now time.Time) (ConnectionNeedingRefresh, bool) {
+O| 	var d struct {
+O| 		AccessToken          string         `json:"accessToken"`
+O| 		RefreshToken         string         `json:"refreshToken"`
+O| 		ExpiresAt            string         `json:"expiresAt"`
+O| 		ProviderSpecificData map[string]any `json:"providerSpecificData"`
+O| 	}
+O| ...(+27L)
+T| // StartBackgroundRefresh launches the proactive OAuth token refresh loop
+T| // (upstream backgroundTokenRefresh.js parity). Safe to call multiple times.
+T| // Fail-open: per-connection and per-tick failures are logged, never fatal.
+T| func StartBackgroundRefresh(ctx context.Context, repo *db.Repo) {
+
+### [55] internal/proxy/oauth/background.go:202  (ours 3L / theirs 6L)
+O| // runBackgroundRefreshTick refreshes every due connection, sequentially, with
+O| // an inter-account delay so a multi-account burst stays under provider limits.
+O| func runBackgroundRefreshTick(ctx context.Context, repo *db.Repo) {
+T| // runBackgroundRefreshTick refreshes every due connection, sequentially with
+T| // inter-account delays (upstream parity: Google accounts spaced 12s + jitter).
+T| func runBackgroundRefreshTick(ctx context.Context, repo *db.Repo) {
+T| 	if repo == nil {
+T| 		return
+T| 	}
+
+### [56] internal/proxy/oauth/background.go:289  (ours 5L / theirs 3L)
+O| for k, v := range BuildConnectionUpdate(result) {
+O| 		existing[k] = v
+O| 	}
+O| 	// Kiro reports the AWS profile ARN; it belongs in providerSpecificData
+O| 	// (next to clientId/clientSecret), not as a top-level projectId.
+T| for k, v := range BuildConnectionUpdate(refreshed) {
+T| 		existing[k] = v
+T| 	}
+
+### [57] internal/proxy/oauth/background_test.go:12  (ours 8L / theirs 5L)
+O| func conn(id, provider, authType, data string) *models.ProviderConnection {
+O| 	return &models.ProviderConnection{ID: id, Provider: provider, AuthType: authType, Data: data}
+O| }
+O| 
+O| func TestSelectConnectionsNeedingRefresh(t *testing.T) {
+O| 	now := time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC)
+O| 	soon := now.Add(10 * time.Minute).Format(time.RFC3339)
+O| ...(+1L)
+T| func TestSelectConnectionsNeedingRefresh(t *testing.T) {
+T| 	now := time.Now()
+T| 	mk := func(id, authType, data string) *models.ProviderConnection {
+T| 		return &models.ProviderConnection{ID: id, Provider: "kiro", AuthType: authType, Data: data}
+T| 	}
+
+### [58] internal/proxy/oauth/background_test.go:35  (ours 99L / theirs 49L)
+O| name: "oauth token inside lead window selected",
+O| 			conn: conn("a", "kiro", "oauth", `{"accessToken":"x","refreshToken":"r","expiresAt":"`+soon+`"}`),
+O| 			want: true,
+O| 		},
+O| 		{
+O| 			name: "oauth token outside lead window skipped",
+O| 			conn: conn("b", "kiro", "oauth", `{"accessToken":"x","refreshToken":"r","expiresAt":"`+far+`"}`),
+O| ...(+92L)
+T| name: "expiring oauth connection is due",
+T| 			conn: mk("c1", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(10*time.Minute).UTC().Format(time.RFC3339)+`"}`),
+T| 			want: true,
+T| 		},
+T| 		{
+T| 			name: "fresh oauth connection is not due",
+T| 			conn: mk("c2", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(2*time.Hour).UTC().Format(time.RFC3339)+`"}`),
+T| ...(+42L)
+
+### [59] internal/proxy/oauth/kiro.go:57  (ours 8L / theirs 2L)
+O| type kiroTokens struct {
+O| 	AccessToken  string `json:"accessToken"`
+O| 	RefreshToken string `json:"refreshToken"`
+O| 	ExpiresIn    int    `json:"expiresIn"`
+O| }
+O| 
+O| // refreshKiroAWS refreshes an AWS SSO OIDC token via the per-account client
+O| ...(+1L)
+T| // refreshKiroAWS refreshes an AWS SSO OIDC token via the per-account client
+T| // credentials stored at login time (upstream kiro device branch).
+
+### [60] internal/proxy/oauth/kiro.go:128  (ours 5L / theirs 10L)
+O| return nil, fmt.Errorf("kiro: refresh returned status %d: %s", resp.StatusCode, truncateBody(respBody))
+O| 	}
+O| 
+O| 	var tokens kiroTokens
+O| 	if err := json.Unmarshal(respBody, &tokens); err != nil {
+T| return nil, fmt.Errorf("kiro: %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
+T| 	}
+T| 
+T| 	var tokens struct {
+T| 		AccessToken  string `json:"accessToken"`
+T| 		RefreshToken string `json:"refreshToken"`
+T| 		ExpiresIn    int    `json:"expiresIn"`
+T| ...(+3L)
+
+### [61] internal/proxy/oauth/kiro.go:151  (ours 9L / theirs 62L)
+O| if tokens.RefreshToken == "" {
+O| 		tokens.RefreshToken = refreshToken
+O| 	}
+O| 
+O| 	return &TokenResult{
+O| 		AccessToken:  tokens.AccessToken,
+O| 		RefreshToken: tokens.RefreshToken,
+O| ...(+2L)
+T| out := &TokenResult{
+T| 		AccessToken:  tokens.AccessToken,
+T| 		RefreshToken: tokens.RefreshToken,
+T| 		ExpiresIn:    tokens.ExpiresIn,
+T| 	}
+T| 	if out.RefreshToken == "" {
+T| 		out.RefreshToken = refreshToken
+T| ...(+55L)
+
+### [62] internal/proxy/proxy.go:13  (ours 3L / theirs 6L)
+O| "strings"
+O| 
+O| 	"9router/proxy/internal/constants"
+T| "os"
+T| 	"strings"
+T| 	"sync"
+T| 
+T| 	"9router/proxy/internal/constants"
+T| 	"9router/proxy/internal/log"
+
+### [63] internal/proxy/sse_copy.go:82  (ours 6L / theirs 10L)
+O| c.finish()
+O| 				return nil
+O| 			}
+O| 			// Best-effort terminator so the client still sees a closed
+O| 			// stream; the error itself is returned for logging/fallback.
+O| 			c.finish()
+T| if ferr := c.finish(); ferr != nil {
+T| 					return ferr
+T| 				}
+T| 				return nil
+T| 			}
+T| 			// HTTP 200 is already on the wire, so the abort cannot be
+T| 			// reported as a status code. Close it in-band instead: an
+T| ...(+3L)
+
+### [64] internal/proxy/sse_copy.go:176  (ours 26L / theirs 102L)
+O| func (c *sseCopier) writeEvents(complete []byte) error {
+O| 	start := 0
+O| 	for start < len(complete) {
+O| 		eol := bytes.IndexByte(complete[start:], '\n') + start
+O| 		if ssePayloadIsDone(complete[start : eol+1]) {
+O| 			if err := c.writeRaw(complete[:start]); err != nil {
+O| 				return err
+O| ...(+19L)
+T| //
+T| // Provider-injected error lines are swallowed, not relayed, so a dead
+T| // downstream never masquerades as content. Forwarding stays line-at-a-time:
+T| // segStart only ever trails already-written bytes, so the first content byte
+T| // is flushed exactly as fast as before (no holdback).
+T| func (c *sseCopier) writeEvents(complete []byte) error {
+T| 	start, segStart := 0, 0
+T| ...(+95L)
+
+### [65] internal/proxy/sse_copy.go:334  (ours 5L / theirs 10L)
+O| return
+O| 		}
+O| 		_ = c.writeRaw(frag)
+O| 	}
+O| 	if c.seenSSE && !c.hasDone {
+T| return nil
+T| 		}
+T| 		if !c.swallowInbandError(frag) {
+T| 			_ = c.writeRaw(frag)
+T| 		}
+T| 	}
+T| 	if c.seenSSE && !c.hasDone {
+T| ...(+3L)
+
+### [66] internal/updater/updater.go:214  (ours 21L / theirs 11L)
+O| info, err := checkManifest(ctx, updateURL)
+O| 	if err == nil && info != nil {
+O| 		// A manifest downloadUrl that is not a direct binary asset (the
+O| 		// /releases/latest page once shipped as one) gets downloaded and
+O| 		// written over the running binary verbatim, so repair it from the
+O| 		// GitHub Releases API, which knows the per-platform asset.
+O| 		if !isDirectBinaryURL(info.DownloadURL) {
+O| ...(+14L)
+T| info, manifestErr := checkManifest(ctx, updateURL)
+T| 	if manifestErr == nil && info != nil {
+T| 		if info.SHA256 != "" || !info.HasUpdate {
+T| 			cacheUpdateInfo(info)
+T| 			return info, nil
+T| 		}
+T| 		// A manifest that advertises an update it cannot describe with a digest
+T| ...(+4L)
+
+### [67] internal/updater/updater.go:926  (ours 7L / theirs 7L)
+O| // RestartSelf runs the freshly installed binary in place of this one.
+O| //
+O| // On Unix the process image is replaced by exec, with the listening socket
+O| // carried across (see execWithInheritedListener): the PID — and therefore a
+O| // container whose PID 1 is the gateway — survives, and the port is never closed.
+O| // With no socket to carry, or on Windows, it falls back to spawning a child and
+O| // shutting this instance down, which costs the bind/window the exec avoids.
+T| // RestartSelf replaces this process with a fresh one running the updated
+T| // binary.
+T| //
+T| // The replacement is spawned from the after-stop hook rather than here: this
+T| // process still holds the listening socket, and a child that starts a moment
+T| // earlier races it for the port. main runs the hook once fxApp.Stop has closed
+T| // the listener, so the new process always finds the port free.
+
+### [68] internal/updater/updater_test.go:14  (ours 2L / theirs 4L)
+O| "runtime"
+O| 	"strings"
+T| "path/filepath"
+T| 	"runtime"
+T| 	"strings"
+T| 	"sync/atomic"
+
+### [69] web/embed_test.go:1  (ours 4L / theirs 3L)
+O| package web
+O| 
+O| import (
+O| 	"io/fs"
+T| package web_test
+T| 
+T| import (
+
+### [70] web/embed_test.go:15  (ours 41L / theirs 83L)
+O| )
+O| 
+O| func TestHandlerCacheControl(t *testing.T) {
+O| 	h := Handler()
+O| 
+O| 	entries, err := fs.ReadDir(DistFS, "dist/assets")
+O| 	if err != nil {
+O| ...(+34L)
+T| "9router/proxy/web"
+T| )
+T| 
+T| func TestHandler_PWAAssets(t *testing.T) {
+T| 	handler := web.Handler()
+T| 
+T| 	tests := []struct {
+T| ...(+76L)
+
+### [71] web/src/api/client.ts:46  (ours 1L / theirs 21L)
+O| }
+T| free?: boolean
+T| }
+T| 
+T| /**
+T|  * A model the gateway has confirmed is gone upstream.
+T|  *
+T|  * `status` is "gone" when a live request drew an HTTP 410 naming the model,
+T| ...(+14L)
+
+### [72] web/src/api/client.ts:872  (ours 34L / theirs 5L)
+O| // A stalled response (per-origin connection saturation, tunnel drop, proxy
+O|   // stall) would otherwise pin a caller's `loading` flag forever. Bound it;
+O|   // SSE uses raw fetch, never request(), so the stream is unaffected.
+O|   const controller = new AbortController()
+O|   // Generous enough that upstream-probing calls (provider test/validate) that
+O|   // legitimately take long survive; small enough that a queued/saturated
+O|   // connection can't pin a `loading` flag forever. SSE uses raw fetch.
+O| ...(+27L)
+T| const res = await fetch(path, { ...options, headers })
+T|   if (res.status === 401) {
+T|     handleUnauthorized(path)
+T|   }
+T|   if (!res.ok) throw new ApiError(await responseErrorMessage(res), res.status)
+
+### [73] web/src/components/CliToolsView.svelte:42  (ours 3L / theirs 8L)
+O| let selectedTool = $state<ToolItem | null>(null)
+O|   // SSR fallback uses the Go default port 20128; live origin wins on mount.
+O|   let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20128')
+T| // Modal target for the tool-detail dialog. d8aa5ec3 dropped this declaration
+T|   // while leaving ~20 references behind, so the template threw
+T|   // "ReferenceError: selectedTool is not defined" and the view never rendered
+T|   // past the loading state. tsc does not typecheck .svelte files and the svelte
+T|   // compiler does not scope-check templates, so nothing in CI noticed.
+T|   let selectedTool = $state<ToolItem | null>(null)
+T|   // SSR fallback uses the Go default port 20130; live origin wins on mount.
+T| ...(+1L)
+
+### [74] web/src/components/TerminalView.svelte:16  (ours 35L / theirs 10L)
+O| const LOG_LEVEL_COLORS: Record<string, string> = {
+O|     LOG: 'text-green-400',
+O|     INFO: 'text-blue-400',
+O|     INF: 'text-blue-400',
+O|     WARN: 'text-yellow-400',
+O|     WRN: 'text-yellow-400',
+O|     ERROR: 'text-red-400',
+O| ...(+28L)
+T| let entries = $state<ConsoleEntry[]>([])
+T|   let logLevel = $state<string>('info')
+T|   let levelBusy = $state(false)
+T|   let seq = 0
+T| 
+T|   // A reconnect replays the whole buffer as "init", so the old rows have to go
+T|   // or the same line would appear twice.
+T| ...(+3L)
+
+### [75] web/src/components/TerminalView.svelte:183  (ours 52L / theirs 28L)
+O| // Auto-scroll to bottom on new logs
+O|   $effect(() => {
+O|     void filteredLogs.length
+O|     if (logElement) logElement.scrollTop = logElement.scrollHeight
+O|   })
+O| </script>
+O| 
+O| ...(+45L)
+T| </script>
+T| 
+T| <Card padding="none" class="flex flex-col">
+T|   <div class="flex flex-wrap items-center gap-2 border-b border-border-subtle px-4 py-2.5">
+T|     <label class="text-xs text-text-muted" for="console-log-level">Level</label>
+T|     <select
+T|       id="console-log-level"
+T| ...(+21L)
+
+### [76] web/src/components/TopBar.svelte:308  (ours 76L / theirs 13L)
+O| <!-- Today mini stats: input / cached / est. cost / requests -->
+O|   {#if dayStats}
+O|     <div
+O|       class="hidden md:flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg border border-border-subtle bg-surface-2/60"
+O|       title="Today's usage"
+O|     >
+O|       <div class="flex flex-col items-end leading-tight">
+O| ...(+69L)
+T| <!-- Right: one menu. Donate, install, theme, changelog and logout were five
+T|        controls competing for the same strip, and on a phone they wrapped into
+T|        two rows (issue #224). They now live behind a single trigger, which is
+T|        why the separate language dropdown and app-drawer dropdown this file
+T|        used to own are gone. The Language item is gone too: the dashboard ships
+T|        English only, and the item's handler was an empty function, so clicking
+T|        it did nothing (issue #240). -->
+T| ...(+6L)
+
+### [77] web/src/components/analytics/types.test.ts:47  (ours 24L / theirs 33L)
+O| describe('latency formatting', () => {
+O|   it('keeps sub-second values in milliseconds', () => {
+O|     expect(fmtMs(0)).toBe('0ms')
+O|     expect(fmtMs(474)).toBe('474ms')
+O|     expect(fmtMs(999)).toBe('999ms')
+O|   })
+O| 
+O| ...(+17L)
+T| describe('providerDisplayName', () => {
+T|   it('maps a custom compatible node id to its configured name', () => {
+T|     const nodes = [{ id: 'openai-compatible-chat-abc', name: 'My vLLM' }]
+T| 
+T|     expect(providerDisplayName('openai-compatible-chat-abc', nodes)).toBe('My vLLM')
+T|   })
+T| 
+T| ...(+26L)
+
+### [78] web/src/components/combos/ComboCard.svelte:17  (ours 5L / theirs 8L)
+O| COMBO_STRATEGIES,
+O|     getComboModels,
+O|     hasReasoning,
+O|     hasVision,
+O|     resolveComboStrategy,
+T| comboStrategyOptions,
+T|     effectiveComboStrategy,
+T|     getComboModels,
+T|     hasReasoning,
+T|     hasVision,
+T|     INHERIT_STRATEGY,
+T|     resolveComboStrategy,
+T| ...(+1L)
+
+### [79] web/src/components/combos/CombosView.svelte:146  (ours 12L / theirs 15L)
+O| // Reset create-modal state when it opens. wasCreateOpen is a plain
+O|   // (non-reactive) var on purpose: edge-detecting by reading modalNameResetKey
+O|   // inside this effect would register it as a dependency, and the += write
+O|   // would then re-trigger the effect forever (stuck modal, dead buttons).
+O|   let wasCreateOpen = false
+O|   $effect(() => {
+O|     const open = isCreatingOpen
+O| ...(+5L)
+T| // Reset the create form once per open. Unguarded, this looped forever: the
+T|   // effect bumps `modalNameResetKey`, which the `{#key}` block below reads, that
+T|   // block re-creates CreateComboModal, and that re-queues the effect. Svelte
+T|   // aborted the flush with effect_update_depth_exceeded after 1000 rounds, so
+T|   // "Add Model" never opened the picker at all.
+T|   let createSessionOpen = $state(false)
+T|   $effect(() => {
+T| ...(+8L)
+
+### [80] web/src/components/combos/CreateComboModal.svelte:262  (ours 21L / theirs 9L)
+O| role="listitem"
+O|               draggable="true"
+O|               ondragstart={(e) => onDragStart(e, idx)}
+O|               ondragover={(e) => onDragOver(e, idx)}
+O|               ondrop={(e) => onDrop(e, idx)}
+O|               ondragend={onDragEnd}
+O|               class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors {dragIdx === idx
+O| ...(+14L)
+T| class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 transition-colors {draggedIdx === idx ? 'opacity-40 bg-brand-500/10' : dragOverIdx === idx ? 'border-2 border-brand-500 bg-brand-500/5' : 'bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04]'}"
+T|               draggable="true"
+T|               ondragstart={(e) => handleDragStart(e, idx)}
+T|               ondragover={(e) => handleDragOver(e, idx)}
+T|               ondragleave={() => handleDragLeave(idx)}
+T|               ondrop={(e) => handleDrop(e, idx)}
+T|               ondragend={handleDragEnd}
+T| ...(+2L)
+
+### [81] web/src/components/combos/types.test.ts:1  (ours 62L / theirs 4L)
+O| import { describe, expect, it } from 'vitest'
+O| import {
+O|   COMBO_STRATEGIES,
+O|   getModelLimit,
+O|   normalizeModelLimits,
+O|   resolveComboStrategy,
+O|   updateModelLimit
+O| ...(+55L)
+T| import { describe, expect, it } from 'bun:test'
+T| import { COMBO_STRATEGIES, resolveComboStrategy } from './types'
+T| 
+T| const OPTION_VALUES = COMBO_STRATEGIES.map((s) => s.value)
+
+### [82] web/src/components/connections/ProviderDetailView.svelte:3540  (ours 16L / theirs 20L)
+O| class="fixed inset-0 z-40"
+O|                           onclick={closeProxyDropdown}
+O|                           role="presentation"
+O|                         ></div>
+O|                         <div
+O|                           class="fixed z-50 overflow-y-auto rounded-lg border border-border bg-bg py-1 shadow-lg"
+O|                           style="top: {proxyDropdownRect.top}px; left: {proxyDropdownRect.left}px; min-width: max({proxyDropdownRect.minWidth}px, 160px); max-height: {proxyDropdownRect.maxHeight}px"
+O| ...(+9L)
+T| class="fixed inset-0 z-[80]"
+T|                           onclick={() => (activeProxyDropdownId = null)}
+T|                           role="presentation"
+T|                         ></div>
+T|                         <div
+T|                           class="fixed z-[85] max-w-[78vw] min-w-[180px] rounded-lg border border-border bg-bg py-1 shadow-lg"
+T|                           style="top: {dropdownPos.top}px; right: {dropdownPos.right}px;"
+T| ...(+13L)
+
+### [83] web/src/lib/models.ts:87  (ours 2L / theirs 6L)
+O| "mistral": "mistral",
+O|   "mmf": "mmf",
+T| "minimax-code": "mmc",
+T|   "minimax-code-global": "mmg",
+T|   "mistral": "mistral",
+T|   "mmf": "mmf",
+T|   "muse": "muse",
+T|   "tinyfish": "tinyfish",
+
+### [84] web/src/lib/models.ts:3623  (ours 285L / theirs 385L)
+O| "name": "Claude Fable 5"
+O|     },
+O|     {
+O|       "id": "claude-fable-5-1",
+O|       "name": "Claude Fable 5.1"
+O|     },
+O|     {
+O| ...(+278L)
+T| "name": "Claude Fable 5",
+T|       "supportedFormats": ["claude"]
+T|     },
+T|     {
+T|       "id": "claude-fable-5-1",
+T|       "name": "Claude Fable 5.1",
+T|       "supportedFormats": ["claude"]
+T| ...(+378L)
+
+total hunks: 84

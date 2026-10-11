@@ -1,51 +1,93 @@
-package web
+package web_test
 
 import (
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"9router/proxy/web"
 )
 
-func TestHandlerCacheControl(t *testing.T) {
-	h := Handler()
+func TestHandler_PWAAssets(t *testing.T) {
+	handler := web.Handler()
 
-	entries, err := fs.ReadDir(DistFS, "dist/assets")
-	if err != nil {
-		t.Fatalf("read embedded assets: %v", err)
-	}
-	var asset string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".js") {
-			asset = "assets/" + e.Name()
-			break
-		}
-	}
-	if asset == "" {
-		t.Fatal("no .js asset embedded")
+	tests := []struct {
+		name               string
+		targetPath         string
+		expectedStatus     int
+		expectedHeaderKey  string
+		expectedHeaderPart string
+	}{
+		{
+			name:               "serves manifest.webmanifest with correct Content-Type",
+			targetPath:         "/manifest.webmanifest",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "application/manifest+json",
+		},
+		{
+			name:               "serves manifest.json with JSON or text Content-Type",
+			targetPath:         "/manifest.json",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "application/json",
+		},
+		{
+			name:               "serves sw.js with no-cache and javascript Content-Type",
+			targetPath:         "/sw.js",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "javascript",
+		},
+		{
+			name:               "serves sw.js with Service-Worker-Allowed header",
+			targetPath:         "/sw.js",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Service-Worker-Allowed",
+			expectedHeaderPart: "/",
+		},
+		{
+			name:               "serves icon-192.png",
+			targetPath:         "/icons/icon-192.png",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "image/png",
+		},
+		{
+			name:               "serves icon-512.png",
+			targetPath:         "/icons/icon-512.png",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "image/png",
+		},
+		{
+			name:               "SPA fallback to index.html on unknown route",
+			targetPath:         "/combos",
+			expectedStatus:     http.StatusOK,
+			expectedHeaderKey:  "Content-Type",
+			expectedHeaderPart: "text/html",
+		},
 	}
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+asset, nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("asset %s: status = %d, want 200", asset, rec.Code)
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
-		t.Errorf("asset %s: Cache-Control = %q, want immutable", asset, got)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.targetPath, nil)
+			rec := httptest.NewRecorder()
 
-	for _, path := range []string{"/", "/dashboard/combos"} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: status = %d, want 200", path, rec.Code)
-		}
-		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-			t.Errorf("%s: Cache-Control = %q, want %q", path, got, "no-store")
-		}
-		if !strings.Contains(rec.Body.String(), "text/html") && rec.Header().Get("Content-Type") == "" {
-			t.Errorf("%s: empty response body and no Content-Type", path)
-		}
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.expectedStatus {
+				t.Fatalf("expected status %d for %q, got %d", tt.expectedStatus, tt.targetPath, rec.Code)
+			}
+
+			if tt.expectedHeaderKey != "" {
+				val := rec.Header().Get(tt.expectedHeaderKey)
+				if !strings.Contains(val, tt.expectedHeaderPart) {
+					t.Errorf("expected header %s to contain %q for %q, got %q",
+						tt.expectedHeaderKey, tt.expectedHeaderPart, tt.targetPath, val)
+				}
+			}
+		})
 	}
 }

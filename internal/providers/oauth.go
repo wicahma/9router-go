@@ -78,6 +78,11 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("QODER_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://center.qoder.sh/algo/api/v3/user/refresh_token",
 	},
+	"qoder-cn": {
+		ClientID:     envOr("QODER_CN_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("QODER_CN_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://gateway.qoder.com.cn/algo/api/v3/user/refresh_token",
+	},
 	"codebuddy-cn": {
 		ClientID:     envOr("CODEBUDDY_CN_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("CODEBUDDY_CN_OAUTH_CLIENT_SECRET", ""),
@@ -98,6 +103,39 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("CLINE_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://api.cline.bot/api/v1/auth/refresh",
 	},
+}
+
+// TokenRefreshLead mirrors upstream TOKEN_EXPIRY_BUFFER_MS
+// (open-sse/services/tokenRefresh.js): the lead a provider with no explicit
+// window falls back to.
+const TokenRefreshLead = 5 * time.Minute
+
+// RefreshLeadMs mirrors the registry's `oauth.refreshLeadMs` field: how long
+// before an access token expires that provider is refreshed. Upstream derives
+// the same table from PROVIDER_OAUTH (open-sse/config/appConstants.js), so
+// these entries are comparable with the registry entry by entry.
+var RefreshLeadMs = map[string]time.Duration{
+	"antigravity": 5 * time.Minute,
+	"claude":      4 * time.Hour,
+	"codex":       10 * time.Minute,
+	"grok-cli":    5 * time.Minute,
+	"iflow":       24 * time.Hour,
+	"kimi":        5 * time.Minute,
+	// Legacy id after the kimi-coding → kimi merge; upstream's getRefreshLeadMs
+	// maps it onto kimi's entry rather than dropping back to the default.
+	"kimi-coding": 5 * time.Minute,
+	// MiniMax Code access tokens live ~1h; upstream renews 10 minutes early
+	// (registry `oauth.refreshLeadMs`, decolua/9router minimax-code.js).
+	"minimax-code":        10 * time.Minute,
+	"minimax-code-global": 10 * time.Minute,
+}
+
+// RefreshLead reports how long before expiresAt a connection is refreshed.
+func RefreshLead(provider string) time.Duration {
+	if lead, ok := RefreshLeadMs[ResolveAlias(provider)]; ok {
+		return lead
+	}
+	return TokenRefreshLead
 }
 
 func envOr(key, fallback string) string {
@@ -131,7 +169,7 @@ func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenRespon
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		return nil, fmt.Errorf("OAuth token refresh returned %d: %s", resp.StatusCode, snippet)
+		return nil, &OAuthRefreshError{Status: resp.StatusCode, Body: snippet}
 	}
 
 	return ParseRefreshResponse(body)

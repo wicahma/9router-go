@@ -9,8 +9,6 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
-	"9router/proxy/internal/proxy/executor"
-	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
 	"bytes"
 	"encoding/base64"
@@ -53,6 +51,22 @@ func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.Cha
 	}
 }
 
+// mediaConnectionError renders why a media lane found no usable account.
+//
+// GetBestConnection already distinguishes the cases that matter: "every
+// account is parked in cooldown until <stamp>" is a temporary condition that
+// resolves on its own, while "all excluded" or a parse failure is not. The
+// generic "no active connections" text this replaced collapsed both into one
+// sentence, so an operator whose account was merely cooling down read it as a
+// broken credential — and the dashboard's model sweep had no way to tell the
+// untested models from the genuinely broken ones.
+func mediaConnectionError(err error, provider string) string {
+	if err != nil && err.Error() != "" {
+		return err.Error()
+	}
+	return fmt.Sprintf("no active connections for provider: %s", provider)
+}
+
 // HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
 func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -74,13 +88,16 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
 	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
@@ -132,25 +149,8 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 			APIKey:       apiKey,
 			Endpoint:     "/embeddings",
 		}
-		h.ChatH.LogUsage(logInfo, nil, latencyMs, body, nil)
+		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
 	}
-}
-
-// HandleResponses handles OpenAI Responses API (/v1/responses).
-func (h *MediaHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-	defer r.Body.Close()
-
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/responses")
-}
-
-// HandleResponsesCompact handles compact responses.
-func (h *MediaHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Request) {
-	h.HandleResponses(w, r)
 }
 
 // HandleImages handles /v1/images/generations.
@@ -198,6 +198,9 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
 	h.forwardSystemoneRequest(w, r, body, reqBody.Model)
 }
 
@@ -209,7 +212,7 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil || connData == nil {
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			apiKey := cfg.DefaultAPIKey
@@ -221,7 +224,12 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
 			}
 		} else {
-			handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
+			// The selector's own error says whether the provider is simply
+			// parked in cooldown and when it frees up. Substituting a generic
+			// "no active connections" here throws that away, and the
+			// dashboard's model sweep then cannot tell a cooldown from a
+			// broken account.
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
 			return
 		}
 	}
@@ -271,7 +279,11 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 	if modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-zen" {
 		req.Header.Set("x-opencode-session", proxy.GenerateOpenCodeSessionID())
 	}
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// Transport-level failure only (proxy block, DNS, reset): retry once
@@ -367,7 +379,7 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	_, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
@@ -606,6 +618,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
+	// Per-API-key access control. This is the single funnel for images, TTS,
+	// STT, video, search, scrape and fetch, so gating here covers all of them
+	// with the same decision the chat lane uses. It runs before any connection
+	// selection so a denied model never reaches a provider.
+	if !h.ChatH.EnforceModelAccess(w, r, model) {
+		return
+	}
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
 		log.Warn("media", "resolve model failed", "endpoint", endpoint, "model", model, "error", err)
@@ -647,6 +666,15 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Codex image models are Responses-API models, not an image endpoint.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
+				if err := h.handleCodexImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravitySTT(w, r, body, subInfo); err == nil {
 					return
@@ -655,8 +683,30 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
+			// multipart body (model_id / language_code / xi-api-key).
+			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "elevenlabs" || subInfo.Provider == "el") {
+				if err := h.handleElevenLabsSTT(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 
-			conn, connData, err := h.ChatH.GetBestConnection(subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
+			// Realtime STT: dispatched on the model's transport marker, never on a
+			// hardcoded id, so a new streaming provider extends through data.
+			if isTranscriptionEndpoint(endpoint) &&
+				providers.ResolveModelTransport(subInfo.Provider, subInfo.Model) == providers.TransportGeminiLive {
+				if err := h.handleGeminiLiveSTT(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
+
+			conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
 			if err != nil || conn == nil {
 				lastErr = fmt.Sprintf("no connection for %s", subInfo.Provider)
 				continue
@@ -704,7 +754,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				req.Header[k] = v
 			}
 			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-			client := h.ChatH.GetClientForConnection(connData)
+			client, clientErr := h.ChatH.GetClientForConnection(connData)
+			if clientErr != nil {
+				lastErr = clientErr.Error()
+				continue
+			}
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -763,9 +817,35 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+	// Codex image models are Responses-API models, not an image endpoint.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+		if err := h.handleCodexImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
+	// multipart body (model_id / language_code / xi-api-key).
+	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
+		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// Realtime STT: dispatched on the model's transport marker, never on a
+	// hardcoded id, so a new streaming provider extends through data.
+	if isTranscriptionEndpoint(endpoint) &&
+		providers.ResolveModelTransport(modelInfo.Provider, modelInfo.Model) == providers.TransportGeminiLive {
+		if err := h.handleGeminiLiveSTT(w, r, body, modelInfo); err != nil {
+			writeLiveSTTError(w, err)
 		}
 		return
 	}
@@ -777,7 +857,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if preferredConnID == "" {
 		preferredConnID = modelInfo.ConnectionID
 	}
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
 	if err != nil || connData == nil {
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			apiKey := cfg.DefaultAPIKey
@@ -790,7 +870,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 		} else {
 			log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-			handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
 			return
 		}
 	}
@@ -830,7 +910,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
 	}
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
 
 	connID := ""
 	if conn != nil {
@@ -842,62 +926,6 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		hasErr := fwdErr != nil
 		usagetracker.GetTracker().TrackPending(modelInfo.Model, modelInfo.Provider, connID, false, hasErr)
 	}()
-
-	if (endpoint == "/responses" || endpoint == "/v1/responses") && (modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-go" || modelInfo.Provider == "codex" || modelInfo.Provider == "grok-cli") {
-		exec := executor.Get(modelInfo.Provider)
-		if exec != nil {
-			var isStream bool
-			var checkStream struct {
-				Stream bool `json:"stream"`
-			}
-			if err := json.Unmarshal(body, &checkStream); err == nil {
-				isStream = checkStream.Stream
-			}
-			usageCtx := translator.WithUsageCapture(r.Context())
-			mediaReq := &executor.Request{
-				Ctx:           usageCtx,
-				Client:        client,
-				Config:        providerCfg,
-				APIKey:        apiKey,
-				Body:          finalBody,
-				ModelName:     modelInfo.Model,
-				IsStream:      isStream,
-				TranslateResp: false,
-				ConnectionID:  connID,
-				SessionID:     handlerutil.ExtractSessionID(r),
-				StartTime:     time.Now(),
-			}
-			if connData != nil && len(connData.ProviderSpecificData) > 0 {
-				mediaReq.ConnData = connData.ProviderSpecificData
-			}
-			if h.ChatH != nil && h.ChatH.Repo != nil {
-				mediaReq.Leases = h.ChatH.Repo
-			}
-			fwdErr = exec(w, mediaReq)
-			if fwdErr != nil {
-				log.Error("media", "executor request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", fwdErr)
-				handlerutil.WriteJSONError(w, http.StatusBadGateway, fwdErr.Error())
-				return
-			}
-			if conn != nil {
-				h.Repo.UpdateConnectionLastUsed(conn.ID)
-			}
-			h.ChatH.LogUsage(
-				&shared.UsageLogInfo{
-					Provider:     modelInfo.Provider,
-					Model:        modelInfo.Model,
-					ConnectionID: connID,
-					APIKey:       apiKey,
-					Endpoint:     endpoint,
-				},
-				translator.GetAndClearUsage(usageCtx),
-				time.Since(mediaReq.StartTime).Milliseconds(),
-				body,
-				nil,
-			)
-			return
-		}
-	}
 
 	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
 	if connData != nil && connData.BaseURL != "" {
@@ -1037,7 +1065,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
 		}
-		h.ChatH.LogUsage(logInfo, nil, latencyMs, body, nil)
+		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
 	}
 }
 

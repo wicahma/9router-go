@@ -21,7 +21,25 @@ Whenever you implement features, fix bugs, add providers, update routing logic, 
    - Combo expansion, model fallback, account rotation, and strike-breaker quota handling.
    - SQLite database compatibility (`~/.9router/db/data.sqlite`).
 3. **Changelog Tracking**:
-   - When porting features or fixes, reference the upstream commit/issue/PR in `CHANGELOG.md` (e.g. `upstream decolua/9router#4197 parity`).
+   - When porting features or fixes, reference the upstream commit/issue/PR in
+     your `.changes/<pr-number>-<slug>.md` fragment (e.g. `upstream
+     decolua/9router#4197 parity`). **Never write it into `CHANGELOG.md`** — see
+     §7.6 for the rule and the reason behind it.
+
+### Secondary Reference: OmniRoute (source of many feature requests)
+
+Some feature issues in this repo are not parity requests against `decolua/9router` — they are **port requests sourced from OmniRoute**, cited by a file path inside that repo (e.g. issue #38 cites `src/lib/usage/codexResetCredits.ts`).
+
+- **Reference Repository**: `https://github.com/diegosouzapw/OmniRoute` — TypeScript/Next.js, MIT, a *sibling* gateway project (not this repo's upstream). It vendors its own `open-sse/` tree under the `@omniroute/open-sse` package alias, so its provider/executor layout is recognizable but **not** the same as `decolua/9router`'s.
+- **When an issue cites OmniRoute**, treat the cited file as the *feature specification*. Do not guess its contents and do not port from memory.
+
+**OmniRoute Porting Protocol**
+1. **Fetch the cited file first**, from raw: `https://raw.githubusercontent.com/diegosouzapw/OmniRoute/main/<path>`. Fetch the related UI component too (dashboard modals live under its `src/app/` tree) — the port must match the dashboard *behavior*, not just the API shape.
+2. **Port the contract, not the code**: endpoints, request/response payloads, error status codes, and filter/sort rules. Never transliterate TypeScript into Go (see §4.A).
+3. **Map by responsibility** — OmniRoute `src/lib/usage/*.ts` → `internal/handlers/dashboard/` + `web/src/api/client.ts`; `open-sse/executors/` → `internal/proxy/executor/`; `src/app/` components → `web/src/`.
+4. **OmniRoute is secondary**. Where it conflicts with `decolua/9router`, the §1 parity rules win; record the deliberate divergence in your `.changes/` fragment (§7.6), never in `CHANGELOG.md`.
+5. **Provider IDs are not portable verbatim.** OmniRoute has its own catalog. Map to `9router-go` provider IDs and obey §3 (strict provider isolation — no cross-provider aliasing or model hijacking).
+6. **Preserve upstream error semantics.** OmniRoute surfaces typed error classes with explicit status codes (e.g. `409 no_credit`); port that distinction rather than collapsing every upstream failure into one generic error.
 
 ---
 
@@ -197,6 +215,18 @@ Use `net/http/httptest` (`httptest.NewRecorder()`, `httptest.NewRequest()`, and 
    - Tag live/upstream-dependent network tests clearly (e.g. `live_e2e_test.go` or guard with env checks) so that standard unit tests pass completely offline.
 4. **Deterministic & Isolated**:
    - Tests must clean up temporary database files or use in-memory SQLite (`:memory:`) where applicable.
+
+### D. Feature Integration Tests (`internal/integration`, `integration` build tag)
+
+Unit tests call handlers directly or mount a hand-built router, so they cannot see a regression in the wiring production actually uses. The suite in `internal/integration/` closes that gap: it boots `app.ProvideRouter` (the real middleware stack and route table) on a real HTTP listener against a temporary SQLite database, with every provider call intercepted by a fake `httptest` upstream seeded through `providerConnections.data.baseUrl`. `internal/integration/bootfx/` boots the full fx graph — `DatabaseModule` and `ServerModule` included — once, in its own test binary.
+
+1. **Run them with `make test-integration`** (or `go test -tags=integration ./internal/integration/...`). The tag keeps `go test ./...` fast; the CI `integration` job runs the suite on every PR, so a regression in routing, auth, account rotation, or usage accounting fails on the PR that introduces it instead of on a user's next request.
+2. **Use the harness helpers, never raw setup.** `newProviderEnv(t)` is the common fixture: an `Env` with one DeepSeek connection aimed at a fake upstream. `newEnv(t)` is the bare gateway. Both open the database, apply the real schema bootstrap, and seed a client API key; `newEnv` also pins the token savers off so upstream payloads stay comparable byte for byte. Add connections with `env.AddConnection(t, ...)` and combos with `env.AddCombo(t, ...)`.
+3. **Every helper takes the running test as its first argument.** `Env` holds no `*testing.T`: capturing the parent would make a failing `t.Run` call `FailNow` on the parent from the subtest's goroutine, which the `testing` package reports as "subtest may have called FailNow on a parent test" and attributes to the wrong line.
+4. **Never let a test reach the network.** A provider must be an `env.NewUpstream(t, ...)` fake, and the fake must assert what the gateway sent (`upstream.Last(t).Model(t)`, `.Header`). `AddConnection` reads the stored row back and fails when the fake URL did not persist, because an empty `data.baseUrl` falls through to the real provider URL from `providers.KnownProviders`. No real provider credential may be required for the suite to pass.
+5. **Do not boot `app.DatabaseModule` outside `bootfx/`, and boot it only once there.** `db.InitGlobalDatabase` is a process-wide `sync.Once` and `fxApp.Stop()` closes that handle for good, so a second boot in the same binary would reuse a closed database and an already-cancelled shutdown context.
+6. **Assert observable behaviour, not wiring.** A useful case pins a contract a client depends on (the status a client sees, the model the provider receives, the row written to `usageHistory`). Testing that a route exists, or that a handler forwards to itself, proves nothing. When a subtest looks for one row in a listed collection, select it by id and fail when it is absent — a loop that only errors on a match passes vacuously when the list comes back empty.
+
 ---
 
 ## 6. Frontend Engineering & Svelte 5 Standards (`web/`)
@@ -307,6 +337,24 @@ Always use the established design tokens defined in `web/src/index.css` for cons
    - Navigation tabs are managed via `web/src/lib/router.ts` (`ActiveTab` and `TAB_ROUTES`).
    - Modal dialogs should handle `Escape` key and click-outside backdrop dismissals.
 
+
+### E. Svelte Type-Checking (`make vet-svelte`)
+
+`tsconfig.app.json` includes `src`, but **`tsc` cannot parse `.svelte` files at all** — every Svelte `<script lang="ts">` block in this repo went untyped. The consequence is concrete: `bun run build`, `oxlint`, and `vite build` all report success for a component that calls a function it never imported, and the failure only appears when the code runs — a `ReferenceError` in the browser, after the button was clicked. That shipped in `QuotaTrackerView.svelte:300` (commit `3525284c` renamed the mint to `newResetCreditIdempotencyKey` and updated only the import) and was found by a user, not by CI.
+
+`svelte-check` closes the hole but reports ~92 pre-existing type errors, so it runs as a **ratchet** (`web/scripts/svelte-check-ratchet.ts`) rather than a hard gate:
+
+1. **Unresolved identifiers fail the build outright** — `Cannot find name`, `Cannot find module`, missing exports. These are the fatal class: each one is a `ReferenceError` waiting for a user click, and unlike a stylistic type mismatch they take a whole feature down.
+2. **Total error count is pinned** in `web/scripts/svelte-check-baseline.json` and may only shrink. Every new type error fails the build.
+
+Run it on any frontend change. When the count legitimately drops:
+
+```bash
+cd web && bun run ratchet:svelte -- --update
+```
+
+Never widen the baseline to make a failure disappear — fix the error, or split the PR and land the debt reduction on its own. The `--tsconfig tsconfig.app.json` flag is mandatory: the default resolves `tsconfig.json`, which has `files: []`, and silently checks **zero** components.
+
 ---
 
 ## 7. Upstream Sync Workflow (Step-by-Step)
@@ -328,14 +376,92 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
    - Frontend: Convert React logic into Svelte 5 runes (`$state`, `$derived`, `$effect`, `bind:value`).
 4. **Implement & Test**:
    - Backend: Write code in `internal/...` and unit tests in `*_test.go` (table-driven tests using `testing.T`).
-   - Frontend: Write/update components in `web/src/` and verify `cd web && bun run build`.
+   - Frontend: Write/update components in `web/src/`, verify `cd web && bun run build`, **and** run `make vet-svelte`.
+     `tsc -b` cannot read `.svelte` files, so a Svelte script block calling a function it never imported compiles, lints and bundles clean, then throws a `ReferenceError` the first time a user clicks it (issue #130). `make vet-svelte` is the only gate that sees that class of bug.
 5. **Verify**:
    ```bash
    rtk go test ./...
    make build
+   make vet-svelte   # svelte-check ratchet — see §6.E
+   # A CHANGELOG.md hunk in a PR is a violation of §7.6. Both forms matter:
+   # the committed range catches what was pushed, the worktree the rest.
+   { rtk git diff --name-only HEAD; rtk git diff --name-only main...HEAD; \
+     rtk git status --porcelain | cut -c4-; } | rtk grep -qx CHANGELOG.md \
+     && echo "VIOLATION: CHANGELOG.md must not appear in a PR diff (§7.6)"
    ```
-6. **Update Changelog**:
-   - Add entry to `CHANGELOG.md` under `[Unreleased]` detailing the parity sync.
+   That last check is the machine-checkable half of §7.6: it prints nothing on a
+   clean PR and fails loudly the moment an entry is written to the wrong file.
+6. **Update Changelog (a fragment file — NEVER edit `CHANGELOG.md`)**:
+   - **Create `.changes/<pr-number>-<slug>.md`.** That is the whole step. Name
+     it after the PR you are opening (e.g. `.changes/219-chat-402-model-scoped.md`).
+     The file body is the entry exactly as it would have appeared under
+     `## [Unreleased]`: a `###` heading plus bullets covering what changed, why,
+     and how it was verified. No front matter, no wrapping heading.
+   - **`CHANGELOG.md` is written by exactly one thing: `make changelog-merge`, at
+     release time.** If a PR's diff contains a `CHANGELOG.md` hunk, that PR is
+     wrong — move the entry into a fragment and revert the hunk. A stray edit is
+     also what will re-introduce the merge conflicts described below.
+   - **Why a fragment instead of a shared `[Unreleased]` section.** Every PR
+     prepended its entry at the top of `## [Unreleased]`, which made those few
+     lines the most contested hunk in the repository: any two PRs landing in the
+     same window collided there, and `## [Unreleased]` had grown to 675 lines of
+     backlog. `.gitattributes` with `merge=union` does **not** fix it here —
+     this repo merges through GitHub's web merge button, which ignores merge
+     drivers entirely, so no setting merged them automatically. A per-PR fragment
+     is a new unique file, so two concurrent PRs never share a line and cannot
+     conflict. Do not propose `merge=union` or a conflict bot as the fix again.
+   - **The dashboard is unaffected.** `GET /api/changelog` assembles
+     `CHANGELOG.md` plus every fragment (`internal/changelogfrag`), so an entry
+     appears as soon as its PR merges — no waiting for a release. Fragments
+     render newest-first by PR number, numerically.
+   - **At release time only:** `make changelog-merge TAG=v<version>` after
+     `scripts/bump-version.sh`. It files every fragment under
+     `## [TAG] - <date>`, drops the emptied `[Unreleased]` section, and clears
+     `.changes/`. Contributors do not run this per PR.
+   - Format reference: [`.changes/README.md`](.changes/README.md).
+
+7. **Branch & PR Targeting (`main` ONLY — MANDATORY)**:
+   - **Every pull request in this repository targets `main`.** Never open a PR
+     into `dev`, and never merge into `dev`. This is the operator's standing
+     decision, not a convention to weigh per-PR.
+   - `dev` is the **integration** branch: work accumulates there and is merged
+     onward into `main` through a single `dev` → `main` PR. It is not a merge
+     target for feature branches.
+   - **Branch from clean `origin/main`**, never from `dev`, a release tag, or
+     another feature branch:
+     ```bash
+     rtk git fetch origin
+     rtk git worktree add ../9router-go-<slug> -b fix/<slug> origin/main
+     ```
+   - Set the base explicitly, and pass the repo when creating the PR so a
+     mismatched default cannot silently redirect it:
+     ```bash
+     gh pr create --repo luqman-v1/9router-go --base main --head fix/<slug> \
+       --title "..." --body "..."
+     ```
+   - **A file that does not exist on `main` blocks the PR, not the branch.** If
+     the code you need to fix only exists on `dev`, the PR targeting `main`
+     cannot carry that fix: pointing at `main` drags every `dev` commit into
+     the diff (45 commits / 169 files on the fix for the Cache Analytics 503)
+     and leaves the PR `CONFLICTING`. Split instead — land the part that applies
+     to `main`, and hold the rest on a branch until the `dev` → `main` PR
+     lands, after which it is a one-commit cherry-pick. Say so explicitly in
+     the PR body rather than quietly widening the base.
+   - **Check the diff size before opening.** `gh pr view <n> --json changedFiles,
+     additions` must show only the files you touched. If it shows more than
+     that, the branch was cut from the wrong place — see the previous rule.
+   - **`CHANGELOG.md` must not conflict, because no PR touches it.** If one does,
+     the branch predates the fragment split (§7.6) or an edit slipped in: move
+     that entry into a `.changes/` fragment and revert the `CHANGELOG.md` hunk.
+     Never resolve an `[Unreleased]` conflict additively by hand — that is the
+     manual workaround the fragments replaced.
+   - **When reviewing or auditing shipped behaviour, read the fragments too.**
+     `CHANGELOG.md` alone is release history: anything merged after the last tag
+     lives only in `.changes/*.md`. Answering "what changed in X?" from
+     `CHANGELOG.md` alone reports the previous release's fixes as if they were
+     current. `GET /api/changelog` shows both, and
+     `go run ./cmd/changelog-merge --tag <next> --dry-run` previews what the next
+     release will contain without writing anything.
 
 ---
 
@@ -346,16 +472,33 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
 rtk go test ./...
 rtk go test ./internal/providers/... -v
 
+# Run the feature integration suite (real router, real DB, fake upstreams)
+make test-integration
+make vet-integration
+
 # Build frontend SPA (Svelte 5 / Vite 8 via Bun)
 make web-build
 # Or directly inside web/
 cd web && bun run build
+
+# Svelte type-check ratchet (blocks unresolved identifiers, pins type debt)
+make vet-svelte
 
 # Build binary (automatically builds web SPA into web/dist first)
 make build
 
 # Run dev server with live go run (PORT=20130 default)
 make dev
+
+# Changelog. Per PR: write .changes/<pr-number>-<slug>.md, never CHANGELOG.md.
+# Preview what the next release will contain (writes nothing):
+go run ./cmd/changelog-merge --tag v1.9.11 --dry-run
+# Release time only — files the fragments under ## [TAG], clears .changes/:
+make changelog-merge TAG=v1.9.11
+
+# Prove a PR does not touch CHANGELOG.md (prints nothing when clean)
+{ rtk git diff --name-only HEAD; rtk git diff --name-only main...HEAD; \
+  rtk git status --porcelain | cut -c4-; } | rtk grep -qx CHANGELOG.md
 
 # Git operations (always prefix with rtk)
 rtk git status

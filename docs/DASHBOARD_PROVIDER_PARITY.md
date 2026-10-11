@@ -157,12 +157,18 @@ by-design); `go test ./internal/providers/` hijau.
 
 ## Bukan TODO (sengaja dibiarkan beda)
 
-- **8 entri header semu** di katalog (`x-codebuddy-request`, `x-github-api-version`,
+- ~~**8 entri header semu**~~ (`x-codebuddy-request`, `x-github-api-version`,
   `x-requested-with`, `x-vscode-user-agent-library-version`, `anthropic-version`,
-  `openai-intent`, `originator`, `user-agent`) — cerminan `StaticHeaders` backend
-  untuk form koneksi custom. JANGAN dihapus tanpa mengganti UI custom-header.
-  Tapi JANGAN juga dipakai membuat koneksi (resolusi backend pasti gagal,
-  `resolution.go:311`) — pertimbangkan guard di `HandleCreateConnection`.
+  `openai-intent`, `originator`, `user-agent`) — SUDAH DIHAPUS (2026-10-10).
+  Catatan lama "jangan dihapus tanpa mengganti UI custom-header" sudah usang:
+  `ProviderHeaderOverridesModal` membaca `builtinHeaders` dari
+  `GET /api/providers/{id}/overrides`, yang diturunkan dari
+  `cfg.StaticHeaders` via `builtinProviderHeaders`
+  (`internal/handlers/dashboard/provider_overrides.go`) — bukan dari katalog.
+  Sementara entri semu itu ada, setiap tile header tersebut meminta
+  `/providers/<nama-header>.png` yang memang tidak pernah di-ship: 8 × 404 per
+  buka dashboard, plus 8 kartu provider palsu yang connect-nya mustahil
+  (`resolution.go:311`).
 - **`selfhosted-tts` / `selfhosted-stt` / `selfhosted-embedding`** — ada di FE +
   `ProviderModels`, tapi tanpa `KnownProviders` / handler. Membuat koneksi dengan
   id ini mati di resolusi. TODO lanjutan (belum dipecah): definisikan endpoint
@@ -194,6 +200,7 @@ tiap provider punya flow sendiri. Ketahuan saat bandingkan
 **Referensi upstream** (ditarik live dari `:20128/api/oauth/cline/*`):
 - `GET /api/oauth/cline/authorize` → `{authUrl: https://api.cline.bot/api/v1/auth/authorize?client_type=extension&callback_url=...&redirect_uri=<dashboard-host>/callback, state, codeVerifier, codeChallenge, redirectUri, flowType: authorization_code}`
 - **Callback OAuth mengikuti upstream Next.js**: untuk Antigravity, `OAuthModal` upstream membentuk `redirect_uri=http://localhost:${window.location.port || 80}/callback`, bukan dari origin IP/domain yang sedang dipakai browser. Go sekarang memakai helper yang sama dan meneruskan hasil callback melalui `postMessage`; ini mendukung dashboard lokal dan port-forward. `GET /callback` tetap publik dan XSS-safe (`internal/handlers/oauth/callback.go`), sedangkan code exchange memakai `POST /api/oauth/antigravity/exchange` dengan body upstream `{code, redirectUri, state}` dan session dashboard. Route lama `/api/oauth/antigravity/callback` sudah dihapus. Fallback backend tanpa parameter adalah `http://localhost:8080/callback`, sama seperti upstream dynamic OAuth route.
+- **Codex memakai loopback listener di port fixed (parity `startCodexProxy` upstream)**: client OAuth Codex (`app_EMoamEEZ73f0CkXaXp7hrann`, milik Codex CLI) hanya punya SATU redirect URI terdaftar, `http://localhost:1455/auth/callback`. `auth.openai.com` memvalidasi `redirect_uri` pada langkah authorize, jadi URL turunan dashboard (`http://localhost:<port>/callback`) ditolak `invalid_authorize_request` sebelum halaman login pernah tampil — sudah dibuktikan live di browser: `1455/auth/callback` sampai ke form login, sedangkan `20130/callback`, `20130/auth/callback`, bahkan `1455/callback` (port benar, path salah) semuanya ditolak. Go: `pkceConfig.fixedRedirectURI`/`fixedPort` + `callbackRedirectURIFor`/`exchangeRedirectURIFor` (`internal/handlers/oauth/redirect.go`) membuat URI terdaftar menang atas URL dashboard untuk provider yang mengunci port; provider PKCE lain tetap mengikuti dashboard. Listener-nya `internal/handlers/oauth/codex_proxy.go`: `GET /api/oauth/codex/start-proxy` (bind `127.0.0.1:1455` + daftar session ber-key state yang membawa PKCE verifier), `GET /api/oauth/codex/poll-status` (frontend polling), `GET /api/oauth/codex/stop-proxy` (modal ditutup). Exchange diselesaikan **server-side** dan hasilnya dirender di popup; callback tanpa session terdaftar (mis. `codex` CLI asli di mesin yang sama) di-302 ke `/callback` dashboard, bukan dibuang. `chatgptAccountId`/`chatgptPlanType` kini disimpan ke `providerSpecificData` (`codex_account.go`, claim namespaced `https://api.openai.com/auth`) dan `ForwardCodex` mengirim header `chatgpt-account-id` — tanpa itu endpoint codex menolak request, jadi akun yang berhasil ditambahkan tetap tidak bisa dipakai.
 - **Auto-handoff (tanpa copy-paste)**: FE menyimpan `9router.oauth.pending.v1` berisi state/redirectUri, callback tab menulis `9router.oauth.callback.v1` + `BroadcastChannel 9router-oauth`, dan `postMessage` yang diizinkan ke origin dashboard/loopback; modal memulihkan sesi pending, mencocokkan state, dan auto-submit sekali (`web/src/lib/oauth-handoff.ts`). Fallback paste manual tetap tersedia. Berlaku untuk cline, PKCE, authcode, trae/windsurf/zed, kimchi/mimo, dan Antigravity dengan kontrak callback masing-masing.
 - **Dual-auth clinepass (parity upstream)**: `clinepass` registry upstream `authModes: ["apikey","oauth"]` → halaman detail upstream tampil 2 tombol (OAuth + API Key). Go: `ProviderCatalogItem.authModes?` (`providers.ts`) + `hasDualAuthModes` di `ProviderDetailView` → tombol ganda OAuth (sekunder) + API Key (primer, buka `AddConnectionModal` → `authType: apikey`) di empty-state & header, plus hint "Choose OAuth or API Key.". Mekanisme generik — provider lain tinggal tambah `authModes` di katalog.
 - **Quota page backend (2026-09-21)**: FE `QuotaTrackerView + quota/` (port upstream ProviderLimits) butuh `GET /api/providers/client` ber-pagination — backend Go sebelumnya mengabaikan semua param. `HandleGetProvidersClient` (`internal/handlers/dashboard/connections.go`) sekarang: filter eligibility (`features.usage` 24 provider + `usageApikey` 16 provider), filter `provider`/`accountStatus`, sort `priority|provider`, `page/pageSize` (default 20, max 500 clamp), `providerOptions`, `totals`, sanitize whitelist + `maskName` ala upstream (secret `data.apiKey` tidak pernah bocor). Test `providers_client_test.go` (pagination, filter, paging clamp, sort, no-leak). Satu-satunya konsumen endpoint ini = quota page, jadi aman.
@@ -454,7 +461,7 @@ pre-check proxy gagal, klasifikasi probe, window expiry) +
 punya `/api/auth/login` maupun `/api/auth/logout`; `GET /api/auth/status` dan
 `GET /api/settings/require-login` masih **stub hardcoded** `requireLogin:false` +
 `authenticated:true`. Akibatnya "login" lolos lewat fallback client-side di
-`client.ts` (password `Mantep210`/`123456` langsung di-set `9router_auth`), dan
+`client.ts` (password `123456`/`123456` langsung di-set `9router_auth`), dan
 dashboard tidak pernah benar-benar dijaga. Upstream (`:20128`) memakai cookie
 sesi JWT `auth_token` + `dashboardGuard`.
 
@@ -488,7 +495,7 @@ bukan `false`; bypass `x-9r-cli-token`).
   dan di-mount di grup `RequireDashboardAuth` (engine/LLM tetap di grup
   `RequireApiKey`). Route manajemen yang pindah tetap menerima API key, jadi CLI
   tidak berubah.
-- **Frontend**: `api.login` tidak lagi mem-fake sukses untuk `Mantep210`/`123456`
+- **Frontend**: `api.login` tidak lagi mem-fake sukses untuk `123456`/`123456`
   (fallback 404 dihapus) — kegagalan asli kini tampil sebagai error; `checkRequireLogin`
   mengembalikan `authenticated`; `App.svelte` mengutamakan `authenticated` dari
   server lalu flag `9router_auth`.
@@ -508,31 +515,6 @@ tamper, `requireLogin=false`, redirect halaman), `auth_test.go` (login invalid/
 valid + cookie, status round-trip, require-login, logout) — plus
 `router_test.go` (SPA `/dashboard*` 302 ke `/login`, `/login` 200) dan
 `bun test` + `tsc -b` + `oxlint` untuk frontend.
-
-### Lanjutan 2026-10-04 — rotasi password login pertama (`POST /api/auth/set-password`, beda dari upstream)
-
-Fresh install diakses lewat domain/tunnel (origin non-loopback): `HandleAuthLogin`
-menerima default `123456` tapi sengaja **tidak** memberi cookie sampai password
-diganti, sementara form di `LoginView` mengganti password via
-`PATCH /api/settings` yang ada di grup `RequireDashboardAuth` → selalu 401
-`dashboard session required`. Pemilik terkunci dari dashboard-nya sendiri di
-origin itu, dan cabang "first-time set" di `changeDashboardPassword` (yang
-memang menerima `currentPassword` kosong/`123456`) tidak pernah tercapai di
-server sungguhan.
-
-- Endpoint publik baru `POST /api/auth/set-password` (didaftarkan bersama
-  login/logout/status): verifikasi `currentPassword` lewat
-  `verifyDashboardPassword`, gate tunnel + SSO-password sama seperti login,
-  rotasi lewat `changeDashboardPassword`, tanpa memberi session.
-- **Beda dari upstream**: Next tidak punya endpoint ini. Ditambahkan karena
-  jalur rotasi pre-session yang didokumentasikan (README/ARCHITECTURE) tidak
-  punya route-nya di Go.
-- Ditolak (403) begitu hash password sudah tersimpan, jadi tidak bisa dipakai
-  sebagai jalur ganti-password tanpa session di kemudian hari.
-- Frontend: `api.setPassword()` lalu `api.login(newPassword)` — login kedua
-  inilah yang mengembalikan cookie.
-- Verifikasi: `go test ./internal/handlers/ -run 'TestFirstLoginRemoteRotation|TestAuthSetPasswordRejectsWrongCurrentPassword'`
-  (alur penuh lewat `SetupServerRouter`, termasuk 401 → 200 → cookie → 403 setelah hash ada).
 
 ### Lanjutan 2026-09-23 — Media Providers parity (`/dashboard/media-providers/*`)
 

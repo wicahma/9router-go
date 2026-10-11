@@ -36,58 +36,51 @@ type SyncedModelLimits struct {
 	MaxOutput     int `json:"maxOutput,omitempty"`
 }
 
-// SyncedModelPrice holds the consensus upstream price for a model, in USD per
-// million tokens.
-//
-// models.dev lists a model once per provider, and those entries disagree:
-// kimi-k3 is served by 32 providers carrying 13 different prices. A single
-// model id therefore has no single price, so the value kept here is the one
-// most providers agree on, and Agreement records how strong that consensus was.
+// SyncedModelPrice holds consensus pricing information.
 type SyncedModelPrice struct {
-	InputPer1M  float64 `json:"inputPer1M"`
-	OutputPer1M float64 `json:"outputPer1M"`
-	// Agreement is the fraction of priced providers that quoted this exact
-	// pair. A value below 0.5 means no majority existed and nothing is stored.
-	Agreement float64 `json:"agreement"`
+	InputPer1M  float64 `json:"inputPer1M,omitempty"`
+	OutputPer1M float64 `json:"outputPer1M,omitempty"`
+	Agreement   float64 `json:"agreement,omitempty"`
 }
 
-// SyncedCatalog represents the processed catalog file written to disk / kept in memory.
-// The file is shared with upstream, whose writer emits `syncedAt` as epoch
-// milliseconds and adds `v`/`etag` fields — so SyncedAt is decoded leniently.
+// SyncedCatalog represents the processed catalog file written to disk / kept in
+// memory. The file is shared with upstream, whose writer emits `syncedAt` as
+// epoch milliseconds and adds `v`/`etag` fields — so SyncedAt is written as an
+// ISO string and decoded leniently, and the modality map is keyed
+// "<provider>:<model>" the way upstream keys it.
 type SyncedCatalog struct {
 	Version   int                                     `json:"v,omitempty"`
 	ETag      string                                  `json:"etag,omitempty"`
-	SyncedAt  string                                  `json:"-"`
+	SyncedAt  string                                  `json:"syncedAt,omitempty"`
 	Models    map[string]SyncedModelModalities        `json:"models"`
 	Providers map[string]map[string]SyncedModelLimits `json:"providers"`
-	// Prices maps a base model id to its consensus upstream price. Only models
-	// with a clear majority are present, so a miss is honest rather than a
-	// silent fallback to an invented rate.
-	Prices map[string]SyncedModelPrice `json:"prices,omitempty"`
+	Prices    map[string]SyncedModelPrice             `json:"prices,omitempty"`
 }
 
-// UnmarshalJSON accepts syncedAt as either an ISO string or epoch milliseconds.
+// UnmarshalJSON accepts syncedAt as either an ISO string (this build's writer)
+// or epoch milliseconds (upstream's writer), and tolerates it being absent —
+// this build omits the field on the way out. Decoding it as []byte, as an
+// earlier version did, makes encoding/json/v2 demand base64 and reject both
+// real shapes, so LoadCatalogFromFile could never read a catalog back.
 func (c *SyncedCatalog) UnmarshalJSON(data []byte) error {
 	type alias SyncedCatalog
 	aux := struct {
-		SyncedAt []byte `json:"syncedAt"`
+		SyncedAt any `json:"syncedAt"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if len(aux.SyncedAt) == 0 || string(aux.SyncedAt) == "null" {
+	switch v := aux.SyncedAt.(type) {
+	case nil:
 		c.SyncedAt = ""
-		return nil
+	case string:
+		c.SyncedAt = v
+	case float64:
+		c.SyncedAt = time.UnixMilli(int64(v)).UTC().Format(time.RFC3339)
+	default:
+		return fmt.Errorf("catalog syncedAt: unexpected type %T", v)
 	}
-	if err := json.Unmarshal(aux.SyncedAt, &c.SyncedAt); err == nil {
-		return nil
-	}
-	var epochMS float64
-	if err := json.Unmarshal(aux.SyncedAt, &epochMS); err != nil {
-		return fmt.Errorf("catalog syncedAt: %w", err)
-	}
-	c.SyncedAt = time.UnixMilli(int64(epochMS)).UTC().Format(time.RFC3339)
 	return nil
 }
 
@@ -129,33 +122,12 @@ func GetCatalogState() CatalogSyncState {
 	return syncState
 }
 
-// GetCatalogModalities looks up dynamically synced modalities for a model ID.
-func GetCatalogModalities(model string) *SyncedModelModalities {
-	if model == "" {
-		return nil
-	}
-	base := baseModelID(model)
-
-	catalogMu.RLock()
-	defer catalogMu.RUnlock()
-	if globalCatalog == nil || globalCatalog.Models == nil {
-		return nil
-	}
-	if m, ok := globalCatalog.Models[base]; ok {
-		return &m
-	}
-	return nil
-}
-
-// baseModelID reduces an upstream model id to the bare model name. Ids are not
-// all one segment deep ("accounts/fireworks/models/x"), so everything up to the
-// last slash is dropped, as is a trailing ":tag".
-//
-// The catalog keys and the lookups must agree on this, otherwise a bare name
-// can never hit a price stored under a nested key.
-func baseModelID(model string) string {
-	base := strings.ToLower(model)
-	if idx := strings.LastIndex(base, "/"); idx != -1 {
+// catalogBaseID normalizes a model id the way both this sync and upstream's
+// sync.js baseId() do: lowercase, then keep only the part after the last "/"
+// and before the first ":" ("claude-opus-4-thinking:8192" -> "claude-opus-4-thinking").
+func catalogBaseID(modelID string) string {
+	base := strings.ToLower(modelID)
+	if idx := strings.Index(base, "/"); idx != -1 {
 		base = base[idx+1:]
 	}
 	if idx := strings.Index(base, ":"); idx != -1 {
@@ -164,38 +136,56 @@ func baseModelID(model string) string {
 	return base
 }
 
-// GetCatalogPrice returns the consensus upstream price for a model, or false
-// when the catalog has no clear majority for it.
-func GetCatalogPrice(model string) (SyncedModelPrice, bool) {
-	if model == "" {
-		return SyncedModelPrice{}, false
+// catalogProviderKeys returns the ids a catalog entry may be filed under for a
+// lookup on providerID: the provider itself, plus every local id that maps to
+// it through ProviderAliases (our `claude` is models.dev `anthropic`). Mirrors
+// sync.js localIds, so a lookup under either name resolves.
+func catalogProviderKeys(providerID string) []string {
+	keys := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		keys = append(keys, id)
 	}
-	base := baseModelID(model)
+	add(providerID)
+	for local, upstream := range ProviderAliases {
+		if upstream == providerID {
+			add(local)
+		}
+	}
+	return keys
+}
+
+// GetCatalogModalities looks up the synced input modalities for a
+// provider/model pair. models.dev records modalities per gateway, and
+// gateways disagree about the same weights (some do not proxy images at all),
+// so the key is provider + model — matching the writer and upstream. A bare
+// model key is still accepted so a catalog written by an older build keeps
+// resolving.
+func GetCatalogModalities(provider, model string) *SyncedModelModalities {
+	if model == "" {
+		return nil
+	}
+	base := catalogBaseID(model)
 
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
-	if globalCatalog == nil {
-		return SyncedModelPrice{}, false
+	if globalCatalog == nil || globalCatalog.Models == nil {
+		return nil
 	}
-	if p, ok := globalCatalog.Prices[base]; ok {
-		return p, true
-	}
-
-	// No canonical entry: fall back to a provider alias of the same model,
-	// strongest agreement first. Scanning is safe only as a miss path — a bare
-	// key always wins above — and picking by agreement keeps the result from
-	// depending on Go's map order.
-	var best SyncedModelPrice
-	found := false
-	for key, p := range globalCatalog.Prices {
-		if baseModelID(key) != base {
-			continue
-		}
-		if !found || p.Agreement > best.Agreement {
-			best, found = p, true
+	keys := catalogProviderKeys(strings.ToLower(provider))
+	for _, key := range keys {
+		if m, ok := globalCatalog.Models[key+":"+base]; ok {
+			return &m
 		}
 	}
-	return best, found
+	if m, ok := globalCatalog.Models[base]; ok {
+		return &m
+	}
+	return nil
 }
 
 // GetCatalogLimits looks up the models.dev-synced token limits for a
@@ -322,18 +312,19 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 		return fmt.Errorf("read catalog body: %w", err)
 	}
 
-	// models.dev format: map of providerID -> providerData { models: map[modelID]modelData }
+	// models.dev format: map of providerID -> providerData { models: map[modelID]modelData }.
+	// Each model declares `modalities: { input: ["text","image",…], output: […] }`;
+	// an earlier revision used a boolean `modality` map, which no longer exists,
+	// so reading that key silently produced an all-false catalog.
 	var rawData map[string]struct {
 		Models map[string]struct {
-			Modality map[string]bool `json:"modality"`
-			Limit    *struct {
+			Modalities struct {
+				Input []string `json:"input"`
+			} `json:"modalities"`
+			Limit *struct {
 				Context int `json:"context"`
 				Output  int `json:"output"`
 			} `json:"limit"`
-			Cost *struct {
-				Input  float64 `json:"input"`
-				Output float64 `json:"output"`
-			} `json:"cost"`
 		} `json:"models"`
 	}
 
@@ -346,31 +337,43 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 
 	modelsMap := make(map[string]SyncedModelModalities)
 	providersMap := make(map[string]map[string]SyncedModelLimits)
-	// priceVotes counts, per base model id, how many providers quoted each
-	// distinct price pair.
-	priceVotes := make(map[string]map[[2]float64]int)
 
 	for provID, provData := range rawData {
+		// Several upstream ids normalize to the same base (claude-opus-4-thinking:1024,
+		// :8192, :32768 …) and must not stack their modalities.
+		seen := make(map[string]bool, len(provData.Models))
 		for modelID, mData := range provData.Models {
-			base := baseModelID(modelID)
+			base := catalogBaseID(modelID)
+			if seen[base] {
+				continue
+			}
+			seen[base] = true
 
-			// Aggregate modalities
-			cur := modelsMap[base]
-			if mData.Modality["image"] || mData.Modality["vision"] {
-				cur.Vision = true
+			// Modalities, keyed provider+model: gateways disagree about the same
+			// weights, and a bare model key would let a short id collide across
+			// vendors ("auto", "free", "efficient" are router modes in one catalog
+			// and model names in another). Same rule as upstream sync.js.
+			var declared SyncedModelModalities
+			for _, input := range mData.Modalities.Input {
+				switch input {
+				case "image":
+					declared.Vision = true
+				case "pdf":
+					declared.PDF = true
+				case "audio":
+					declared.AudioInput = true
+				case "video":
+					declared.VideoInput = true
+				}
 			}
-			if mData.Modality["pdf"] {
-				cur.PDF = true
+			if declared != (SyncedModelModalities{}) {
+				for _, key := range catalogProviderKeys(provID) {
+					modelsMap[key+":"+base] = declared
+				}
 			}
-			if mData.Modality["audio"] {
-				cur.AudioInput = true
-			}
-			if mData.Modality["video"] {
-				cur.VideoInput = true
-			}
-			modelsMap[base] = cur
 
-			// Limits
+			// Limits belong to the gateway — each truncates differently — so they
+			// stay keyed by provider + model.
 			if mData.Limit != nil && (mData.Limit.Context > 0 || mData.Limit.Output > 0) {
 				if providersMap[provID] == nil {
 					providersMap[provID] = make(map[string]SyncedModelLimits)
@@ -380,15 +383,6 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 					MaxOutput:     mData.Limit.Output,
 				}
 			}
-
-			// Prices
-			if mData.Cost != nil {
-				pair := [2]float64{mData.Cost.Input, mData.Cost.Output}
-				if priceVotes[base] == nil {
-					priceVotes[base] = make(map[[2]float64]int)
-				}
-				priceVotes[base][pair]++
-			}
 		}
 	}
 
@@ -397,7 +391,6 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 		SyncedAt:  nowStr,
 		Models:    modelsMap,
 		Providers: providersMap,
-		Prices:    consensusPrices(priceVotes),
 	}
 
 	catalogMu.Lock()
@@ -423,43 +416,6 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 
 	log.Info("catalog_sync", "catalog synchronized successfully", "models", len(modelsMap), "providers", len(providersMap))
 	return nil
-}
-
-// consensusPrices reduces per-provider price quotes to one rate per model.
-//
-// A model only gets an entry when strictly more than half of the providers
-// quoting it agree, so an outlier reseller cannot set the rate and a genuine
-// tie leaves the model unpriced instead of resolving on Go's random map
-// iteration order.
-//
-// A (0,0) quote is a subscription or token plan with no marginal per-token
-// charge. Such providers are excluded from the vote: they would otherwise form
-// a large majority on models that are free under a plan and drag the rate to
-// zero for everyone paying per token.
-func consensusPrices(votes map[string]map[[2]float64]int) map[string]SyncedModelPrice {
-	out := make(map[string]SyncedModelPrice, len(votes))
-	for model, tally := range votes {
-		var total, best int
-		var winner [2]float64
-		for pair, n := range tally {
-			if pair == ([2]float64{0, 0}) {
-				continue
-			}
-			total += n
-			if n > best {
-				best, winner = n, pair
-			}
-		}
-		if total == 0 || 2*best <= total {
-			continue
-		}
-		out[model] = SyncedModelPrice{
-			InputPer1M:  winner[0],
-			OutputPer1M: winner[1],
-			Agreement:   float64(best) / float64(total),
-		}
-	}
-	return out
 }
 
 // StartBackgroundCatalogSync runs initial sync and 24h timer loop.

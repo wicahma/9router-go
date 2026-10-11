@@ -24,7 +24,8 @@ export interface PickerModel {
   name: string
   value: string
   caps: { vision: boolean; audioInput: boolean; reasoning: boolean }
-  contextSize?: number // in tokens
+  /** True when the gateway confirmed this model is gone upstream. */
+  deprecated?: boolean
 }
 
 export interface PickerGroup {
@@ -38,6 +39,8 @@ export interface PickerExtras {
   modelAliases?: Record<string, string>
   customModels?: Array<{ providerAlias?: string; id: string; name?: string; type?: string }>
   disabledModels?: Record<string, string[]>
+  /** Deprecations keyed "<provider>/<model>", from /api/models/deprecations. */
+  deprecations?: Record<string, unknown>
 }
 
 export function resolveModelPickerGroups(
@@ -66,7 +69,9 @@ export function resolveModelPickerGroups(
     }
     const isConnected =
       connectedProviderIds.has(catItem.id) || (catItem.alias && connectedProviderIds.has(catItem.alias))
-    const isNoAuth = catItem.noAuth === true || catItem.category === 'free'
+    // Only the explicit noAuth flag (upstream registry semantics): category
+    // "free" providers like kiro/gemini-cli still require a connection.
+    const isNoAuth = catItem.noAuth === true
     if (!isConnected && !isNoAuth) {
       continue
     }
@@ -104,30 +109,35 @@ export function resolveModelPickerGroups(
 
     const seenModelIds = new Set<string>()
     const models: PickerModel[] = []
+    // A model the gateway saw refused with a 410 is marked, not hidden: the
+    // operator may still want it in a combo while they replace it, and a
+    // picker that silently dropped it would leave them editing JSON to find
+    // out why it disappeared.
+    const isDeprecated = (modelId: string) =>
+      Boolean(extras.deprecations?.[`${catItem.id.toLowerCase()}/${modelId.toLowerCase()}`])
+
 
     for (const m of rawModels || []) {
       if (!m.id || seenModelIds.has(m.id) || !isChatModel(m)) continue
       seenModelIds.add(m.id)
-      const contextSize = m.contextLength ?? 0
       models.push({
         id: m.id,
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id, m),
-        contextSize: contextSize > 0 ? contextSize : undefined,
+        deprecated: isDeprecated(m.id),
       })
     }
 
     for (const m of visibleCustoms) {
       if (seenModelIds.has(m.id)) continue
       seenModelIds.add(m.id)
-      const contextSize = 0 // Custom models don't have context length in upstream data
       models.push({
         id: m.id,
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id),
-        contextSize: contextSize > 0 ? contextSize : undefined,
+        deprecated: isDeprecated(m.id),
       })
     }
 
@@ -135,20 +145,12 @@ export function resolveModelPickerGroups(
       const modelId = (fullModel as string).replace(`${alias}/`, '')
       if (!modelId || seenModelIds.has(modelId)) continue
       seenModelIds.add(modelId)
-      // Find context length from rawModels or default to 0
-      let contextSize = 0
-      for (const rm of rawModels || []) {
-        if (rm.id === modelId) {
-          contextSize = rm.contextLength ?? 0
-          break
-        }
-      }
       models.push({
         id: modelId,
         name: aliasName,
         value: fullModel as string,
         caps: getModelCaps(modelId),
-        contextSize: contextSize > 0 ? contextSize : undefined,
+        deprecated: isDeprecated(modelId),
       })
     }
 
@@ -171,20 +173,40 @@ export function resolveModelPickerGroups(
     }
   }
 
-  // 2. Custom (openai/anthropic-compatible) nodes — LLM-only, always shown
-  // when connected. Upstream parity (ModelSelectModal.js isCustomProvider):
-  // aliases filtered by raw providerId, values use the display prefix, plus
-  // custom models registered for the node id; placeholder when empty.
+  // 2. Custom (openai/anthropic-compatible) nodes — LLM-only. Upstream parity
+  // (ModelSelectModal.js isCustomProvider): aliases filtered by raw providerId,
+  // values use the display prefix, plus custom models registered for the node id;
+  // placeholder when connected but empty.
   for (const node of providerNodes) {
     if (!node.id || seenGroupIds.has(node.id)) continue
     const conn = connections.find((c) => c.provider === node.id)
-    // providerNodes lists all nodes; only ones with a connection row are
-    // usable as picker values (matches upstream activeProviders, which holds
-    // all connections regardless of isActive).
-    if (!conn) continue
-    const psd = (conn.providerSpecificData || {}) as Record<string, unknown>
+    const psd = (conn?.providerSpecificData || {}) as Record<string, unknown>
     const nodePrefix = (psd.prefix as string) || node.prefix || node.id
-    const displayName = node.name || conn.name || node.id
+    const displayName = node.name || conn?.name || node.id
+    const isCompatibleNode = node.type === 'openai-compatible' || node.type === 'anthropic-compatible'
+
+    const registeredCustom = (extras.customModels || [])
+      .filter((m) => m.providerAlias === node.id && m.id)
+      .map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        value: `${nodePrefix}/${m.id}`,
+        caps: getModelCaps(m.id),
+        deprecated: Boolean(
+          extras.deprecations?.[`${node.id.toLowerCase()}/${m.id.toLowerCase()}`]
+        ),
+      }))
+
+    // providerNodes lists every node; ones with a connection row are usable as
+    // picker values (matches upstream activeProviders, which holds all
+    // connections regardless of isActive). Upstream parity (ModelSelectModal.js
+    // 6a1573eb): a compatible node that already has user-added custom models is
+    // selectable WITHOUT a connection — local / self-hosted endpoints don't
+    // always need a stored key, so gating on connections hid models the user had
+    // added. Such nodes are LLM-only, which is why they are unioned here, in the
+    // LLM-only half of the picker, instead of behind a kind filter. With custom
+    // models present there is always something to show, so no placeholder group.
+    if (!conn && (!isCompatibleNode || registeredCustom.length === 0)) continue
 
     const nodeModels = Object.entries(extras.modelAliases || {})
       .filter(([, fullModel]) => typeof fullModel === 'string' && fullModel.startsWith(`${node.id}/`))
@@ -195,30 +217,17 @@ export function resolveModelPickerGroups(
           name: aliasName,
           value: `${nodePrefix}/${modelId}`,
           caps: getModelCaps(modelId),
+          deprecated: Boolean(
+            extras.deprecations?.[`${node.id.toLowerCase()}/${modelId.toLowerCase()}`]
+          ),
         }
       })
-    const registeredCustom = (extras.customModels || [])
-      .filter((m) => m.providerAlias === node.id && m.id)
-      .map((m) => ({
-        id: m.id,
-        name: m.name || m.id,
-        value: `${nodePrefix}/${m.id}`,
-        caps: getModelCaps(m.id),
-      }))
     const seen = new Set(nodeModels.map((m) => m.value))
     const mergedModels = [...nodeModels, ...registeredCustom.filter((m) => !seen.has(m.value))]
 
-    // Same disabled strip-out as catalog loop above (keyed by node id OR display prefix).
-    const nodeDisabled = new Set([
-      ...((extras.disabledModels || {})[node.id] || []),
-      ...((extras.disabledModels || {})[nodePrefix] || []),
-    ])
-    const visibleNodeModels =
-      nodeDisabled.size > 0 ? mergedModels.filter((m) => !nodeDisabled.has(m.id)) : mergedModels
-
     const modelsToShow =
-      visibleNodeModels.length > 0
-        ? visibleNodeModels
+      mergedModels.length > 0
+        ? mergedModels
         : [
             {
               id: `__placeholder__${node.id}`,
@@ -264,11 +273,15 @@ export function resolveFilteredCombos(
   })
 }
 
+// resolveFilteredGroups applies the search text and the modality target. The
+// already-added models are deliberately not an input: nothing here reads them, but
+// passing them from the caller made the signature part of the reactive graph, so
+// clicking one pill re-filtered and re-sorted every group and reconciled the
+// whole pill list again (#61).
 export function resolveFilteredGroups(
   groups: PickerGroup[] = [],
   searchQuery: string,
-  target: string,
-  addedModelValues: string[] = []
+  target: string
 ): PickerGroup[] {
   const query = searchQuery.trim().toLowerCase()
 
@@ -298,14 +311,8 @@ export function resolveFilteredGroups(
 
       if (models.length === 0) return null
 
-      // Upstream sortModels: alphabetical, added models floated to top.
-      const added = new Set(addedModelValues)
-      const sorted = [...models].sort((a, b) => {
-        const ai = added.has(a.value) ? 0 : 1
-        const bi = added.has(b.value) ? 0 : 1
-        if (ai !== bi) return ai - bi
-        return a.name.localeCompare(b.name)
-      })
+      // Sort models alphabetically; stable display avoids sudden layout shift and freezing on click
+      const sorted = [...models].sort((a, b) => a.name.localeCompare(b.name))
 
       return {
         ...group,

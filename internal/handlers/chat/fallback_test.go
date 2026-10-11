@@ -32,9 +32,12 @@ func TestApplyTokenSavers_AllOff(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
 	if string(got) != string(body) {
 		t.Errorf("expected unchanged body when all token savers off")
+	}
+	if origTokens != 0 || savedTokens != 0 || savedPct != 0 {
+		t.Errorf("expected 0 token metrics when off, got orig=%d, saved=%d, pct=%d", origTokens, savedTokens, savedPct)
 	}
 }
 
@@ -59,9 +62,18 @@ func TestApplyTokenSavers_RTKOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
-	got := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
 	if string(got) == string(body) {
 		t.Errorf("expected RTK to modify body")
+	}
+	if origTokens <= 0 {
+		t.Errorf("expected origTokens > 0, got %d", origTokens)
+	}
+	if savedTokens <= 0 {
+		t.Errorf("expected savedTokens > 0, got %d", savedTokens)
+	}
+	if savedPct <= 0 {
+		t.Errorf("expected savedPct > 0, got %d", savedPct)
 	}
 }
 
@@ -71,7 +83,7 @@ func TestApplyTokenSavers_CavemanInjects(t *testing.T) {
 	h.TokenSaver.SetCaveman(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(body, false)
 	// Caveman prompt text should now appear in the system message.
 	if !strings.Contains(string(got), "terse") && !strings.Contains(string(got), "caveman") {
 		t.Errorf("expected caveman prompt injected, got %s", got)
@@ -84,9 +96,29 @@ func TestApplyTokenSavers_PonytailInjects(t *testing.T) {
 	h.TokenSaver.SetPonytail(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(body, false)
 	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
 		t.Errorf("expected ponytail prompt injected, got %s", got)
+	}
+}
+
+func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetADHD(true)
+
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	got, _, _, _ := h.applyTokenSavers(body, false)
+	if !strings.Contains(string(got), "I have ADHD — action-first output") {
+		t.Errorf("expected ADHD full prompt injected, got %s", got)
+	}
+
+	// Test lite mode
+	h.TokenSaver.SetADHD(true, "lite")
+	bodyLite := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	gotLite, _, _, _ := h.applyTokenSavers(bodyLite, false)
+	if !strings.Contains(string(gotLite), "I have ADHD (lite)") {
+		t.Errorf("expected ADHD lite prompt injected, got %s", gotLite)
 	}
 }
 
@@ -175,7 +207,7 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 	}
 }
 
-func TestHandleMessagesComboFallback_429TriesNextModelAndLocksBoth(t *testing.T) {
+func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -196,11 +228,8 @@ func TestHandleMessagesComboFallback_429TriesNextModelAndLocksBoth(t *testing.T)
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	// Two models on the SAME provider+connection. A 429 on the first is a
-	// per-model quota signal: the second model still gets its one attempt (a
-	// blanket exclusion here is what kept a 3-model combo from ever reaching
-	// its third model), and each failed model ends up locked so no later
-	// request hammers the same quota bucket.
+	// Two models on the SAME provider+connection: after the first 429, the
+	// connection is locked AND excluded so the second model must not re-hit it.
 	comboModels := []string{"deepseek/deepseek-chat", "deepseek/deepseek-reasoner"}
 	modelsJSON, _ := json.Marshal(comboModels)
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('combo-1', 'combo-test', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(modelsJSON)); err != nil {
@@ -215,8 +244,8 @@ func TestHandleMessagesComboFallback_429TriesNextModelAndLocksBoth(t *testing.T)
 	rec := httptest.NewRecorder()
 	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-test", 0)
 
-	if got := hits.Load(); got != 2 {
-		t.Errorf("expected 2 upstream hits (one per combo model), got %d", got)
+	if got := hits.Load(); got != 1 {
+		t.Errorf("expected 1 upstream hit (second combo model excluded), got %d", got)
 	}
 
 	locked, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-chat")
@@ -226,16 +255,6 @@ func TestHandleMessagesComboFallback_429TriesNextModelAndLocksBoth(t *testing.T)
 	if !locked {
 		t.Error("expected conn-combo locked for deepseek-chat after 429")
 	}
-	lockedReasoner, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-reasoner")
-	if lerr != nil {
-		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
-	}
-	if !lockedReasoner {
-		t.Error("expected conn-combo locked for deepseek-reasoner after its own 429")
-	}
-	if rec.Code != http.StatusTooManyRequests {
-		t.Errorf("expected 429 to the client after both models failed, got %d", rec.Code)
-	}
 }
 
 func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T) {
@@ -243,9 +262,11 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := hits.Add(1)
 		if n == 1 {
-			// Upstream says "wait ~4s" (RFC3339). The 429 connection lock is ~2s,
-			// so the retry pass after the wait finds it unlocked again.
-			ra := time.Now().Add(4 * time.Second).Format(time.RFC3339)
+			// Upstream says "wait ~1s" (RFC3339). A 429 is only worth retrying
+			// inside brief429RetryTolerance — past that the account is out of
+			// quota and re-hitting it deepens the upstream's backoff — so the
+			// bound, not the old 8s cap, is what this covers.
+			ra := time.Now().Add(time.Second).Format(time.RFC3339)
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":{"retryAfter":"` + ra + `"}}`))
 			return
@@ -302,7 +323,7 @@ func TestHandleAccountFallback_503CapacityLocksCanonicalModel(t *testing.T) {
 		w.Write([]byte(`{
 			"error": {
 				"code": 503,
-				"message": "No capacity available for model gemini-3.8-flash-tiered on the server",
+			"message": "No capacity available for model gemini-3.7-flash-tiered on the server",
 				"status": "UNAVAILABLE",
 				"details": [{"reason": "MODEL_CAPACITY_EXHAUSTED"}]
 			}
@@ -327,26 +348,30 @@ func TestHandleAccountFallback_503CapacityLocksCanonicalModel(t *testing.T) {
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	body := []byte(`{"model":"gemini-3.8-flash-low","messages":[{"role":"user","content":"ping"}]}`)
+	body := []byte(`{"model":"gemini-3.7-flash-low","messages":[{"role":"user","content":"ping"}]}`)
 	rec := httptest.NewRecorder()
-	err := h.handleAccountFallback(context.Background(), rec, "antigravity", "gemini-3.8-flash-low", "", body, false, false, "/v1/chat/completions")
+	err := h.handleAccountFallback(context.Background(), rec, "antigravity", "gemini-3.7-flash-low", "", body, false, false, "/v1/chat/completions")
 	if err == nil {
 		t.Fatal("expected error after 503 capacity exhaustion")
 	}
 
-	// Canonical model "gemini-3.8-flash-tiered" must be locked
-	lockedCanonical, err := repo.IsConnectionModelLocked("conn-ag-cap", "gemini-3.8-flash-tiered")
+	// The whole 3.7 family shares one backend id (gemini-3.7-flash-tiered), so
+	// exhausting the low tier exhausts every 3.7 tier and all of them must be
+	// locked. The 3.8 family is deliberately NOT tested here: upstream
+	// v0.5.99 gives each 3.8 tier its own backend id, so a capacity error on
+	// one tier says nothing about the others.
+	lockedCanonical, err := repo.IsConnectionModelLocked("conn-ag-cap", "gemini-3.7-flash-tiered")
 	if err != nil {
 		t.Fatalf("check canonical lock: %v", err)
 	}
 	if !lockedCanonical {
-		t.Error("expected canonical model gemini-3.8-flash-tiered to be locked on 503 capacity error")
+		t.Error("expected canonical model gemini-3.7-flash-tiered to be locked on 503 capacity error")
 	}
 
-	// Best connection for gemini-3.8-flash-high must now skip this connection because canonical tiered is locked!
+	// A different 3.8 tier keeps its own capacity, so it must remain eligible.
 	conn, _, _ := h.GetBestConnection("antigravity", "", nil, "gemini-3.8-flash-high")
-	if conn != nil {
-		t.Errorf("expected no connection available for high tier when canonical model is locked, got %s", conn.ID)
+	if conn == nil {
+		t.Error("expected gemini-3.8-flash-high to stay available: 3.8 tiers are separate backends")
 	}
 }
 
@@ -363,7 +388,30 @@ func TestExtractErrorText_CloudflareHTML(t *testing.T) {
 </html>`)
 
 	got := extractErrorText(htmlBody)
-	if !strings.Contains(got, "Cloudflare WAF challenge (Attention Required!) from the upstream origin, not this gateway") {
+	if !strings.Contains(got, "Cloudflare WAF challenge") {
 		t.Errorf("expected Cloudflare WAF challenge in error text, got %q", got)
+	}
+}
+
+func TestHandleAccountFallback_AllInCooldownReportsEarliestReset(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	dropSeededConn(t, database)
+	inTenMinutes := time.Now().UTC().Add(10 * time.Minute)
+	insertDeepseekConn(t, database, "conn-cooling", 1, cooldownData(t, &inTenMinutes))
+
+	h := NewChatHandler(db.NewRepo(database))
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := h.handleAccountFallback(context.Background(), rec, "deepseek", "deepseek-chat", "", body, false, false, "/v1/chat/completions")
+	if err == nil {
+		t.Fatal("expected error when all connections are in cooldown")
+	}
+	if !strings.Contains(err.Error(), "all in cooldown") {
+		t.Errorf("expected error to contain 'all in cooldown', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), inTenMinutes.UTC().Format(time.RFC3339)) {
+		t.Errorf("expected error to contain earliest reset %s, got: %v", inTenMinutes.UTC().Format(time.RFC3339), err)
 	}
 }

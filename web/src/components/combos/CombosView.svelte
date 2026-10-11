@@ -3,24 +3,25 @@
   import { api, type Combo, type ProviderConnection, type ProviderNode } from '../../api/client'
   import {
     clearJudgeModel,
+    comboStrategyOptions,
     getComboModels,
-    normalizeModelLimits,
+    INHERIT_STRATEGY,
     parseCapacityAdapterSettings,
+    resolveComboStrategy,
     updateComboStrategy,
     updateJudgeModel,
-    updateModelLimit,
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
-  import { parseDisabledModelsMap } from '../../lib/customModels'
   import ComboCard from './ComboCard.svelte'
   import CombosHeader from './CombosHeader.svelte'
   import CreateComboModal from './CreateComboModal.svelte'
   import ModelPickerModal from './ModelPickerModal.svelte'
   import CapacityAdapterSection from './CapacityAdapterSection.svelte'
   import ConfirmModal from '../../lib/ui/ConfirmModal.svelte'
+  import { copyToClipboard } from '../../lib/clipboard'
   interface Props {
     combos?: Combo[]
     connections?: ProviderConnection[]
@@ -38,49 +39,65 @@
   }: Props = $props()
 
   // Upstream parity (combos page.js fetchData): webSearch/webFetch combos
-  // (notably search-combo) live under media-providers/web, not here.
+  // (notably search-combo) live under media-providers/web, not here. The
+  // auto-generated kinds are llm combos too and stay visible here.
   function isLlmCombo(c: Combo): boolean {
-    if (c.kind && c.kind !== 'llm') return false
+    if (c.kind && c.kind !== 'llm' && !c.kind.startsWith('auto-')) return false
     if (c.name === 'search-combo' || c.name.startsWith('search-combo-')) return false
     return true
   }
   let llmCombos = $derived(combos.filter(isLlmCombo))
-
-  function comboHasDisabled(combo: Combo): boolean {
-    return getComboModels(combo).some((entry) => {
-      const slash = entry.indexOf('/')
-      if (slash < 0) return false
-      const prefix = entry.slice(0, slash)
-      const model = entry.slice(slash + 1)
-      return (
-        (disabledModels[prefix] || []).includes(model) ||
-        Object.values(disabledModels).some((ids) => ids.includes(entry))
-      )
-    })
-  }
 
   let comboStrategies = $state<Record<string, ComboStrategyInfo>>({})
   let capacityAdapter = $state<CapacityAdapterState>({
     vision: { enabled: true, roundRobin: false, models: ['ag/gemini-3.8-flash-high'] },
     audioInput: { enabled: true, roundRobin: false, models: [] },
   })
+  // Upstream #4576: the inherit option has to name what it inherits, and an
+  // inheriting combo still routes with the global mode, so the value has to be
+  // here even though nothing else on this page reads it.
+  let globalComboStrategy = $state('first-model')
   let copiedId = $state<string | null>(null)
-  let disabledModels = $state<Record<string, string[]>>({})
-  let modelRps = $state<Record<string, number>>({})
-  let modelContextLimit = $state<Record<string, number>>({})
 
   // Edit / Create Modal state
   let editingCombo = $state<Combo | null>(null)
   let modalModels = $state<string[]>([])
   let isSavingCombo = $state(false)
+  let comboSaveError = $state('')
   let modalNameResetKey = $state(0)
 
   // Model Picker Modal state
   let showModelPicker = $state(false)
   let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge'>('combo')
 
-  // Confirm Delete Modal state (upstream confirmState parity)
-  let confirmState = $state<{ name: string; id: string } | null>(null)
+  // Confirm Delete Modal state (upstream confirmState parity). Carries the ids
+  // to remove.
+  let confirmState = $state<{ name: string; ids: string[] } | null>(null)
+
+  // Selection drives the bulk bar below the list, matching upstream: a checkbox
+  // per card plus a "Select all" that names the count, and bulk strategy /
+  // delete / clear actions that only exist while something is selected. The
+  // Set is re-created on every change so Svelte 5 sees it (mutating in place is
+  // not tracked).
+  let selectedIds = $state<Set<string>>(new Set())
+
+  function toggleSelect(combo: Combo) {
+    const next = new Set(selectedIds)
+    if (next.has(combo.id)) next.delete(combo.id)
+    else next.add(combo.id)
+    selectedIds = next
+  }
+
+  let selectedCombos = $derived(llmCombos.filter((c) => selectedIds.has(c.id)))
+  let allSelected = $derived(llmCombos.length > 0 && selectedCombos.length === llmCombos.length)
+
+  function toggleSelectAll() {
+    selectedIds = allSelected ? new Set() : new Set(llmCombos.map((c) => c.id))
+  }
+
+  function clearSelection() {
+    selectedIds = new Set()
+  }
 
   async function loadSettings() {
     try {
@@ -88,38 +105,37 @@
       if (s?.comboStrategies && typeof s.comboStrategies === 'object') {
         comboStrategies = s.comboStrategies as Record<string, ComboStrategyInfo>
       }
+      if (typeof s?.comboStrategy === 'string') {
+        globalComboStrategy = s.comboStrategy
+      }
       if (s?.capacityAdapter && typeof s.capacityAdapter === 'object') {
         capacityAdapter = parseCapacityAdapterSettings(s.capacityAdapter as Record<string, unknown>)
       }
-      modelRps = normalizeModelLimits(s?.modelRps)
-      modelContextLimit = normalizeModelLimits(s?.modelContextLimit)
     } catch (e) {
       console.error('Failed to load settings:', e)
-    }
-    try {
-      disabledModels = parseDisabledModelsMap(await api.getDisabledModels())
-    } catch {
-      disabledModels = {}
     }
   }
 
   $effect(() => { loadSettings() })
-  // Reset create-modal state when it opens. wasCreateOpen is a plain
-  // (non-reactive) var on purpose: edge-detecting by reading modalNameResetKey
-  // inside this effect would register it as a dependency, and the += write
-  // would then re-trigger the effect forever (stuck modal, dead buttons).
-  let wasCreateOpen = false
+  // Reset the create form once per open. Unguarded, this looped forever: the
+  // effect bumps `modalNameResetKey`, which the `{#key}` block below reads, that
+  // block re-creates CreateComboModal, and that re-queues the effect. Svelte
+  // aborted the flush with effect_update_depth_exceeded after 1000 rounds, so
+  // "Add Model" never opened the picker at all.
+  let createSessionOpen = $state(false)
   $effect(() => {
-    const open = isCreatingOpen
-    if (open && !editingCombo && !wasCreateOpen) {
-      modalModels = []
-      modalNameResetKey += 1
+    if (!isCreatingOpen) {
+      createSessionOpen = false
+      return
     }
-    wasCreateOpen = open
+    if (editingCombo || createSessionOpen) return
+    createSessionOpen = true
+    modalModels = []
+    modalNameResetKey += 1
   })
 
   function copyName(name: string, id: string) {
-    navigator.clipboard.writeText(name)
+    copyToClipboard(name)
     copiedId = id
     setTimeout(() => {
       if (copiedId === id) copiedId = null
@@ -131,7 +147,12 @@
     comboStrategies = updated
     try {
       await api.patchSettings({ comboStrategies: updated })
-      await api.updateCombo(combo.id, { strategy: newStrategy })
+      // `inherit` is a dashboard-only value: the combo row has no override to
+      // write, and the server would read the literal string as a strategy the
+      // router does not implement.
+      if (newStrategy !== INHERIT_STRATEGY) {
+        await api.updateCombo(combo.id, { strategy: newStrategy })
+      }
       onRefresh()
     } catch (e) {
       console.error('Failed to update combo strategy:', e)
@@ -158,27 +179,6 @@
     }
   }
 
-  async function saveModelLimit(
-    key: 'modelRps' | 'modelContextLimit',
-    next: Record<string, number>
-  ) {
-    if (key === 'modelRps') modelRps = next
-    else modelContextLimit = next
-    try {
-      await api.patchSettings({ [key]: next })
-    } catch (e) {
-      console.error(`Failed to update ${key} limits:`, e)
-    }
-  }
-
-  async function handleSetModelRps(model: string, rps: number) {
-    await saveModelLimit('modelRps', updateModelLimit(modelRps, model, rps))
-  }
-
-  async function handleSetModelContextLimit(model: string, tokens: number) {
-    await saveModelLimit('modelContextLimit', updateModelLimit(modelContextLimit, model, tokens))
-  }
-
   async function saveCapacityAdapter(next: CapacityAdapterState) {
     capacityAdapter = next
     try {
@@ -191,21 +191,24 @@
   function openCreateModal() {
     editingCombo = null
     modalModels = []
+    comboSaveError = ''
     isCreatingOpen = true
   }
   function openEditModal(combo: Combo) {
     editingCombo = combo
     modalModels = [...getComboModels(combo)]
+    comboSaveError = ''
     isCreatingOpen = true
   }
   function closeModal() {
     isCreatingOpen = false
     editingCombo = null
-    modalModels = []
+    comboSaveError = ''
   }
 
   async function handleSaveCombo(name: string, models: string[]) {
     isSavingCombo = true
+    comboSaveError = ''
     try {
       if (editingCombo) {
         await api.updateCombo(editingCombo.id, { name, models })
@@ -215,6 +218,9 @@
       closeModal()
       onRefresh()
     } catch (e) {
+      // A refused write (the name already addresses a combo, a model alias or
+      // a custom model id) must be visible, or the guard looks inert.
+      comboSaveError = e instanceof Error ? e.message : String(e)
       console.error('Failed to save combo:', e)
     } finally {
       isSavingCombo = false
@@ -270,15 +276,63 @@
       showModelPicker = false
     }
   }
-  async function handleDeleteCombo() {
+  async function handleDeleteCombos() {
     if (!confirmState) return
-    const id = confirmState.id
+    const ids = confirmState.ids
+    let deleted = 0
+    for (const id of ids) {
+      try {
+        await api.deleteCombo(id)
+        deleted++
+      } catch (e) {
+        console.error(`Failed to delete combo ${id}:`, e)
+      }
+    }
+    confirmState = null
+    clearSelection()
+    onRefresh()
+    if (deleted < ids.length) {
+      alert(`Deleted ${deleted} of ${ids.length} combo(s). The rest could not be removed.`)
+    }
+  }
+
+  function handleDeleteSelected() {
+    if (selectedCombos.length === 0) return
+    confirmState = {
+      name: selectedCombos.map((c) => c.name).join(', '),
+      ids: selectedCombos.map((c) => c.id),
+    }
+  }
+
+  let bulkStrategy = $state('')
+
+  // Upstream writes the strategy through the same settings patch a single card
+  // uses, then one updateCombo per row: comboStrategies is keyed by combo NAME,
+  // so it has to be rewritten as a whole or the last write wins.
+  async function handleApplyBulkStrategy() {
+    if (!bulkStrategy || selectedCombos.length === 0) return
+    const targets = selectedCombos
+    let next = comboStrategies
+    for (const combo of targets) {
+      next = updateComboStrategy(next, combo.name, bulkStrategy)
+    }
+    comboStrategies = next
     try {
-      await api.deleteCombo(id)
-      confirmState = null
+      await api.patchSettings({ comboStrategies: next })
+      // `inherit` is dashboard-only: it removes the override, so there is no
+      // strategy to write on the combo row. Sending the literal string would
+      // hand the router a mode it does not implement.
+      if (bulkStrategy !== INHERIT_STRATEGY) {
+        for (const combo of targets) {
+          await api.updateCombo(combo.id, { strategy: bulkStrategy })
+        }
+      }
+      bulkStrategy = ''
       onRefresh()
     } catch (e) {
-      console.error('Failed to delete combo:', e)
+      alert(
+        'Failed to set strategy: ' + (e instanceof Error ? e.message : String(e))
+      )
     }
   }
 
@@ -286,6 +340,64 @@
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
   <CombosHeader onCreateClick={openCreateModal} />
+
+  <!-- Upstream selection bar: the count is on the checkbox, and the bulk
+       actions only exist while something is selected, so the destructive
+       Delete is never sitting next to Create. -->
+  {#if llmCombos.length > 0}
+    <div
+      class="flex min-w-0 flex-col gap-2 rounded-lg border border-black/5 bg-black/[0.015] px-3 py-2 dark:border-white/5 dark:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between"
+    >
+      <label class="flex cursor-pointer items-center gap-2 text-xs text-text-muted hover:text-primary select-none">
+        <input
+          type="checkbox"
+          checked={allSelected}
+          onchange={toggleSelectAll}
+          class="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+        />
+        <span>
+          {selectedCombos.length > 0 ? `${selectedCombos.length} selected` : `Select all (${llmCombos.length})`}
+        </span>
+      </label>
+
+      {#if selectedCombos.length > 0}
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <div class="w-full min-w-[160px] sm:w-[200px]">
+            <select
+              bind:value={bulkStrategy}
+              class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-brand-500 focus:border-brand-500 cursor-pointer"
+            >
+              <option value="" disabled>Set strategy…</option>
+              {#each comboStrategyOptions(globalComboStrategy) as strategy (strategy.value)}
+                <option value={strategy.value}>{strategy.label}</option>
+              {/each}
+            </select>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onclick={handleApplyBulkStrategy}
+            disabled={!bulkStrategy}
+            class="whitespace-nowrap"
+          >
+            Apply Strategy
+          </Button>
+          <Button
+            icon="delete"
+            size="sm"
+            variant="danger"
+            onclick={handleDeleteSelected}
+            class="whitespace-nowrap"
+          >
+            Delete ({selectedCombos.length})
+          </Button>
+          <Button size="sm" variant="ghost" onclick={clearSelection} class="whitespace-nowrap">
+            Clear
+          </Button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Combos List -->
   {#if llmCombos.length === 0}
@@ -307,14 +419,16 @@
         <ComboCard
           {combo}
           strategyInfo={comboStrategies[combo.name]}
-          hasDisabledModels={comboHasDisabled(combo)}
+          globalStrategy={globalComboStrategy}
           {copiedId}
           onSetStrategy={handleSetStrategy}
           onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
           onClearJudge={clearJudge}
           onCopy={copyName}
           onEdit={openEditModal}
-          onDelete={(c) => (confirmState = { name: c.name, id: c.id })}
+          onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
+          isSelected={selectedIds.has(combo.id)}
+          onToggleSelect={toggleSelect}
         />
       {/each}
     </div>
@@ -334,15 +448,12 @@
     isOpen={isCreatingOpen}
     {editingCombo}
     models={modalModels}
-    {modelRps}
-    {modelContextLimit}
     isSaving={isSavingCombo}
+    saveError={comboSaveError}
     onClose={closeModal}
     onSave={handleSaveCombo}
     onOpenModelPicker={() => openModelPicker('combo')}
     onUpdateModels={(newModels) => (modalModels = newModels)}
-    onSetModelRps={handleSetModelRps}
-    onSetModelContextLimit={handleSetModelContextLimit}
   />
 {/key}
 
@@ -364,7 +475,13 @@
 <ConfirmModal
   isOpen={!!confirmState}
   title="Delete Combo"
-  message={confirmState ? `Delete combo "${confirmState.name}"?` : 'Delete this combo?'}
+  message={
+    confirmState
+      ? confirmState.ids.length === 1
+        ? `Delete combo "${confirmState.name}"?`
+        : `Delete ${confirmState.ids.length} combo(s)? (${confirmState.name})`
+      : 'Delete this combo?'
+  }
   onClose={() => (confirmState = null)}
-  onConfirm={handleDeleteCombo}
+  onConfirm={handleDeleteCombos}
 />

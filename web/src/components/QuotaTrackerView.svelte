@@ -6,10 +6,27 @@
   // bulk turn off empty / on available, quota hide/show via settings,
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
-  import { api, type ProviderConnection } from '../api/client'
+  import {
+    api,
+    type CodexResetCredit,
+    type ConnectionUsageResponse,
+    type ProviderConnection,
+  } from '../api/client'
+  import {
+    getCodexResetCreditExpiryLabel,
+    getResetCreditConfirmation,
+    getResetCreditWindowTitle,
+    newResetCreditIdempotencyKey,
+  } from '../lib/codexResetCredit'
   import { PROVIDER_CATALOG } from '../lib/providers'
+  import { copyToClipboard } from '../lib/clipboard'
+  import { emailPrivacy, formatEmailLabel } from '../lib/privacy'
   import Toggle from '../lib/ui/Toggle.svelte'
+  import Menu from '../lib/ui/Menu.svelte'
+  import MenuItem from '../lib/ui/MenuItem.svelte'
+  import { maxPanelWidth, placePanel, placementStyle } from '../lib/ui/menuPosition'
   import { getIconPath } from './connections/types'
+  import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
   import {
     ACCOUNT_FILTER_OPTIONS,
@@ -42,6 +59,11 @@
     type QuotaVisibility,
     type Totals,
   } from './quota/types'
+  import {
+    QUOTA_FETCH_CONCURRENCY,
+    runQuotaFetchCycle,
+    type QuotaFetchTarget,
+  } from './quota/fetch'
 
   const CONNECTIONS_PAGE_SIZE = 20
 
@@ -70,9 +92,37 @@
   let providerFilter = $state('all')
   let providerOptions = $state<string[]>([])
   let providerMenuOpen = $state(false)
+  // The provider panel is `position: fixed` so it cannot be clipped by the
+  // page's scroll container; measuring it against the trigger keeps it on
+  // screen at phone widths (issue #224).
+  let providerDropdownRoot: HTMLDivElement | null = $state(null)
+  let providerDropdownPanel: HTMLDivElement | null = $state(null)
+  let providerPanelStyle = $state('')
+
+  /** The panel's preferred width, capped against the viewport at placement. */
+  const PROVIDER_PANEL_MIN_WIDTH = '16rem'
+
+  function placeProviderPanel(): void {
+    const trigger = providerDropdownRoot?.querySelector('button')
+    if (!trigger || !providerDropdownPanel) return
+    providerPanelStyle = `${placementStyle(
+      placePanel({
+        align: 'left',
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: providerDropdownPanel.offsetWidth,
+      }),
+    )};max-width:${maxPanelWidth()};min-width:min(${PROVIDER_PANEL_MIN_WIDTH}, ${maxPanelWidth()})`
+  }
+
   let accountFilter = $state('all')
   let quotaSortMode = $state('default')
   let expiringFirst = $state(false)
+
+  // The panel's width is only known once it renders, so placement runs on the
+  // render that opens it rather than on the click.
+  $effect(() => {
+    if (providerMenuOpen && providerDropdownPanel) placeProviderPanel()
+  })
 
   // Pagination
   let page = $state(1)
@@ -93,14 +143,8 @@
     codex: {},
   })
 
-  // Edit modal state
+  // Edit modal state. The modal itself owns its fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
-  let editName = $state('')
-  let editPriority = $state(1)
-  let isTestingEdit = $state(false)
-  let editTestStatus = $state<'ok' | 'error' | null>(null)
-  let editTestError = $state<string | null>(null)
-  let isSavingEdit = $state(false)
   let copiedArnId = $state<string | null>(null)
 
   // Timers
@@ -110,6 +154,66 @@
   let initialLoadDone = false
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  // The controller of the quota cycle currently in flight, if any. Kept out of
+  // $state: it is a cancellation handle, not something the view renders, so
+  // putting it in the reactive graph would only add renders nobody reads.
+  let quotaCycleController: AbortController | null = null
+
+  // Runs one full pass over `targets`. Starting a pass supersedes any pass
+  // still running: its reads are aborted and its late answers are dropped, so
+  // a page change mid-refresh cannot leave rows blank or overwrite the new page.
+  async function fetchQuotasFor(
+    targets: QuotaFetchTarget[],
+    visible: ProviderConnection[],
+    force = false,
+  ): Promise<void> {
+    quotaErrors = filterQuotaStateByConnections(quotaErrors, visible)
+    quotaData = filterQuotaStateByConnections(quotaData, visible)
+    quotaLoading = buildLoadingState(targets)
+
+    // Supersede the pass in flight before starting this one. Its reads are
+    // aborted, so the browser stops waiting on answers no row will use and the
+    // late ones can no longer overwrite the rows below.
+    quotaCycleController?.abort()
+    const controller = new AbortController()
+    quotaCycleController = controller
+
+    await runQuotaFetchCycle<ConnectionUsageResponse>({
+      targets,
+      signal: controller.signal,
+      concurrency: QUOTA_FETCH_CONCURRENCY,
+      force,
+      fetch: (target, isForced) =>
+        api.getConnectionUsage(target.id, isForced, controller.signal),
+      onResult: (target, data) => {
+        const quotaEntry: QuotaEntry = {
+          quotas: parseQuotaData(target.provider, data),
+          plan: data?.plan || null,
+          message: data?.message || null,
+          raw: data,
+        }
+        quotaData = { ...quotaData, [target.id]: quotaEntry }
+        quotaErrors = { ...quotaErrors, [target.id]: '' }
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        setQuotaCache(target.id, quotaEntry)
+      },
+      onError: (target, error) => {
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        const message = error instanceof Error ? error.message : String(error)
+        // 404-style: the connection was deleted underneath the page, which is
+        // not a failure worth showing on a row that is about to disappear.
+        if (message.toLowerCase().includes('not found')) return
+        quotaErrors = { ...quotaErrors, [target.id]: message || 'Failed to fetch quota' }
+      },
+      onComplete: () => {
+        if (quotaCycleController === controller) quotaCycleController = null
+        lastUpdated = new Date()
+        refreshingAll = false
+      },
+    })
+  }
+
   const KIRO_METHOD_LABELS: Record<string, string> = {
     'builder-id': 'AWS Builder ID',
     idc: 'IAM Identity Center',
@@ -159,6 +263,118 @@
     return Number.isFinite(count) ? Math.max(0, count) : 0
   }
 
+  // Codex reset credits. The counter on the row only says how many are left;
+  // opening the chooser is what lists them, so the button costs nothing until
+  // it is used.
+  let resetCreditConn = $state<ProviderConnection | null>(null)
+  let resetCreditList = $state<CodexResetCredit[]>([])
+  let resetCreditSelected = $state('')
+  let resetCreditLoading = $state(false)
+  let resetCreditConsuming = $state(false)
+  let resetCreditError = $state('')
+  // One key per open session, reused across a retry so a double submit or a
+  // retried request cannot redeem the same credit twice.
+  let resetCreditIdempotencyKey = $state('')
+  // availableCount drives the empty-state wording: a positive count with an
+  // empty list means the details could not be read, which is a different
+  // situation from having no credits at all.
+  let resetCreditCount = $state(0)
+  let resetCreditConfirming = $state(false)
+  let resetCreditPending = $state<CodexResetCredit | null>(null)
+
+  // Redeeming spends the credit for good, so the chooser is two-step: pick a
+  // credit, then confirm the irreversible action. Ported from OmniRoute's
+  // CodexResetCreditsModal.
+  function requestResetCredit(credit: CodexResetCredit) {
+    if (resetCreditConsuming) return
+    resetCreditPending = credit
+    resetCreditConfirming = true
+    resetCreditError = ''
+  }
+
+  function backToResetCreditList() {
+    if (resetCreditConsuming) return
+    resetCreditConfirming = false
+    resetCreditPending = null
+    resetCreditError = ''
+  }
+
+
+  function closeResetCredits() {
+    if (resetCreditConsuming) return
+    resetCreditConn = null
+    resetCreditList = []
+    resetCreditSelected = ''
+    resetCreditError = ''
+    resetCreditCount = 0
+    resetCreditConfirming = false
+    resetCreditPending = null
+    resetCreditIdempotencyKey = ''
+  }
+
+  async function openResetCredits(conn: ProviderConnection) {
+    resetCreditConn = conn
+    resetCreditList = []
+    resetCreditSelected = ''
+    resetCreditError = ''
+    resetCreditCount = 0
+    resetCreditConfirming = false
+    resetCreditPending = null
+    // Mint here, not at declare time: an empty key is not "no key", it is a
+    // key the server replaces with a fresh one per request, which is exactly
+    // the double-redeem this was meant to prevent. Every attempt within one
+    // open session then shares a key, so a retried or double-submitted confirm
+    // cannot spend a second credit.
+    resetCreditIdempotencyKey = newResetCreditIdempotencyKey()
+    resetCreditLoading = true
+    try {
+      const res = await api.listCodexResetCredits(conn.id)
+      if (res?.error) {
+        resetCreditError = res.error
+        resetCreditList = []
+        return
+      }
+      resetCreditList = res?.credits ?? []
+      resetCreditCount = res?.availableCount ?? 0
+      // The server returns them soonest-expiry first, so the default choice is
+      // the one that frees the quota soonest.
+      resetCreditSelected = resetCreditList[0]?.selectionToken ?? ''
+    } catch (err) {
+      resetCreditError = err instanceof Error ? err.message : 'Failed to load reset credits.'
+    } finally {
+      resetCreditLoading = false
+    }
+  }
+
+  async function confirmResetCredit() {
+    const conn = resetCreditConn
+    const credit = resetCreditPending
+    // The token is carried from the confirm step, not the radio selection, so
+    // exactly the credit the warning was shown for is the one that gets spent.
+    // An empty key would let the server mint a fresh one per request, which is
+    // the double-spend this guard exists to prevent — refuse rather than send one.
+    if (!conn || !credit || resetCreditConsuming || !resetCreditIdempotencyKey) return
+    resetCreditConsuming = true
+    resetCreditError = ''
+    try {
+      const res = await api.consumeCodexResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
+      if (res?.error) {
+        resetCreditError = res.error
+        return
+      }
+      resetCreditConn = null
+      resetCreditList = []
+      resetCreditSelected = ''
+      // The quota windows are what the user reset, so re-read them rather than
+      // leaving a stale reading on screen.
+      await refreshProvider(conn.id, conn.provider)
+    } catch (err) {
+      resetCreditError = err instanceof Error ? err.message : 'Failed to redeem the reset credit.'
+    } finally {
+      resetCreditConsuming = false
+    }
+  }
+
   async function toggleAutoPing(connId: string, provider: string, enabled: boolean) {
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
@@ -177,55 +393,22 @@
     }
   }
 
+  // Edit modal. Fields, probe and payload live in EditConnectionModal (issue
+  // #158); this only decides when it opens and who refreshes the list.
   function openEditModal(conn: ProviderConnection) {
     editingConnection = conn
-    editName = conn.name || ''
-    editPriority = conn.priority ?? 1
-    editTestStatus = null
-    editTestError = null
   }
 
-  async function testEditingConnection() {
+  async function saveEditingConnection(payload: ConnectionUpdate) {
     if (!editingConnection) return
-    isTestingEdit = true
-    editTestStatus = null
-    editTestError = null
-    try {
-      const res = await api.testConnection(editingConnection.id)
-      if (res?.valid) {
-        editTestStatus = 'ok'
-      } else {
-        editTestStatus = 'error'
-        editTestError = res?.error || 'Test failed'
-      }
-    } catch (err) {
-      editTestStatus = 'error'
-      editTestError = err instanceof Error ? err.message : 'Test failed'
-    } finally {
-      isTestingEdit = false
-    }
-  }
-
-  async function saveEditingConnection() {
-    if (!editingConnection) return
-    isSavingEdit = true
-    try {
-      await api.updateConnection(editingConnection.id, {
-        name: editName.trim(),
-        priority: editPriority,
-      })
-      editingConnection = null
-      await fetchConnections(page)
-    } catch (err) {
-      console.error('Failed to save connection:', err)
-    } finally {
-      isSavingEdit = false
-    }
+    await api.updateConnection(editingConnection.id, payload)
+    editingConnection = null
+    await fetchConnections(page)
   }
 
   function copyArn(text?: string, id?: string) {
     if (!text || !id) return
-    navigator.clipboard?.writeText(text)
+    copyToClipboard(text)
     copiedArnId = id
     setTimeout(() => {
       if (copiedArnId === id) copiedArnId = null
@@ -283,6 +466,9 @@
     }
   }
 
+  // Refreshes one connection on its own. The per-row button must not cancel the
+  // page-wide pass still working through the other rows, so this read owns its
+  // controller and nothing else aborts it.
   async function fetchQuota(
     connectionId: string,
     provider: string,
@@ -290,31 +476,35 @@
   ): Promise<void> {
     quotaLoading = { ...quotaLoading, [connectionId]: true }
     quotaErrors = { ...quotaErrors, [connectionId]: '' }
+    const controller = new AbortController()
 
-    try {
-      const data = await api.getConnectionUsage(connectionId, force)
-      const parsedQuotas = parseQuotaData(provider, data)
-      const quotaEntry: QuotaEntry = {
-        quotas: parsedQuotas,
-        plan: data?.plan || null,
-        message: data?.message || null,
-        raw: data,
-      }
-      quotaData = { ...quotaData, [connectionId]: quotaEntry }
-      quotaErrors = { ...quotaErrors, [connectionId]: '' }
-      setQuotaCache(connectionId, quotaEntry)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      // 404-style: connection not found — skip silently
-      if (message.toLowerCase().includes('not found')) {
-        console.warn(`[QuotaTracker] Connection not found for ${provider}, skipping`)
-        return
-      }
-      console.error(`[QuotaTracker] Error fetching quota for ${provider} (${connectionId}):`, error)
-      quotaErrors = { ...quotaErrors, [connectionId]: message || 'Failed to fetch quota' }
-    } finally {
-      quotaLoading = { ...quotaLoading, [connectionId]: false }
-    }
+    await runQuotaFetchCycle<ConnectionUsageResponse>({
+      targets: [{ id: connectionId, provider }],
+      signal: controller.signal,
+      force,
+      fetch: (target, isForced) =>
+        api.getConnectionUsage(target.id, isForced, controller.signal),
+      onResult: (target, data) => {
+        const quotaEntry: QuotaEntry = {
+          quotas: parseQuotaData(target.provider, data),
+          plan: data?.plan || null,
+          message: data?.message || null,
+          raw: data,
+        }
+        quotaData = { ...quotaData, [target.id]: quotaEntry }
+        quotaErrors = { ...quotaErrors, [target.id]: '' }
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        setQuotaCache(target.id, quotaEntry)
+      },
+      onError: (target, error) => {
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        const message = error instanceof Error ? error.message : String(error)
+        // 404-style: the connection is gone, which is not a failure worth
+        // showing on a row that is about to disappear.
+        if (message.toLowerCase().includes('not found')) return
+        quotaErrors = { ...quotaErrors, [target.id]: message || 'Failed to fetch quota' }
+      },
+    })
   }
 
   async function refreshProvider(connectionId: string, provider: string): Promise<void> {
@@ -335,19 +525,9 @@
 
     try {
       const visibleConnections = await fetchConnections(page)
-
-      quotaLoading = { ...buildLoadingState(visibleConnections) }
-      quotaErrors = filterQuotaStateByConnections(quotaErrors, visibleConnections)
-      quotaData = filterQuotaStateByConnections(quotaData, visibleConnections)
-
-      await Promise.allSettled(
-        visibleConnections.filter(shouldFetch).map((conn) => fetchQuota(conn.id, conn.provider)),
-      )
-
-      lastUpdated = new Date()
+      await fetchQuotasFor(visibleConnections.filter(shouldFetch), visibleConnections, force)
     } catch (error) {
       console.error('Error refreshing all providers:', error)
-    } finally {
       refreshingAll = false
     }
   }
@@ -557,6 +737,39 @@
       connections = initialConns
     }
 
+  // A filter is not navigation, so the URL is rewritten rather than pushed:
+  // the back button must not walk through every provider the operator clicked
+  // through. 'all' removes the parameter instead of pinning it.
+  $effect(() => {
+    void providerFilter
+    if (!initialLoadDone || typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    if (providerFilter && providerFilter !== 'all') {
+      url.searchParams.set('provider', providerFilter)
+    } else {
+      url.searchParams.delete('provider')
+    }
+    if (url.href !== window.location.href) {
+      window.history.replaceState(window.history.state, '', url)
+    }
+  })
+
+  // An unknown provider yields an empty list and an empty dropdown, so the
+  // deep link is released once the real option list is known.
+  $effect(() => {
+    if (!initialLoadDone || providerFilter === 'all') return
+    if (providerOptions.length === 0) return
+    if (providerOptions.includes(providerFilter)) return
+    providerFilter = 'all'
+  })
+
+    // A ?provider= deep link must survive a reload and be shareable, so the
+    // filter starts from the URL rather than always 'all'. An unknown value is
+    // kept until the option list arrives, then dropped — ignoring it up front
+    // would silently un-filter the page for anyone holding an old bookmark.
+    const deepLinkProvider = new URLSearchParams(window.location.search).get('provider')
+    if (deepLinkProvider) providerFilter = deepLinkProvider
+
     // Hydrate auto-refresh preference
     const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY)
     autoRefresh = stored === null ? true : stored === 'true'
@@ -581,13 +794,7 @@
       const visibleConnections = await fetchConnections(page)
       connectionsLoading = false
       initialLoadDone = true
-      quotaLoading = { ...buildLoadingState(visibleConnections) }
-      quotaErrors = filterQuotaStateByConnections(quotaErrors, visibleConnections)
-      quotaData = filterQuotaStateByConnections(quotaData, visibleConnections)
-      await Promise.allSettled(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
-      )
-      lastUpdated = new Date()
+      await fetchQuotasFor(visibleConnections, visibleConnections)
     })()
 
     // Pause auto-refresh when tab hidden (Page Visibility API)
@@ -600,19 +807,33 @@
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    // Close provider dropdown on outside click
+    // The provider filter closes when a click lands outside either the trigger
+    // or the panel. The panel is `position: fixed` and detached from the
+    // trigger's subtree, so `closest()` on an ancestor id would no longer
+    // cover it (issue #224).
     function handleDocClick(e: MouseEvent): void {
       const target = e.target as HTMLElement | null
-      if (!target?.closest('#provider-dropdown-container')) {
+      if (
+        !providerDropdownRoot?.contains(target) &&
+        !providerDropdownPanel?.contains(target)
+      ) {
         providerMenuOpen = false
       }
     }
     document.addEventListener('click', handleDocClick)
 
+    function repositionProviderPanel(): void {
+      placeProviderPanel()
+    }
+    window.addEventListener('resize', repositionProviderPanel)
+    window.addEventListener('scroll', repositionProviderPanel, true)
+
     return () => {
       stopTimers()
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       document.removeEventListener('click', handleDocClick)
+      window.removeEventListener('resize', repositionProviderPanel)
+      window.removeEventListener('scroll', repositionProviderPanel, true)
     }
   })
 
@@ -643,14 +864,24 @@
   function handleAccountFilterChange(): void {
     page = 1
   }
+
+  function selectProviderFilter(next: string): void {
+    if (shouldResetPage(providerFilter, next)) page = 1
+    providerFilter = next
+    providerMenuOpen = false
+  }
 </script>
 
 <div class="space-y-6">
   <!-- Header Controls -->
-  <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-end">
+  <!-- Header Controls: what the operator filters by stays visible, and every
+       verb moves into one menu. Email masking, expiring-first ordering, both
+       bulk toggles, auto-refresh and refresh were six more controls in this
+       row, which is what made it wrap onto a second line (issue #224). -->
+  <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
     <div class="flex flex-wrap items-center gap-1.5">
       <!-- Provider filter dropdown -->
-      <div class="relative" id="provider-dropdown-container">
+      <div class="relative" bind:this={providerDropdownRoot}>
         <button
           type="button"
           onclick={() => (providerMenuOpen = !providerMenuOpen)}
@@ -678,22 +909,13 @@
         </button>
 
         {#if providerMenuOpen}
-          <button
-            type="button"
-            class="fixed inset-0 z-30 cursor-default bg-transparent"
-            aria-label="Close provider filter"
-            onclick={() => (providerMenuOpen = false)}
-          ></button>
           <div
-            class="absolute left-0 top-full z-40 mt-2 w-64 overflow-hidden rounded-2xl border border-border-subtle bg-surface p-1.5 shadow-xl sm:w-72"
+            bind:this={providerDropdownPanel}
+            style={providerPanelStyle}
           >
             <button
               type="button"
-              onclick={() => {
-                if (shouldResetPage(providerFilter, 'all')) page = 1
-                providerFilter = 'all'
-                providerMenuOpen = false
-              }}
+              onclick={() => selectProviderFilter('all')}
               class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors {providerFilter ===
               'all'
                 ? 'bg-brand-500/10 text-brand-500'
@@ -710,11 +932,7 @@
               {#each providerOptions as prov (prov)}
                 <button
                   type="button"
-                  onclick={() => {
-                    if (shouldResetPage(providerFilter, prov)) page = 1
-                    providerFilter = prov
-                    providerMenuOpen = false
-                  }}
+                  onclick={() => selectProviderFilter(prov)}
                   class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors {providerFilter ===
                   prov
                     ? 'bg-brand-500/10 text-brand-500'
@@ -764,76 +982,52 @@
         </select>
       {/if}
 
-      <!-- Expiring first -->
-      <button
-        type="button"
-        onclick={() => (expiringFirst = !expiringFirst)}
-        aria-pressed={expiringFirst}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors {expiringFirst
-          ? 'border-amber-500/40 bg-amber-500/10 text-amber-500'
-          : 'border-border-subtle bg-surface text-text-main hover:bg-surface-2'}"
-        title="Sort accounts by earliest quota reset time"
-      >
-        <span class="material-symbols-outlined text-[14px]">hourglass_top</span>
-        <span class="hidden sm:inline">Expiring first</span>
-      </button>
+      <Menu label="Quota tracker actions" triggerIcon="tune" minWidth="17rem">
+        <MenuItem
+          label={$emailPrivacy ? 'Show full emails' : 'Mask emails'}
+          icon={$emailPrivacy ? 'visibility' : 'visibility_off'}
+          onSelect={() => emailPrivacy.toggle()}
+        />
+        <MenuItem
+          label="Expiring first"
+          icon="hourglass_top"
+          checkbox
+          pressed={expiringFirst}
+          onSelect={() => (expiringFirst = !expiringFirst)}
+        />
 
-      <!-- Bulk: disable depleted -->
-      <button
-        type="button"
-        onclick={handleDisableDepleted}
-        disabled={bulkToggling}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-        title="Disable connections with depleted quota on the current page"
-      >
-        <span class="material-symbols-outlined text-[14px]">block</span>
-        <span class="hidden sm:inline">Turn off Empty</span>
-      </button>
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-      <!-- Bulk: enable available -->
-      <button
-        type="button"
-        onclick={handleEnableAvailable}
-        disabled={bulkToggling}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 px-2 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-        title="Enable connections that still have quota on the current page"
-      >
-        <span class="material-symbols-outlined text-[14px]">check_circle</span>
-        <span class="hidden sm:inline">Turn on Available</span>
-      </button>
+        <MenuItem
+          label="Disable depleted accounts"
+          icon="block"
+          disabled={bulkToggling}
+          onSelect={handleDisableDepleted}
+        />
+        <MenuItem
+          label="Enable accounts with quota"
+          icon="check_circle"
+          disabled={bulkToggling}
+          onSelect={handleEnableAvailable}
+        />
 
-      <!-- Auto-refresh toggle -->
-      <button
-        type="button"
-        onclick={() => (autoRefresh = !autoRefresh)}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-surface px-2 text-xs transition-colors hover:bg-surface-2"
-        title={autoRefresh ? 'Disable auto-refresh' : 'Enable auto-refresh'}
-      >
-        <span
-          class="material-symbols-outlined text-[14px] {autoRefresh
-            ? 'text-brand-500'
-            : 'text-text-muted'}"
-        >
-          {autoRefresh ? 'toggle_on' : 'toggle_off'}
-        </span>
-        <span class="hidden text-text-main sm:inline">Auto-refresh</span>
-        {#if autoRefresh}
-          <span class="text-[10px] tabular-nums text-text-muted">({countdown}s)</span>
-        {/if}
-      </button>
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-      <!-- Refresh all -->
-      <button
-        type="button"
-        onclick={() => refreshAll(true)}
-        disabled={refreshingAll}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-surface px-2 text-xs text-text-main transition-colors hover:bg-surface-2 disabled:opacity-50"
-        title="Refresh all"
-      >
-        <span class="material-symbols-outlined text-[14px] {refreshingAll ? 'animate-spin' : ''}">
-          refresh
-        </span>
-      </button>
+        <MenuItem
+          label="Auto-refresh"
+          icon="sync"
+          checkbox
+          pressed={autoRefresh}
+          note={autoRefresh ? `${countdown}s` : ''}
+          onSelect={() => (autoRefresh = !autoRefresh)}
+        />
+        <MenuItem
+          label="Refresh all"
+          icon="refresh"
+          disabled={refreshingAll}
+          onSelect={() => refreshAll(true)}
+        />
+      </Menu>
     </div>
   </div>
 
@@ -907,10 +1101,10 @@
                     {providerLabel(conn.provider)}
                   </h3>
                   {#if getConnectionLabel(conn)}
-                    <p class="truncate text-xs text-text-muted">{getConnectionLabel(conn)}</p>
+                    <p class="truncate text-xs text-text-muted">{formatEmailLabel(getConnectionLabel(conn), $emailPrivacy)}</p>
                   {/if}
                   {#if getConnectionSecondaryLabel(conn)}
-                    <p class="truncate text-[11px] text-text-muted/80">{getConnectionSecondaryLabel(conn)}</p>
+                    <p class="truncate text-[11px] text-text-muted/80">{formatEmailLabel(getConnectionSecondaryLabel(conn), $emailPrivacy)}</p>
                   {/if}
                   {#if conn.provider === 'kiro'}
                     <div class="mt-1 flex flex-wrap items-center gap-1">
@@ -959,8 +1153,12 @@
                   {@const resetCreditCount = getCodexResetCreditCount(quota)}
                   <button
                     type="button"
-                    disabled={resetCreditCount <= 0 || isLoading || rowBusy}
-                    title={resetCreditCount > 0 ? `Codex reset credits: ${resetCreditCount}` : 'No Codex reset credits available'}
+                    disabled={isLoading || rowBusy || resetCreditConsuming}
+                    onclick={() => openResetCredits(conn)}
+                    aria-label="Redeem a Codex reset credit"
+                    title={resetCreditCount > 0
+                      ? `Redeem a Codex reset credit (${resetCreditCount} available)`
+                      : 'Check Codex reset credits'}
                     class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
@@ -1178,88 +1376,146 @@
 </div>
 
 {#if editingConnection}
+  <EditConnectionModal
+    connection={editingConnection}
+    onClose={() => (editingConnection = null)}
+    onSave={saveEditingConnection}
+    onSaveError={(message) => alert(message)}
+    testLabel="Test"
+  />
+{/if}
+
+{#if resetCreditConn}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div
       class="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
-      onclick={() => (editingConnection = null)}
+      onclick={closeResetCredits}
       role="presentation"
     ></div>
     <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
       <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
-        <h2 class="text-lg font-semibold text-text-main">Edit Connection</h2>
+        <h2 class="text-lg font-semibold text-text-main">Redeem a reset credit</h2>
         <button
           type="button"
-          onclick={() => (editingConnection = null)}
-          class="p-1 rounded text-text-muted hover:text-text-main cursor-pointer"
+          onclick={closeResetCredits}
+          disabled={resetCreditConsuming}
+          class="text-text-muted hover:text-text-main transition-colors disabled:opacity-50 cursor-pointer"
+          aria-label="Close"
         >
-          <span class="material-symbols-outlined text-lg">close</span>
+          <span class="material-symbols-outlined">close</span>
         </button>
       </div>
 
-      <div class="space-y-4">
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-quota-name">Name</label>
-          <input
-            id="edit-quota-name"
-            bind:value={editName}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-quota-priority">Priority</label>
-          <input
-            id="edit-quota-priority"
-            type="number"
-            min="1"
-            max="100"
-            bind:value={editPriority}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {#if editTestStatus === 'ok'}
-          <div class="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-            <span class="material-symbols-outlined text-sm">check_circle</span>
-            Connection is reachable
+      {#if resetCreditConfirming && resetCreditPending}
+        <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <div class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-amber-500">warning</span>
+            <div class="min-w-0">
+              <p class="font-semibold text-text-main">Redeem this reset credit?</p>
+              <p class="mt-1 text-sm text-text-muted">{getResetCreditConfirmation(resetCreditPending)}</p>
+            </div>
           </div>
-        {:else if editTestStatus === 'error'}
-          <div class="flex items-center gap-1.5 text-xs text-red-500">
-            <span class="material-symbols-outlined text-sm">error</span>
-            {editTestError || 'Test failed'}
-          </div>
+        </div>
+        <div class="mt-3 rounded-lg border border-border-subtle px-3 py-2.5">
+          <p class="text-sm font-medium text-text-main">{getResetCreditWindowTitle(resetCreditPending)}</p>
+          {#if getCodexResetCreditExpiryLabel(resetCreditPending.expiresAt).relative}
+            <p class="mt-0.5 text-[11px] text-text-muted">
+              Expires in {getCodexResetCreditExpiryLabel(resetCreditPending.expiresAt).relative}
+            </p>
+          {/if}
+        </div>
+        {#if resetCreditError}
+          <p class="mt-3 text-xs text-red-500">{resetCreditError}</p>
         {/if}
+      {:else}
+      <p class="text-xs text-text-muted mb-4">
+        Redeeming a credit resets the Codex usage window immediately instead of waiting for the
+        countdown to run out.
+      </p>
 
-        <div class="flex items-center justify-between pt-2 border-t border-border-subtle">
+      {#if resetCreditLoading}
+        <p class="text-sm text-text-muted py-4 text-center">Loading reset credits…</p>
+      {:else if resetCreditError && resetCreditList.length === 0}
+        <p class="text-sm text-red-500 py-4 text-center">{resetCreditError}</p>
+      {:else if resetCreditList.length === 0 && resetCreditCount > 0}
+        <p class="text-sm text-text-muted py-4 text-center">
+          Credit details are currently unavailable. Refresh and try again.
+        </p>
+      {:else if resetCreditList.length === 0}
+        <p class="text-sm text-text-muted py-4 text-center">No reset credits are available on this account.</p>
+      {:else}
+        <div class="space-y-2 max-h-64 overflow-y-auto">
+          {#each resetCreditList as credit, index (credit.selectionToken)}
+            <div
+              class="flex flex-col gap-3 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center {resetCreditSelected ===
+              credit.selectionToken
+                ? 'border-primary/40 bg-primary/5'
+                : 'border-border-subtle'}"
+            >
+              <span class="min-w-0 flex-1">
+                <span class="block text-sm font-medium text-text-main">
+                  {getResetCreditWindowTitle(credit)}
+                  {#if index === 0}
+                    <span class="ml-1 text-[10px] font-semibold text-primary">recommended</span>
+                  {/if}
+                </span>
+                {#if getCodexResetCreditExpiryLabel(credit.expiresAt).relative}
+                  <span class="block text-[11px] text-text-muted">
+                    Expires in {getCodexResetCreditExpiryLabel(credit.expiresAt).relative} · {getCodexResetCreditExpiryLabel(credit.expiresAt).absolute}
+                  </span>
+                {:else}
+                  <span class="block text-[11px] text-text-muted">No expiry date</span>
+                {/if}
+                {#if credit.description}
+                  <span class="block text-[11px] text-text-subtle mt-0.5">{credit.description}</span>
+                {/if}
+              </span>
+              <button
+                type="button"
+                onclick={() => requestResetCredit(credit)}
+                disabled={resetCreditConsuming}
+                class="shrink-0 px-2.5 py-1.5 rounded-lg bg-primary text-[11px] font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Redeem
+              </button>
+            </div>
+          {/each}
+        </div>
+
+        {#if resetCreditError}
+          <p class="mt-3 text-xs text-red-500">{resetCreditError}</p>
+        {/if}
+      {/if}
+      {/if}
+
+      <div class="flex justify-end gap-2 mt-5">
+        {#if resetCreditConfirming && resetCreditPending}
           <button
             type="button"
-            onclick={testEditingConnection}
-            disabled={isTestingEdit}
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+            onclick={backToResetCreditList}
+            disabled={resetCreditConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
           >
-            <span class="material-symbols-outlined text-sm {isTestingEdit ? 'animate-spin' : ''}">
-              {isTestingEdit ? 'progress_activity' : 'science'}
-            </span>
-            {isTestingEdit ? 'Testing...' : 'Test'}
+            Back
           </button>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              onclick={() => (editingConnection = null)}
-              class="px-3 py-1.5 text-xs font-medium rounded-md text-text-muted hover:text-text-main cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onclick={saveEditingConnection}
-              disabled={isSavingEdit}
-              class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              {isSavingEdit ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-        </div>
+          <button
+            type="button"
+            onclick={confirmResetCredit}
+            disabled={resetCreditConsuming}
+            class="px-3 py-2 rounded-lg bg-primary text-xs font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {resetCreditConsuming ? 'Redeeming…' : 'Redeem credit'}
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={closeResetCredits}
+            disabled={resetCreditConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            Close
+          </button>
+        {/if}
       </div>
     </div>
   </div>

@@ -5,15 +5,17 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
 	"time"
 
 	"9router/proxy/internal/models"
-	"9router/proxy/internal/providers"
 )
 
 // UpdateProviderConnection updates a provider connection's name, priority, isActive, data, and updatedAt.
-func (r *Repo) UpdateProviderConnection(id string, name string, priority int, isActive bool, data string) error {
+// priority is a pointer so a NULL priority stays NULL: coercing it to 0 would
+// sort the row ahead of every other account (priority 0 beats every positive
+// rank) and silently promote it to the top of the rotation.
+func (r *Repo) UpdateProviderConnection(id string, name string, priority *int, isActive bool, data string) error {
 	activeInt := 0
 	if isActive {
 		activeInt = 1
@@ -29,6 +31,29 @@ func (r *Repo) UpdateProviderConnection(id string, name string, priority int, is
 	)
 	if err != nil {
 		return fmt.Errorf("update provider connection %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateConnectionData updates only the data payload and updatedAt.
+// Background writers (token refresh, node sync, probe persist) must use this:
+// a full-row update writes back the name/isActive/priority they read before the
+// write, which reverts a reorder or a toggle the user just performed.
+func (r *Repo) UpdateConnectionData(id string, data string) error {
+	// Seal before the data write so a credential is never briefly readable in
+	// `data` after this call returns. A payload with no whitelisted credential
+	// (a background writer touching only expiresAt) is stored verbatim and the
+	// existing sealed slots are left alone.
+	sealed, err := r.sealOnWrite(id, data)
+	if err != nil {
+		return err
+	}
+	now := nowUTC()
+	if _, err = r.db.Exec(
+		`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`,
+		sealed, now, id,
+	); err != nil {
+		return fmt.Errorf("update connection data %s: %w", id, err)
 	}
 	return nil
 }
@@ -72,6 +97,74 @@ func (r *Repo) SetConnectionPriority(id string, priority int) error {
 	return nil
 }
 
+// ReorderProviderConnections atomically moves one connection within its
+// provider's pool and renumbers the whole pool to a contiguous 1..N sequence.
+//
+// The dashboard previously reordered with two independent full-row PUTs. That
+// has no cross-row transaction, so a partial failure left two rows sharing a
+// priority — and a stable sort over tied priorities then made every later swap
+// a literal no-op, permanently bricking the pair. Doing the swap plus the
+// renumber in one SQLite transaction makes partial failure impossible, and
+// normalising to 1..N also repairs any duplicates left behind by older data.
+// direction is -1 to move the row up and +1 to move it down.
+func (r *Repo) ReorderProviderConnections(provider, id string, direction int) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("reorder %s/%s: begin transaction: %w", provider, id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.Query(
+		`SELECT id FROM providerConnections WHERE provider = ?
+		 ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC, id ASC`,
+		provider,
+	)
+	if err != nil {
+		return fmt.Errorf("reorder %s/%s: read pool: %w", provider, id, err)
+	}
+	var order []string
+	for rows.Next() {
+		var rowID string
+		if scanErr := rows.Scan(&rowID); scanErr != nil {
+			_ = rows.Close()
+			return fmt.Errorf("reorder %s/%s: scan pool: %w", provider, id, scanErr)
+		}
+		order = append(order, rowID)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("reorder %s/%s: read pool: %w", provider, id, err)
+	}
+	_ = rows.Close()
+
+	idx := slices.Index(order, id)
+	if idx < 0 {
+		return fmt.Errorf("reorder %s/%s: connection not found in provider pool", provider, id)
+	}
+	target := idx + direction
+	if target < 0 || target >= len(order) {
+		// Already at the edge: still renumber, so a pool carrying stale or
+		// duplicate priorities is normalised even on a no-move request.
+		target = idx
+	} else {
+		order[idx], order[target] = order[target], order[idx]
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i, rowID := range order {
+		if _, err = tx.Exec(
+			`UPDATE providerConnections SET priority = ?, updatedAt = ? WHERE id = ?`,
+			i+1, now, rowID,
+		); err != nil {
+			return fmt.Errorf("reorder %s/%s: write rank %d: %w", provider, id, i+1, err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("reorder %s/%s: commit: %w", provider, id, err)
+	}
+	return nil
+}
+
 // CreateCombo inserts a new combo routing configuration.
 func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -79,18 +172,9 @@ func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 	if kind != "" {
 		kindVal = kind
 	}
-	
-	// Parse models from JSON to calculate context size
-	var models []string
-	if err := json.Unmarshal([]byte(modelsJSON), &models); err != nil {
-		// If we can't parse models, continue without context size
-		models = []string{}
-	}
-	contextSize := r.calculateComboContextSize(models)
-	
 	_, err := r.db.Exec(
-		`INSERT INTO combos (id, name, kind, models, contextSize, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, name, kindVal, modelsJSON, contextSize, now, now,
+		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, name, kindVal, modelsJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create combo %s: %w", id, err)
@@ -109,18 +193,9 @@ func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy string) error {
 	if kind != "" {
 		kindVal = kind
 	}
-	
-	// Parse models from JSON to calculate context size
-	var models []string
-	if err := json.Unmarshal([]byte(modelsJSON), &models); err != nil {
-		// If we can't parse models, continue without context size
-		models = []string{}
-	}
-	contextSize := r.calculateComboContextSize(models)
-	
 	_, err := r.db.Exec(
-		`UPDATE combos SET name = ?, kind = ?, models = ?, contextSize = ?, updatedAt = ? WHERE id = ?`,
-		name, kindVal, modelsJSON, contextSize, now, id,
+		`UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
+		name, kindVal, modelsJSON, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update combo %s: %w", id, err)
@@ -143,7 +218,11 @@ func (r *Repo) DeleteCombo(id string) error {
 
 // GetApiKeys retrieves all client API keys ordered by createdAt DESC.
 func (r *Repo) GetApiKeys() ([]*models.APIKey, error) {
-	rows, err := r.db.Query(`SELECT id, key, name, machineId, isActive, createdAt FROM apiKeys ORDER BY createdAt DESC`)
+	rows, err := r.db.Query(`SELECT id, key, name, machineId, isActive, createdAt,
+		rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
+		keyHash, lookupHash, keyDisplay,
+		expiresAt, lastUsedAt, usedCount, metadata
+		FROM apiKeys ORDER BY createdAt DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("get api keys: %w", err)
 	}
@@ -152,8 +231,56 @@ func (r *Repo) GetApiKeys() ([]*models.APIKey, error) {
 	keys := make([]*models.APIKey, 0)
 	for rows.Next() {
 		var k models.APIKey
-		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.MachineID, &k.IsActive, &k.CreatedAt); err != nil {
+		var nameVal, machineVal sql.NullString
+		var rateRPM, rateTPM, rateConc sql.NullInt64
+		var keyHash, lookupHash, keyDisplay sql.NullString
+		var expiresAt, lastUsedAt, metadata sql.NullString
+		var usedCount sql.NullInt64
+		if err := rows.Scan(&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
+			&rateRPM, &rateTPM, &rateConc,
+			&keyHash, &lookupHash, &keyDisplay,
+			&expiresAt, &lastUsedAt, &usedCount, &metadata); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		if nameVal.Valid {
+			k.Name = &nameVal.String
+		}
+		if machineVal.Valid {
+			k.MachineID = &machineVal.String
+		}
+		if rateRPM.Valid {
+			v := int(rateRPM.Int64)
+			k.RateLimitRPM = &v
+		}
+		if rateTPM.Valid {
+			v := int(rateTPM.Int64)
+			k.RateLimitTPM = &v
+		}
+		if rateConc.Valid {
+			v := int(rateConc.Int64)
+			k.RateLimitConcurrency = &v
+		}
+		if keyHash.Valid {
+			k.KeyHash = &keyHash.String
+		}
+		if lookupHash.Valid {
+			k.LookupHash = &lookupHash.String
+		}
+		if keyDisplay.Valid {
+			k.KeyDisplay = &keyDisplay.String
+		}
+		if expiresAt.Valid {
+			k.ExpiresAt = &expiresAt.String
+		}
+		if lastUsedAt.Valid {
+			k.LastUsedAt = &lastUsedAt.String
+		}
+		if usedCount.Valid {
+			v := int(usedCount.Int64)
+			k.UsedCount = &v
+		}
+		if metadata.Valid {
+			k.Metadata = &metadata.String
 		}
 		keys = append(keys, &k)
 	}
@@ -201,6 +328,69 @@ func (r *Repo) SetApiKeyStatus(id string, isActive bool) error {
 	_, err := r.db.Exec(`UPDATE apiKeys SET isActive = ? WHERE id = ?`, activeInt, id)
 	if err != nil {
 		return fmt.Errorf("set api key status %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateApiKeyUsage increments usedCount and sets lastUsedAt.
+func (r *Repo) UpdateApiKeyUsage(keyID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET lastUsedAt = ?, usedCount = usedCount + 1 WHERE id = ?`,
+		now, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("update api key usage %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyRateLimit updates rate limit columns for an API key.
+func (r *Repo) SetApiKeyRateLimit(keyID string, rpm, tpm, concurrency int) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET rateLimitRPM = ?, rateLimitTPM = ?, rateLimitConcurrency = ? WHERE id = ?`,
+		rpm, tpm, concurrency, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key rate limit %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyExpiry sets expiresAt for an API key.
+func (r *Repo) SetApiKeyExpiry(keyID, expiresAt string) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET expiresAt = ? WHERE id = ?`,
+		expiresAt, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key expiry %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyMetadata sets metadata JSON for an API key.
+func (r *Repo) SetApiKeyMetadata(keyID, metadata string) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET metadata = ? WHERE id = ?`,
+		metadata, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key metadata %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyName renames an API key. The name is operator-facing only — it never
+// reaches the wire — so an empty value clears it and the UI falls back to the
+// masked display.
+func (r *Repo) SetApiKeyName(keyID, name string) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET name = ? WHERE id = ?`,
+		name, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key name %s: %w", keyID, err)
 	}
 	return nil
 }
@@ -270,36 +460,6 @@ func (r *Repo) GetSettingsRaw() (map[string]any, error) {
 		raw = make(map[string]any)
 	}
 	return raw, nil
-}
-
-// calculateComboContextSize calculates the minimum context length among a list of models
-func (r *Repo) calculateComboContextSize(models []string) int {
-	if len(models) == 0 {
-		return 0
-	}
-	
-	minContext := 1000000 // Start with a large number
-	for _, modelID := range models {
-		// Parse provider and model from the modelID (format: provider/model)
-		parts := strings.SplitN(modelID, "/", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		provider := parts[0]
-		model := parts[1]
-		
-		// Get context length from catalog
-		contextWindow, _ := providers.GetCatalogLimits(provider, model)
-		if contextWindow > 0 && contextWindow < minContext {
-			minContext = contextWindow
-		}
-	}
-	
-	// If no valid context found, return 0
-	if minContext == 1000000 {
-		return 0
-	}
-	return minContext
 }
 
 // UpdateSettingsRaw reads settings row id=1 data JSON into map[string]any,

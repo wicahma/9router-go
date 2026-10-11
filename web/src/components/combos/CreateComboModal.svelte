@@ -14,46 +14,81 @@
   import Button from '../../lib/ui/Button.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
-  import { getModelLimit, parseLimitInput } from './types'
 
   interface Props {
     isOpen: boolean
     editingCombo: Combo | null
     models: string[]
-    modelRps?: Record<string, number>
-    modelContextLimit?: Record<string, number>
     isSaving?: boolean
+    /** Server-side refusal (e.g. the name collides with a combo, alias or
+     * custom model id). Shown inline so a 409 is never a silent no-op. */
+    saveError?: string
     onClose: () => void
     onSave: (name: string, models: string[]) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
-    onSetModelRps: (model: string, rps: number) => void
-    onSetModelContextLimit: (model: string, tokens: number) => void
   }
 
   let {
     isOpen,
     editingCombo,
     models,
-    modelRps = {},
-    modelContextLimit = {},
     isSaving = false,
+    saveError = '',
     onClose,
     onSave,
     onOpenModelPicker,
     onUpdateModels,
-    onSetModelRps,
-    onSetModelContextLimit,
   }: Props = $props()
 
   let modalName = $state(editingCombo?.name || '')
   let modalNameError = $state('')
   let editingIdx = $state<number | null>(null)
   let editDraft = $state('')
-  let dragIdx = $state<number | null>(null)
-  let overIdx = $state<number | null>(null)
-  let listEl = $state<HTMLElement | null>(null)
+  let draggedIdx = $state<number | null>(null)
+  let dragOverIdx = $state<number | null>(null)
 
+  function handleDragStart(e: DragEvent, idx: number) {
+    draggedIdx = idx
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', String(idx))
+    }
+  }
+
+  function handleDragOver(e: DragEvent, idx: number) {
+    e.preventDefault()
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move'
+    }
+    dragOverIdx = idx
+  }
+
+  function handleDragLeave(idx: number) {
+    if (dragOverIdx === idx) {
+      dragOverIdx = null
+    }
+  }
+
+  function handleDrop(e: DragEvent, targetIdx: number) {
+    e.preventDefault()
+    if (draggedIdx === null || draggedIdx === targetIdx) {
+      draggedIdx = null
+      dragOverIdx = null
+      return
+    }
+    const arr = [...models]
+    const [moved] = arr.splice(draggedIdx, 1)
+    arr.splice(targetIdx, 0, moved)
+    onUpdateModels(arr)
+    draggedIdx = null
+    dragOverIdx = null
+  }
+
+  function handleDragEnd() {
+    draggedIdx = null
+    dragOverIdx = null
+  }
   const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/
 
   function validateModalName(name: string): boolean {
@@ -71,22 +106,7 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
-    flushPendingLimits()
     onSave(modalName.trim(), models)
-  }
-
-  // The limit inputs commit on change (blur/Enter). Clicking Save blurs the
-  // field only after the click lands on some browsers, so commit any pending
-  // edit here too or a typed-but-not-blurred value is silently dropped.
-  function flushPendingLimits() {
-    if (!listEl) return
-    for (const el of listEl.querySelectorAll<HTMLInputElement>('input[data-model]')) {
-      const model = el.dataset.model
-      if (!model) continue
-      const value = parseLimitInput(el.value)
-      if (el.dataset.limit === 'ctx') onSetModelContextLimit(model, value)
-      else onSetModelRps(model, value)
-    }
   }
 
   function moveModel(idx: number, delta: number) {
@@ -102,60 +122,6 @@
   function removeModel(idx: number) {
     onUpdateModels(models.filter((_, i) => i !== idx))
     if (editingIdx === idx) editingIdx = null
-  }
-
-  // Drag reorder. The grabbed row is removed and reinserted at the drop index
-  // (array splice, not a swap) so a move across several positions lands in one
-  // gesture instead of walking one slot per row crossed.
-  function onDragStart(e: DragEvent, idx: number) {
-    dragIdx = idx
-    e.dataTransfer?.setData('text/plain', String(idx))
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
-  }
-
-  function onDragOver(e: DragEvent, idx: number) {
-    e.preventDefault()
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    if (overIdx !== idx) overIdx = idx
-    autoScrollList(e.clientY)
-  }
-
-  function autoScrollList(clientY: number) {
-    const el = listEl
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    const edge = 28
-    if (clientY < r.top + edge) el.scrollTop -= 12
-    else if (clientY > r.bottom - edge) el.scrollTop += 12
-  }
-
-  function onDrop(e: DragEvent, idx: number) {
-    e.preventDefault()
-    const from = dragIdx ?? Number.parseInt(e.dataTransfer?.getData('text/plain') ?? '', 10)
-    dragIdx = null
-    overIdx = null
-    if (Number.isNaN(from) || from === idx || from === null) return
-    const arr = [...models]
-    const [moved] = arr.splice(from, 1)
-    arr.splice(idx, 0, moved)
-    onUpdateModels(arr)
-  }
-
-  function onDragEnd() {
-    dragIdx = null
-    overIdx = null
-  }
-
-  // Keyboard reorder: the grip handle is focusable and moves the row with the
-  // arrow keys, so reordering works without a pointer.
-  function onGripKeydown(e: KeyboardEvent, idx: number) {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      moveModel(idx, -1)
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      moveModel(idx, 1)
-    }
   }
 
   function startEdit(idx: number, model: string) {
@@ -204,35 +170,19 @@
           <p class="text-xs text-text-muted">No models added yet</p>
         </div>
       {:else}
-        <div
-          bind:this={listEl}
-          class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]"
-          role="list"
-        >
-          {#each models as model, idx (model + '-' + idx)}
+        <div class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]">
+          {#each models as model, idx}
             {@const caps = getModelCaps(model)}
             <div
-              role="listitem"
+              class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 transition-colors {draggedIdx === idx ? 'opacity-40 bg-brand-500/10' : dragOverIdx === idx ? 'border-2 border-brand-500 bg-brand-500/5' : 'bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04]'}"
               draggable="true"
-              ondragstart={(e) => onDragStart(e, idx)}
-              ondragover={(e) => onDragOver(e, idx)}
-              ondrop={(e) => onDrop(e, idx)}
-              ondragend={onDragEnd}
-              class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors {dragIdx === idx
-                ? 'opacity-40'
-                : ''} {overIdx === idx && dragIdx !== null && dragIdx !== idx
-                ? 'ring-1 ring-brand-500'
-                : ''}"
+              ondragstart={(e) => handleDragStart(e, idx)}
+              ondragover={(e) => handleDragOver(e, idx)}
+              ondragleave={() => handleDragLeave(idx)}
+              ondrop={(e) => handleDrop(e, idx)}
+              ondragend={handleDragEnd}
             >
-              <span
-                class="flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-text-muted active:cursor-grabbing focus-visible:cursor-grab"
-                role="button"
-                tabindex="0"
-                aria-label={`Reorder ${model}. Use arrow up and arrow down keys to move.`}
-                onkeydown={(e) => onGripKeydown(e, idx)}
-              >
-                <GripVertical class="w-3.5 h-3.5" />
-              </span>
+              <GripVertical class="w-3.5 h-3.5 text-text-muted cursor-grab active:cursor-grabbing shrink-0" />
               <span class="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{idx + 1}</span>
               {#if editingIdx === idx}
                 <input
@@ -263,38 +213,6 @@
               {#if caps.reasoning}
                 <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
               {/if}
-              <label class="flex shrink-0 items-center gap-1" title="Requests per second ceiling. 0 = unlimited. Applies to this model in every combo.">
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  inputmode="numeric"
-                  placeholder="∞"
-                  data-model={model}
-                  data-limit="rps"
-                  value={getModelLimit(modelRps, model) || ''}
-                  onchange={(e) => onSetModelRps(model, parseLimitInput(e.currentTarget.value))}
-                  aria-label={`Requests per second limit for ${model}`}
-                  class="w-14 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
-                <span class="text-[10px] text-text-muted">rps</span>
-              </label>
-              <label class="flex shrink-0 items-center gap-1" title="Input context ceiling in tokens. 0 = whatever the provider allows. Applies to this model in every combo — older messages are dropped to fit.">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  inputmode="numeric"
-                  placeholder="auto"
-                  data-model={model}
-                  data-limit="ctx"
-                  value={getModelLimit(modelContextLimit, model) || ''}
-                  onchange={(e) => onSetModelContextLimit(model, parseLimitInput(e.currentTarget.value))}
-                  aria-label={`Input context token limit for ${model}`}
-                  class="w-16 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
-                <span class="text-[10px] text-text-muted">ctx</span>
-              </label>
               <div class="flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
@@ -338,6 +256,10 @@
         <span>Add Model</span>
       </button>
     </div>
+
+    {#if saveError}
+      <p class="text-xs text-red-600 dark:text-red-400 break-words" role="alert">{saveError}</p>
+    {/if}
 
     <!-- Actions -->
     <div class="flex flex-col gap-2 pt-1 sm:flex-row">

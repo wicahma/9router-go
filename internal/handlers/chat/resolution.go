@@ -5,6 +5,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
@@ -14,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/semanticcache"
 )
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
@@ -29,24 +32,30 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 	// ResponseHeaderTimeout bounds how long we wait for the upstream to
 	// start responding — closing the "accept then go silent" gap without
 	// killing a stream that has already begun.
-	// 30s is deliberate: a healthy provider answers headers in well under a
-	// second (measured 146ms on the worst offender here). A 2-minute header
-	// timeout turned a stalled Cloudflare HTTP/2 connection into a multi-minute
-	// silence for the client — indistinguishable from a hang.
 	var transport http.RoundTripper
 	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
 		t := origTransport.Clone()
 		constants.DefaultHTTPTransportConfig.Configure(t)
-		// The shared config's 2-minute header timeout is too long here: a
-		// stalled Cloudflare HTTP/2 connection would look like a multi-minute
-		// hang to the client. 30s is deliberate — a healthy provider answers
-		// headers in well under a second (measured 146ms on the worst offender).
-		t.ResponseHeaderTimeout = 30 * time.Second
 		transport = proxy.NewFallbackTransport(t)
 	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
 		transport = fb
 	} else {
 		transport = proxy.NewFallbackTransport(http.DefaultTransport)
+	}
+	var sc *semanticcache.Cache
+	if cfg != nil {
+		ttl := time.Duration(cfg.SemanticCacheTTL()) * time.Minute
+		maxEntries := cfg.SemanticCacheMaxEntries()
+		var store semanticcache.Store
+		if repo != nil && repo.RawDB() != nil {
+			store = semanticcache.NewPersistentStore(repo.RawDB(), maxEntries, ttl)
+		}
+		sc = semanticcache.New(semanticcache.Config{
+			Enabled:             cfg.SemanticCacheEnabled(),
+			TTL:                 ttl,
+			MaxEntries:          maxEntries,
+			SimilarityThreshold: 0.95,
+		}, store, cfg.SemanticCacheEnabled)
 	}
 	return &ChatHandler{
 		Repo: repo,
@@ -55,7 +64,20 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			Timeout:   0, // no timeout for streaming support
 		},
 		TokenSaver:  cfg,
+		SemanticCache: sc,
 		stickyState: make(map[string]*comboStickyState),
+	}
+}
+
+// SetRateLimiter attaches the process-wide rate limiter so the metering path
+// can reconcile a TPM reservation against the turn's real token count.
+//
+// It is a setter rather than a constructor argument because the limiter is
+// built by the router (it needs the configured window), while the handler is
+// constructed by several call sites that do not care about rate limiting.
+func (h *ChatHandler) SetRateLimiter(rl *middleware.RateLimiter) {
+	if h != nil {
+		h.RateLimiter = rl
 	}
 }
 
@@ -78,14 +100,28 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
+	return h.resolveModelEntryGuarded(entry, nil)
+}
+
+// resolveModelEntryGuarded is resolveModelEntry with the set of combo names
+// already being expanded on this path. A combo that lists itself (directly or
+// through another combo) otherwise re-enters the branch below forever and
+// takes the whole process down with a stack overflow — every single-name hop
+// re-queries the database, so nothing else bounds it.
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		if h.Repo == nil {
+		if h.Repo == nil || visiting[entry] {
 			return nil
 		}
 		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
 			var subModels []string
 			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
-				first := h.resolveModelEntry(subModels[0])
+				if visiting == nil {
+					visiting = make(map[string]bool, 4)
+				}
+				visiting[entry] = true
+				first := h.resolveModelEntryGuarded(subModels[0], visiting)
+				delete(visiting, entry)
 				if first != nil {
 					first.ComboModels = subModels
 					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
@@ -121,33 +157,9 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 		}
 	}
 
-	provider = routeModelToOwningProvider(provider, model)
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
-// museSparkOwners are the providers whose upstream registry actually serves the
-// muse-spark family. Upstream open-sse registry lists these ids only under
-// opencode-zen / opencode-go, never under antigravity.
-var museSparkOwners = []string{"opencode", "opencode-go", "opencode-zen"}
-
-// routeModelToOwningProvider corrects a model requested under a provider that
-// does not serve it, so callers that reuse a dashboard-assigned prefix (e.g.
-// "ag/muse-spark-1.3-contributor-free" copied from a combo) reach the executor
-// that owns the model instead of failing upstream with 404/403.
-func routeModelToOwningProvider(provider, model string) string {
-	if provider != "antigravity" && provider != "antigravity-go" {
-		return provider
-	}
-	if !strings.Contains(model, "muse-spark") {
-		return provider
-	}
-	for _, owner := range museSparkOwners {
-		if _, ok := providers.KnownProviders[owner]; ok {
-			return owner
-		}
-	}
-	return provider
-}
 
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
@@ -190,41 +202,10 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	if err := walk(models); err != nil {
 		return nil, err
 	}
-	out = h.pruneDisabledModels(out)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("combo has no valid leaf models")
 	}
 	return out, nil
-}
-
-func (h *ChatHandler) pruneDisabledModels(models []string) []string {
-	disabled := h.disabledModelIndex()
-	if len(disabled) == 0 {
-		return models
-	}
-	out := make([]string, 0, len(models))
-	for _, entry := range models {
-		if h.entryDisabled(entry, disabled) {
-			log.Warn("combo", "skip disabled model", "entry", entry)
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
-func (h *ChatHandler) entryDisabled(entry string, disabled map[string]map[string]bool) bool {
-	if info := h.resolveModelEntry(entry); info != nil {
-		if disabled[info.Provider][info.Model] {
-			return true
-		}
-	}
-	if prefix, model, ok := strings.Cut(entry, "/"); ok {
-		if disabled[prefix][model] {
-			return true
-		}
-	}
-	return false
 }
 
 // stripModelContextMarker strips trailing [1m] marker that Claude Code appends for 1M context beta.
@@ -281,7 +262,6 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				}
 			}
 		}
-		provider = routeModelToOwningProvider(provider, model)
 		return &ModelInfo{Provider: provider, Model: model}, nil
 	}
 
@@ -320,10 +300,16 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 
-	// Upstream PR #4135: route bare codex-auto-review to the Codex provider
-	// Outside Repo guard so it resolves with nil Repo / empty DB (static catalog).
-	if modelStr == "codex-auto-review" {
-		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
+	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
+	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
+	// API, so a bare id from the Codex CLI's own picker used to fall through to
+	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
+	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
+	// / gpt-4o* stay on openai.
+	//
+	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
+	if codexOnlyModelSlug(modelStr) {
+		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
 	}
 
 	// 3. Check if it's a combo name
@@ -385,6 +371,35 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 	return nil, fmt.Errorf("could not resolve model: %s", modelStr)
+}
+
+// codexOnlyModelSlug reports whether a bare model id is served only by the
+// Codex backend (open-sse/services/model.js MODEL_PREFIX_PROVIDERS). These
+// slugs exist on backend-api/codex/models but not on the OpenAI API, so a bare
+// id from the Codex CLI's picker used to fall through to the generic gpt-*
+// rule and 404 for anyone holding only a Codex OAuth account (#4405).
+//
+// The rules are checked in upstream's order and ahead of the generic fallback;
+// plain gpt-4*, gpt-3.5* and gpt-4o* deliberately do not match.
+func codexOnlyModelSlug(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if lower == "" {
+		return false
+	}
+	// codex-auto-review is the Codex CLI's virtual model. It carries no gpt
+	// prefix, but it belongs to codex for the same reason (#4135).
+	if lower == providers.CodexAutoReviewModel {
+		return true
+	}
+	// gpt-5.<x> and gpt-6.<x>.
+	if len(lower) > 7 && (strings.HasPrefix(lower, "gpt-5.") || strings.HasPrefix(lower, "gpt-6.")) {
+		return true
+	}
+	// gpt-6-<variant>.
+	if strings.HasPrefix(lower, "gpt-6-") {
+		return true
+	}
+	return strings.HasPrefix(lower, "gpt-daybreak-") || strings.HasPrefix(lower, "gpt-reserve")
 }
 
 // resolvePrefixProvider checks if a provider name is a providerNode prefix.
