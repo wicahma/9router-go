@@ -8,6 +8,7 @@
     type ProviderConnection,
     type ProviderNode,
     type ModelCaps,
+    normalizeLastError,
     type ProxyPool,
     type Settings
   } from '../../api/client'
@@ -935,7 +936,7 @@
     }
     // 4. Check errorCode 429 or lastError indicating rate limit / quota
     const errCode = (conn as unknown as { errorCode?: number }).errorCode
-    const lastErr = conn.lastError || ''
+    const lastErr = normalizeLastError(conn.lastError) || ''
     if (
       errCode === 429 ||
       lastErr.includes('429') ||
@@ -2621,7 +2622,7 @@
           {@const specificData = conn.providerSpecificData as Record<string, unknown> | undefined}
           {@const assignedPoolId = (typeof specificData?.proxyPoolId === 'string' ? specificData.proxyPoolId : null)}
           {@const proxyBadge = proxyBadgeFor(conn)}
-          {@const lastErr = conn.lastError || status?.error}
+          {@const lastErr = normalizeLastError(conn.lastError || status?.error) || ''}
           {@const priorityNum = conn.priority ?? idx + 1}
           {@const isConnActive = conn.isActive === 1}
           {@const cooldownInfo = getCooldownInfo(conn)}

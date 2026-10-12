@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { api, formatApiError, getAuthHeaders, getStoredAPIKey, isUsableAPIKey, responseErrorMessage } from './client'
+import { api, formatApiError, getAuthHeaders, getStoredAPIKey, isUsableAPIKey, normalizeLastError, responseErrorMessage } from './client'
 
 describe('dashboard API authentication and errors', () => {
 
@@ -99,5 +99,53 @@ describe('dashboard API authentication and errors', () => {
       redirectUri: 'http://localhost:20130/callback',
       state: 'state-123',
     })
+  })
+})
+
+describe('lastError normalization', () => {
+  it('passes null through', () => {
+    expect(normalizeLastError(null)).toBe(null)
+    expect(normalizeLastError(undefined)).toBe(null)
+  })
+
+  it('passes a string through unchanged', () => {
+    expect(normalizeLastError('Provider returned error')).toBe('Provider returned error')
+  })
+
+  it('extracts the message from an error object', () => {
+    expect(normalizeLastError({ message: 'Individual quota reached.', status: 429 })).toBe(
+      'Individual quota reached.',
+    )
+  })
+
+  it('falls back to JSON for an object without a known text field', () => {
+    expect(normalizeLastError({ status: 429 })).toBe('{"status":429}')
+  })
+
+  it('normalizes an object lastError returned by getConnections', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () =>
+      Response.json([
+        {
+          id: 'conn-1',
+          provider: 'antigravity',
+          authType: 'oauth',
+          name: null,
+          email: null,
+          priority: 1,
+          isActive: 1,
+          data: '{}',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          lastError: { message: 'Provider returned error', status: 429 },
+        },
+      ])
+    try {
+      const conns = await api.getConnections()
+      expect(conns[0]?.lastError).toBe('Provider returned error')
+      expect(typeof conns[0]?.lastError).toBe('string')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
