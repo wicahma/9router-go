@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // UpdateProviderConnection updates a provider connection's name, priority, isActive, data, and updatedAt.
@@ -172,9 +174,17 @@ func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 	if kind != "" {
 		kindVal = kind
 	}
+	// Parse models from JSON to calculate context size
+	var models []string
+	if err := json.Unmarshal([]byte(modelsJSON), &models); err != nil {
+		// If we can't parse models, continue without context size
+		models = []string{}
+	}
+	contextSize := r.calculateComboContextSize(models)
+
 	_, err := r.db.Exec(
-		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, name, kindVal, modelsJSON, now, now,
+		`INSERT INTO combos (id, name, kind, models, contextSize, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, kindVal, modelsJSON, contextSize, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create combo %s: %w", id, err)
@@ -193,9 +203,17 @@ func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy string) error {
 	if kind != "" {
 		kindVal = kind
 	}
+	// Parse models from JSON to calculate context size
+	var models []string
+	if err := json.Unmarshal([]byte(modelsJSON), &models); err != nil {
+		// If we can't parse models, continue without context size
+		models = []string{}
+	}
+	contextSize := r.calculateComboContextSize(models)
+
 	_, err := r.db.Exec(
-		`UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
-		name, kindVal, modelsJSON, now, id,
+		`UPDATE combos SET name = ?, kind = ?, models = ?, contextSize = ?, updatedAt = ? WHERE id = ?`,
+		name, kindVal, modelsJSON, contextSize, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update combo %s: %w", id, err)
@@ -484,4 +502,36 @@ func (r *Repo) UpdateSettingsRaw(updates map[string]any) error {
 		return fmt.Errorf("update settings raw: %w", err)
 	}
 	return nil
+}
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// calculateComboContextSize calculates the minimum context length among a list of models
+func (r *Repo) calculateComboContextSize(models []string) int {
+	if len(models) == 0 {
+		return 0
+	}
+
+	minContext := 1000000 // Start with a large number
+	for _, modelID := range models {
+		// Parse provider and model from the modelID (format: provider/model)
+		parts := strings.SplitN(modelID, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		provider := parts[0]
+		model := parts[1]
+
+		// Get context length from catalog
+		contextWindow, _ := providers.GetCatalogLimits(provider, model)
+		if contextWindow > 0 && contextWindow < minContext {
+			minContext = contextWindow
+		}
+	}
+
+	// If no valid context found, return 0
+	if minContext == 1000000 {
+		return 0
+	}
+	return minContext
 }

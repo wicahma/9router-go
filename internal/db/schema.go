@@ -106,6 +106,7 @@ func coreSchema() []tableDef {
 				{"name", "TEXT UNIQUE NOT NULL"},
 				{"kind", "TEXT"},
 				{"models", "TEXT NOT NULL"},
+				{"contextSize", "INTEGER DEFAULT 0"},
 				{"createdAt", "TEXT NOT NULL"},
 				{"updatedAt", "TEXT NOT NULL"},
 			},
@@ -258,6 +259,7 @@ func coreSchema() []tableDef {
 // goOnlyColumns are additive columns the Go runtime writes that upstream
 // schema.js does not declare. Added idempotently; upstream ignores them.
 var goOnlyColumns = [][3]string{
+	{"combos", "contextSize", "INTEGER DEFAULT 0"},
 	{"providerConnections", "lastUsedAt", "TEXT"},
 	{"providerConnections", "consecutiveUseCount", "INTEGER DEFAULT 0"},
 	// F-5 Credential Vault: sealed credential columns

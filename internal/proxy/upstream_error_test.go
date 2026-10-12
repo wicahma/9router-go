@@ -35,6 +35,32 @@ func TestUpstreamError_EmptyBody(t *testing.T) {
 	}
 }
 
+func TestUpstreamError_CloudflareWithHost(t *testing.T) {
+	e := &UpstreamError{
+		StatusCode: 502,
+		Body:       []byte(`<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>cloudflare</body></html>`),
+		URL:        "https://onihub.tech/v1/chat/completions",
+	}
+	msg := e.Error()
+	if !strings.Contains(msg, "from upstream onihub.tech, not this gateway") {
+		t.Errorf("expected upstream host in message, got %q", msg)
+	}
+	if strings.Contains(msg, "check User-Agent or network proxy") {
+		t.Errorf("misleading advice still present, got %q", msg)
+	}
+}
+
+func TestUpstreamError_CloudflareWithoutHost(t *testing.T) {
+	e := &UpstreamError{
+		StatusCode: 502,
+		Body:       []byte(`<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>cloudflare</body></html>`),
+	}
+	msg := e.Error()
+	if msg != "upstream returned 502: Cloudflare WAF challenge (Attention Required!) from the upstream origin, not this gateway" {
+		t.Errorf("unexpected message %q", msg)
+	}
+}
+
 func TestUpstreamError_WhitespaceBodyTreatedAsEmpty(t *testing.T) {
 	e := &UpstreamError{StatusCode: 500, Body: []byte("   \n  ")}
 	if msg := e.Error(); msg != "upstream returned 500" {

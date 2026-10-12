@@ -129,6 +129,7 @@ type rawMeta struct {
 	provider     string
 	connectionID string
 	apiKey       string
+	endpoint     string
 }
 
 // rawAggregate is the fold of one window's usageHistory rows.
@@ -144,11 +145,13 @@ type rawAggregate struct {
 	byModel    map[string]*rawTotals
 	byAccount  map[string]*rawTotals
 	byAPIKey   map[string]*rawTotals
+	byEndpoint map[string]*rawTotals
 
 	providerMeta map[string]rawMeta
 	modelMeta    map[string]rawMeta
 	accountMeta  map[string]rawMeta
 	apiKeyMeta   map[string]rawMeta
+	endpointMeta map[string]rawMeta
 }
 
 func newRawAggregate() *rawAggregate {
@@ -157,10 +160,12 @@ func newRawAggregate() *rawAggregate {
 		byModel:      map[string]*rawTotals{},
 		byAccount:    map[string]*rawTotals{},
 		byAPIKey:     map[string]*rawTotals{},
+		byEndpoint:   map[string]*rawTotals{},
 		providerMeta: map[string]rawMeta{},
 		modelMeta:    map[string]rawMeta{},
 		accountMeta:  map[string]rawMeta{},
 		apiKeyMeta:   map[string]rawMeta{},
+		endpointMeta: map[string]rawMeta{},
 	}
 }
 
@@ -173,9 +178,17 @@ func bucket(m map[string]*rawTotals, key string) *rawTotals {
 	return t
 }
 
-// accountKey composes the byAccount bucket key from ledger-only fields.
-func accountKey(model, provider, connectionID string) string {
-	return model + "\x00" + provider + "\x00" + connectionID
+// accountKey composes the byAccount bucket key from ledger-only fields. A
+// connection spans many models, so the key is the connection itself: keying on
+// model would list one account once per model it served.
+func accountKey(connectionID string) string {
+	return connectionID
+}
+
+// endpointBucketKey composes the byEndpoint bucket key, matching the key the
+// uncached handler built so both paths produce the same table.
+func endpointBucketKey(endpoint, model, provider string) string {
+	return endpoint + "|" + model + "|" + provider
 }
 
 // apiKeyBucketKey composes the byApiKey bucket key. The empty and "***" stored
@@ -212,13 +225,21 @@ func (a *rawAggregate) foldRow(row db.UsageHistoryRow) {
 	a.modelMeta[modelKey] = rawMeta{rawModel: row.Model, provider: row.Provider}
 
 	if row.ConnectionID != "" {
-		key := accountKey(row.Model, row.Provider, row.ConnectionID)
+		key := accountKey(row.ConnectionID)
 		bucket(a.byAccount, key).add(row, promptTok, complTok, cachedTok)
 		a.accountMeta[key] = rawMeta{
 			rawModel:     row.Model,
 			provider:     row.Provider,
 			connectionID: row.ConnectionID,
 		}
+	}
+
+	epKey := endpointBucketKey(row.Endpoint, row.Model, row.Provider)
+	bucket(a.byEndpoint, epKey).add(row, promptTok, complTok, cachedTok)
+	a.endpointMeta[epKey] = rawMeta{
+		rawModel: row.Model,
+		provider: row.Provider,
+		endpoint: row.Endpoint,
 	}
 
 	keyKey := apiKeyBucketKey(row.APIKey) + "|" + row.Model + "|" + row.Provider
@@ -270,7 +291,7 @@ func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
 	}
 
 	if row.ConnectionID != "" {
-		key := accountKey(row.Model, row.Provider, row.ConnectionID)
+		key := accountKey(row.ConnectionID)
 		t := bucket(a.byAccount, key)
 		subtractFrom(t, row, promptTok, complTok, cachedTok)
 		if t.requests <= 0 {
@@ -279,6 +300,16 @@ func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
 		} else if t.lastUsed == row.Timestamp {
 			t.lastUsed = ""
 		}
+	}
+
+	epKey := endpointBucketKey(row.Endpoint, row.Model, row.Provider)
+	ep := bucket(a.byEndpoint, epKey)
+	subtractFrom(ep, row, promptTok, complTok, cachedTok)
+	if ep.requests <= 0 {
+		delete(a.byEndpoint, epKey)
+		delete(a.endpointMeta, epKey)
+	} else if ep.lastUsed == row.Timestamp {
+		ep.lastUsed = ""
 	}
 
 	keyKey := apiKeyBucketKey(row.APIKey) + "|" + row.Model + "|" + row.Provider
@@ -479,10 +510,12 @@ func snapshotOf(a *rawAggregate) *rawAggregate {
 		byModel:      copyBuckets(a.byModel),
 		byAccount:    copyBuckets(a.byAccount),
 		byAPIKey:     copyBuckets(a.byAPIKey),
+		byEndpoint:   copyBuckets(a.byEndpoint),
 		providerMeta: maps.Clone(a.providerMeta),
 		modelMeta:    maps.Clone(a.modelMeta),
 		accountMeta:  maps.Clone(a.accountMeta),
 		apiKeyMeta:   maps.Clone(a.apiKeyMeta),
+		endpointMeta: maps.Clone(a.endpointMeta),
 	}
 	return clone
 }
@@ -570,9 +603,7 @@ func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap,
 	for key, t := range agg.byAccount {
 		meta := agg.accountMeta[key]
 		accName := friendlyAccountName(meta.connectionID, connMap)
-		accKey := meta.rawModel + " (" + meta.provider + " - " + accName + ")"
-		a := resp.ByAccount[accKey]
-		a.RawModel = meta.rawModel
+		a := resp.ByAccount[accName]
 		a.Provider = displayProviderName(meta.provider, nodeNameMap)
 		a.ConnectionID = meta.connectionID
 		a.AccountName = accName
@@ -582,7 +613,22 @@ func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap,
 		a.CachedTokens = t.cachedTokens
 		a.Cost = t.cost
 		a.LastUsed = t.lastUsed
-		resp.ByAccount[accKey] = a
+		resp.ByAccount[accName] = a
+	}
+
+	for key, t := range agg.byEndpoint {
+		meta := agg.endpointMeta[key]
+		ep := resp.ByEndpoint[key]
+		ep.Endpoint = meta.endpoint
+		ep.RawModel = meta.rawModel
+		ep.Provider = displayProviderName(meta.provider, nodeNameMap)
+		ep.Requests = t.requests
+		ep.PromptTokens = t.promptTokens
+		ep.CompletionTokens = t.completionTokens
+		ep.CachedTokens = t.cachedTokens
+		ep.Cost = t.cost
+		ep.LastUsed = t.lastUsed
+		resp.ByEndpoint[key] = ep
 	}
 
 	for key, t := range agg.byAPIKey {

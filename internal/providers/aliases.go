@@ -4,6 +4,7 @@ package providers
 var ProviderAliasMap = map[string]string{
 	"b-ai":              "bai",
 	"agnes-ai":          "agnes",
+	"agn":               "agnes",
 	"atria-asi":         "atria",
 	"dahl-inference":    "dahl",
 	"thh":               "tokenharbor",
@@ -117,6 +118,13 @@ var ProviderAliasMap = map[string]string{
 	"vx":             "vertex",
 	"vxp":            "vertex-partner",
 	"ws":             "windsurf",
+	"ry":             "requesty",
+	"sl":             "sea-lion",
+	"nst":            "neosantara",
+	"alo":            "aionlabs",
+	"xf":             "iflytek",
+	"ki":             "kira",
+	"ya":             "yolo-auto",
 	"xq":             "xquik",
 	"zd":             "zed",
 }

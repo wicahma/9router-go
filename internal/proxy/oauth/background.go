@@ -223,3 +223,33 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 	}
 	log.Printf("[BG_TOKEN_REFRESH] refreshed conn=%s provider=%s", c.ID, c.Provider)
 }
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+func connectionDue(c *models.ProviderConnection, now time.Time) (ConnectionNeedingRefresh, bool) {
+	var d struct {
+		AccessToken          string         `json:"accessToken"`
+		RefreshToken         string         `json:"refreshToken"`
+		ExpiresAt            string         `json:"expiresAt"`
+		ProviderSpecificData map[string]any `json:"providerSpecificData"`
+	}
+	if c.Data != "" {
+		if err := json.Unmarshal([]byte(c.Data), &d); err != nil {
+			return ConnectionNeedingRefresh{}, false
+		}
+	}
+	if strings.TrimSpace(d.RefreshToken) == "" {
+		return ConnectionNeedingRefresh{}, false
+	}
+	exp, err := time.Parse(time.RFC3339, strings.TrimSpace(d.ExpiresAt))
+	if err != nil || exp.Sub(now) >= backgroundRefreshLead {
+		return ConnectionNeedingRefresh{}, false
+	}
+	return ConnectionNeedingRefresh{
+		ID:                   c.ID,
+		Provider:             c.Provider,
+		RefreshToken:         d.RefreshToken,
+		AccessToken:          d.AccessToken,
+		ProviderSpecificData: StringMap(d.ProviderSpecificData),
+	}, true
+}

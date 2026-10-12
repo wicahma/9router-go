@@ -522,3 +522,36 @@ func qoderErrorBody(message string, status int) []byte {
 	})
 	return body
 }
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// qoderSSEUpstreamError surfaces the failure Qoder hides inside its
+// always-SSE response. A `data:` frame carries an envelope shaped
+// {"statusCodeValue":400,"statusCode":"BAD_REQUEST","body":"{...}"} that used
+// to be written verbatim under an `application/json` header: the client got
+// HTTP 200, JSON.parse failed on the SSE text, and the real upstream error was
+// never readable. Only a non-streaming request is affected — a streaming one
+// passes the frames through and the client sees them.
+func qoderSSEUpstreamError(body []byte) error {
+	for _, frame := range sseDataFrames(body) {
+		var envelope struct {
+			StatusCodeValue int    `json:"statusCodeValue"`
+			Body            string `json:"body"`
+		}
+		if err := json.Unmarshal(frame, &envelope); err != nil {
+			continue
+		}
+		if envelope.StatusCodeValue < 400 {
+			continue
+		}
+		message := strings.TrimSpace(envelope.Body)
+		if message == "" {
+			message = "qoder upstream error"
+		}
+		return &proxy.UpstreamError{
+			StatusCode: envelope.StatusCodeValue,
+			Body:       qoderErrorBody(message, envelope.StatusCodeValue),
+		}
+	}
+	return nil
+}

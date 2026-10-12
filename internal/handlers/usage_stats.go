@@ -103,6 +103,10 @@ type ModelUsageItem struct {
 	RawModel         string  `json:"rawModel"`
 	Provider         string  `json:"provider"`
 	LastUsed         string  `json:"lastUsed"`
+	LatencySamples   int     `json:"latencySamples,omitempty"`
+	P50Ms            int     `json:"p50Ms,omitempty"`
+	P95Ms            int     `json:"p95Ms,omitempty"`
+	P99Ms            int     `json:"p99Ms,omitempty"`
 }
 
 type AccountUsageItem struct {
@@ -648,28 +652,25 @@ func trendGrid(period string, now time.Time) []string {
 	var step time.Duration
 	var first time.Time
 	switch period {
-	case "7d":
-		step = 24 * time.Hour
-		first = now.Add(-7 * 24 * time.Hour).Truncate(24 * time.Hour)
-	case "30d":
-		step = 24 * time.Hour
-		first = now.Add(-30 * 24 * time.Hour).Truncate(24 * time.Hour)
-	case "60d":
-		step = 24 * time.Hour
-		first = now.Add(-60 * 24 * time.Hour).Truncate(24 * time.Hour)
-	case "all":
-		step = 24 * time.Hour
-		first = now.Add(-365 * 24 * time.Hour).Truncate(24 * time.Hour)
+	case "today":
+		step = time.Hour
+		first = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	case "24h":
 		step = time.Hour
-		first = now.Add(-24 * time.Hour).Truncate(time.Hour)
+		first = now.Truncate(time.Hour).Add(-23 * time.Hour)
+	case "30d":
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-29 * 24 * time.Hour)
+	case "60d":
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-59 * 24 * time.Hour)
 	default:
-		step = time.Hour
-		first = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		step = 24 * time.Hour
+		first = now.Truncate(24 * time.Hour).Add(-6 * 24 * time.Hour)
 	}
 
-	layout := "2006-01-02"
-	if period == "24h" || period == "today" {
+	layout := time.RFC3339
+	if step >= 24*time.Hour {
 		layout = "2006-01-02T15:04:05Z"
 	}
 
@@ -678,4 +679,94 @@ func trendGrid(period string, now time.Time) []string {
 		out = append(out, ts.Format(layout))
 	}
 	return out
+}
+
+func applyLatencyStats(resp *UsageStatsResponse, stats []db.LatencyStats, nodeNameMap map[string]string) {
+	if len(stats) == 0 || resp == nil || resp.ByModel == nil {
+		return
+	}
+	type statKey struct {
+		model    string
+		provider string
+	}
+	statMap := make(map[statKey]db.LatencyStats)
+	for _, s := range stats {
+		statMap[statKey{model: s.Model, provider: s.Provider}] = s
+		if disp, ok := nodeNameMap[s.Provider]; ok && disp != "" {
+			statMap[statKey{model: s.Model, provider: disp}] = s
+		}
+	}
+
+	for k, item := range resp.ByModel {
+		sk1 := statKey{model: item.RawModel, provider: item.Provider}
+		if st, ok := statMap[sk1]; ok {
+			item.LatencySamples = st.Samples
+			item.P50Ms = st.P50Ms
+			item.P95Ms = st.P95Ms
+			item.P99Ms = st.P99Ms
+			resp.ByModel[k] = item
+			continue
+		}
+		found := false
+		for nodeID, dispName := range nodeNameMap {
+			if dispName == item.Provider {
+				sk2 := statKey{model: item.RawModel, provider: nodeID}
+				if st, ok := statMap[sk2]; ok {
+					item.LatencySamples = st.Samples
+					item.P50Ms = st.P50Ms
+					item.P95Ms = st.P95Ms
+					item.P99Ms = st.P99Ms
+					resp.ByModel[k] = item
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			continue
+		}
+	}
+}
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+type UsageTrendItem struct {
+	Timestamp        string  `json:"timestamp"`
+	Requests         int     `json:"requests"`
+	PromptTokens     int64   `json:"promptTokens"`
+	CompletionTokens int64   `json:"completionTokens"`
+	CachedTokens     int64   `json:"cachedTokens"`
+	Cost             float64 `json:"cost"`
+	AvgLatencyMs     int64   `json:"avgLatencyMs,omitempty"`
+}
+
+// buildTrend densifies the query result onto the bucket grid. Both sides use
+// the same string for a given bucket because the SQL bucket expression and the
+// grid layout are built from the same format, so no key normalisation is needed.
+func buildTrend(rows []db.UsageTrend, period string, now time.Time) []UsageTrendItem {
+	byStamp := make(map[string]db.UsageTrend, len(rows))
+	for _, row := range rows {
+		byStamp[row.Timestamp] = row
+	}
+
+	var out []UsageTrendItem
+	for _, key := range trendGrid(period, now) {
+		item := UsageTrendItem{Timestamp: key}
+		if row, ok := byStamp[key]; ok {
+			item.Requests = row.Requests
+			item.PromptTokens = row.PromptTokens
+			item.CompletionTokens = row.CompletionTokens
+			item.CachedTokens = row.CachedTokens
+			item.Cost = row.Cost
+			item.AvgLatencyMs = row.AvgLatencyMs
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// Helper functions for map extraction
+func getMapString(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
 }

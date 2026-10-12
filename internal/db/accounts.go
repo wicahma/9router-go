@@ -416,3 +416,36 @@ func listModelLockJSONKeys(data string) []string {
 	}
 	return keys
 }
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// ConnectionCooldownStatus is ConnectionCooldownUntil plus the status code of
+// the error that wrote the cooldown, read from the stored lastError record.
+// The status matters at the call sites that treat a 429 as a quota signal:
+// rate limits metered per model leave the account's other models untouched,
+// while a 401/403 cooldown is account-wide by definition. status is 0 when
+// the record predates error reporting or cannot be parsed.
+func ConnectionCooldownStatus(rawData string) (time.Time, int, bool) {
+	if rawData == "" {
+		return time.Time{}, 0, false
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(rawData), &raw); err != nil {
+		return time.Time{}, 0, false
+	}
+	untilStr, ok := raw["rateLimitedUntil"].(string)
+	if !ok || strings.TrimSpace(untilStr) == "" {
+		return time.Time{}, 0, false
+	}
+	until, err := time.Parse(time.RFC3339, untilStr)
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	status := 0
+	if lastErr, ok := raw["lastError"].(map[string]any); ok {
+		if s, ok := lastErr["status"].(float64); ok {
+			status = int(s)
+		}
+	}
+	return until, status, true
+}

@@ -31,13 +31,13 @@ import (
 // CurrentVersion is the active 9router-go application version.
 // Can be overridden at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.8.8"
 // Default fallback is read from version.json at init if not overridden.
-var CurrentVersion = "1.9.11-exp.12"
+var CurrentVersion = "1.10.0"
 
 // DefaultUpdateURL is the primary remote version manifest URL.
 var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
 
 // DefaultGitHubRepo is the repository for GitHub Releases API fallback.
-var DefaultGitHubRepo = "luqman-v1/9router-go"
+var DefaultGitHubRepo = "wicahma/9router-go"
 
 // DefaultCheckInterval is the periodic background update check interval (6 hours).
 const DefaultCheckInterval = 6 * time.Hour
@@ -50,6 +50,9 @@ var (
 	autoUpdateMu      sync.RWMutex
 	updateInProgress  bool
 	updateProgressMu  sync.Mutex
+
+	installedPathMu sync.Mutex
+	installedPath   string
 )
 
 // UpdateInfo holds detailed version and asset information.
@@ -166,8 +169,19 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 
 	// 1. Try manifest URL first
+	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
+
 	info, manifestErr := checkManifest(ctx, updateURL)
 	if manifestErr == nil && info != nil {
+		if !isDirectBinaryURL(info.DownloadURL) {
+			ghURL := fmt.Sprintf("%s/repos/%s/releases/latest", githubReleasesAPIBase, repo)
+			if ghInfo, ghErr := checkGitHubReleases(ctx, ghURL); ghErr == nil && isDirectBinaryURL(ghInfo.DownloadURL) {
+				log.Warn("updater", "manifest download URL is not a release asset, using GitHub Releases instead",
+					"manifestURL", info.DownloadURL, "assetURL", ghInfo.DownloadURL)
+				info.DownloadURL = ghInfo.DownloadURL
+				info.SHA256 = ghInfo.SHA256
+			}
+		}
 		if info.SHA256 != "" || !info.HasUpdate {
 			cacheUpdateInfo(info)
 			return info, nil
@@ -180,7 +194,6 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// 2. Fallback to GitHub Releases API
-	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
 	ghURL := fmt.Sprintf(githubReleasesAPI, repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
@@ -380,8 +393,6 @@ func matchReleaseAsset(assets []releaseAsset, targetOS, targetArch string) strin
 	return ""
 }
 
-// selfExecutable resolves the binary this process runs, so the tests can point
-// the swap at a temp file instead of the live test binary.
 var selfExecutable = os.Executable
 
 // PerformSelfUpdate downloads, decompresses (tar.gz/zip if needed), verifies, and safely replaces the active binary.
@@ -391,12 +402,6 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	if downloadURL == "" {
 		return fmt.Errorf("missing download URL for platform %s_%s", runtime.GOOS, runtime.GOARCH)
 	}
-	// Renaming over the running executable with no digest is exactly the
-	// unverified install this refuses, so it is checked before any request.
-	if expectedSHA256 == "" {
-		return fmt.Errorf("refusing to install %s: release carries no checksum", downloadURL)
-	}
-
 	updateProgressMu.Lock()
 	if updateInProgress {
 		updateProgressMu.Unlock()
@@ -411,13 +416,9 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		updateProgressMu.Unlock()
 	}()
 
-	execPath, err := selfExecutable()
+	execPath, err := executableTarget()
 	if err != nil {
 		return fmt.Errorf("locate executable path: %w", err)
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return fmt.Errorf("resolve symlink path: %w", err)
 	}
 
 	log.Info("updater", "downloading update asset", "url", downloadURL, "target", execPath)
@@ -442,6 +443,13 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	binaryBytes, err := extractExecutableBytes(rawBytes, downloadURL)
 	if err != nil {
 		return fmt.Errorf("extract executable: %w", err)
+	}
+
+	if expectedSHA256 == "" {
+		if !isExecutableForPlatform(binaryBytes) {
+			return fmt.Errorf("downloaded asset is not an executable for %s/%s (%d bytes) — refusing to replace the running binary", runtime.GOOS, runtime.GOARCH, len(binaryBytes))
+		}
+		return fmt.Errorf("refusing to install %s: release carries no checksum", downloadURL)
 	}
 
 	actualSHA := ComputeSHA256(binaryBytes)
@@ -495,6 +503,7 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	}
 
 	_ = os.Remove(oldPath)
+	rememberInstalledPath(execPath)
 	log.Info("updater", "self-update applied successfully!", "binary", execPath)
 	return nil
 }
@@ -818,4 +827,52 @@ func CompareVersions(v1, v2 string) int {
 // and a final release is always welcome.
 func autoApplyAllowed(current, latest string) bool {
 	return parseSemver(current).hasPrerelease() || !parseSemver(latest).hasPrerelease()
+}
+
+var githubReleasesAPIBase = "https://api.github.com"
+
+func rememberInstalledPath(path string) {
+	installedPathMu.Lock()
+	defer installedPathMu.Unlock()
+	installedPath = path
+}
+
+func executableTarget() (string, error) {
+	installedPathMu.Lock()
+	path := installedPath
+	installedPathMu.Unlock()
+	if path != "" {
+		return path, nil
+	}
+
+	execPath, err := selfExecutable()
+	if err != nil {
+		return "", fmt.Errorf("locate executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+		return resolved, nil
+	}
+	return execPath, nil
+}
+
+func isDirectBinaryURL(u string) bool {
+	if u == "" {
+		return false
+	}
+	lower := strings.ToLower(u)
+	if strings.HasSuffix(lower, "/latest") || strings.HasSuffix(lower, "/releases") || strings.Contains(lower, "/releases/tag/") {
+		return false
+	}
+	return true
+}
+
+func isExecutableForPlatform(data []byte) bool {
+	switch runtime.GOOS {
+	case "windows":
+		return isPE(data)
+	case "darwin":
+		return isMachO(data)
+	default:
+		return isELF(data)
+	}
 }

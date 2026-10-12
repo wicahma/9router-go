@@ -22,6 +22,10 @@ import (
 type UpstreamError struct {
 	StatusCode int
 	Body       []byte
+	// URL is the upstream endpoint that produced the error. It lets the
+	// Cloudflare branch name the origin that challenged us instead of
+	// advising the operator to look at their own gateway.
+	URL string
 	// Header is the upstream response's headers. Rate-limit carriers such as
 	// Retry-After live only here — a Gemini/Antigravity 429 body repeats the
 	// wait in a google.rpc.RetryInfo payload at best — and the error is built
@@ -38,7 +42,14 @@ func (e *UpstreamError) Error() string {
 	if strings.HasPrefix(body, "<!DOCTYPE html") || strings.HasPrefix(body, "<html") {
 		lower := strings.ToLower(body)
 		if strings.Contains(lower, "cloudflare") || strings.Contains(lower, "attention required") {
-			return fmt.Sprintf("upstream returned %d: Cloudflare WAF challenge (Attention Required!): check User-Agent or network proxy", e.StatusCode)
+			if e.URL != "" {
+				host := e.URL
+				if u, err := url.Parse(e.URL); err == nil && u.Host != "" {
+					host = u.Host
+				}
+				return fmt.Sprintf("upstream returned %d: Cloudflare WAF challenge (Attention Required!) from upstream %s, not this gateway", e.StatusCode, host)
+			}
+			return fmt.Sprintf("upstream returned %d: Cloudflare WAF challenge (Attention Required!) from the upstream origin, not this gateway", e.StatusCode)
 		}
 		if titleStart := strings.Index(lower, "<title>"); titleStart != -1 {
 			titleEnd := strings.Index(lower[titleStart:], "</title>")
@@ -342,7 +353,7 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, URL: url, Header: resp.Header}
 	}
 	return resp, nil
 }

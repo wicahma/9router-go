@@ -158,3 +158,78 @@ func TestHandleUpdateConnection_AssignedModel(t *testing.T) {
 		t.Errorf("expected apiKey to be preserved, got %v", dataMap["apiKey"])
 	}
 }
+
+func TestHandleUpdateConnection_ProjectID(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	connID := "conn-test-update-project"
+	if err := repo.CreateProviderConnection(connID, "antigravity", "oauth", "AG Conn", "{}"); err != nil {
+		t.Fatalf("failed to create connection: %v", err)
+	}
+
+	put := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/connections/"+connID, bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	readData := func() map[string]any {
+		conn, err := repo.GetProviderConnectionByID(connID)
+		if err != nil {
+			t.Fatalf("failed to fetch connection: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(conn.Data), &m); err != nil {
+			t.Fatalf("failed to unmarshal connection data: %v", err)
+		}
+		return m
+	}
+
+	if w := put(`{"projectId": "proj-alpha-1"}`); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	m := readData()
+	if m["projectId"] != "proj-alpha-1" {
+		t.Errorf("expected top-level projectId proj-alpha-1, got %v", m["projectId"])
+	}
+	psd, ok := m["providerSpecificData"].(map[string]any)
+	if !ok || psd["projectId"] != "proj-alpha-1" {
+		t.Errorf("expected providerSpecificData.projectId proj-alpha-1, got %v", m["providerSpecificData"])
+	}
+
+	if w := put(`{"project_id": "proj-snake-2"}`); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	m = readData()
+	if m["projectId"] != "proj-snake-2" {
+		t.Errorf("expected projectId proj-snake-2, got %v", m["projectId"])
+	}
+
+	if w := put(`{"projectId": ""}`); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	m = readData()
+	if _, present := m["projectId"]; present {
+		t.Errorf("expected projectId removed on empty string, got %v", m["projectId"])
+	}
+	psd, _ = m["providerSpecificData"].(map[string]any)
+	if psd != nil {
+		if _, present := psd["projectId"]; present {
+			t.Errorf("expected providerSpecificData.projectId removed on empty string, got %v", psd["projectId"])
+		}
+	}
+
+	if w := put(`{"projectId": "proj-gamma-3"}`); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"isActive": true}`); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	m = readData()
+	if m["projectId"] != "proj-gamma-3" {
+		t.Errorf("expected projectId untouched by isActive-only update, got %v", m["projectId"])
+	}
+}

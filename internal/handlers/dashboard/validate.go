@@ -909,3 +909,90 @@ func validateDefaultModel(provider string) string {
 	}
 	return "test"
 }
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// validateChatProbe sends a 1-token chat completion. Used when the provider's
+// /v1/models listing is public: a 200 there proves nothing about the key.
+func validateChatProbe(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string) validateOutcome {
+	payload, _ := json.Marshal(map[string]any{
+		"model":      validateDefaultModel(provider),
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	})
+	headers := validateAuthHeaders(cfg, apiKey)
+	headers["Content-Type"] = "application/json"
+	status, _, err := validateProbeDo(ctx, http.MethodPost, cfg.BaseURL, headers, payload)
+	if err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
+	}
+	return validateOutcome{
+		valid:     status != http.StatusUnauthorized && status != http.StatusForbidden,
+		supported: true,
+	}
+}
+
+// --- qoder: PAT → job token → COSY-signed model list (upstream `case "qoder"`) ---
+
+const (
+	qoderJobTokenExchangeURL = "https://openapi.qoder.sh/api/v1/jobToken/exchange"
+	qoderUserinfoURL         = "https://openapi.qoder.sh/api/v1/userinfo"
+	qoderModelListURLBase    = "https://api3.qoder.sh/algo/api/v2/model/list"
+	// Job-token traffic is rejected by api3 ("Login expired" 403) — the official
+	// qodercli serves it from api2 instead.
+	qoderModelListURLBaseAlt = "https://api2.qoder.sh/algo/api/v2/model/list"
+	qoderProbeUserAgent      = "qodercli/1.0.0"
+)
+
+func isQoderPAT(token string) bool { return strings.HasPrefix(token, "pt-") }
+
+// exchangeQoderJobToken trades a PAT (pt-...) for a short-lived job token
+// (jt-...). Plain JSON POST, not COSY-signed (upstream exchangeJobToken).
+func exchangeQoderJobToken(ctx context.Context, pat string) (string, error) {
+	payload, _ := json.Marshal(map[string]string{"personal_token": pat})
+	status, body, err := validateProbeDo(ctx, http.MethodPost, qoderJobTokenExchangeURL, map[string]string{
+		"Content-Type":    "application/json",
+		"Accept":          "application/json",
+		"User-Agent":      qoderProbeUserAgent,
+		"Cosy-Version":    "1.0.0",
+		"Cosy-ClientType": "5",
+	}, payload)
+	if err != nil {
+		return "", fmt.Errorf("qoder PAT exchange failed: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return "", fmt.Errorf("qoder PAT exchange failed: %d %s", status, validateTruncate(string(body), 200))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("qoder PAT exchange returned non-JSON")
+	}
+	token, _ := out["token"].(string)
+	if token == "" {
+		return "", fmt.Errorf("qoder PAT exchange returned no job token")
+	}
+	return token, nil
+}
+
+// fetchQoderUserID resolves the userId a job token belongs to. Best-effort:
+// upstream returns "" on any failure and callers fall back to the stored id.
+func fetchQoderUserID(ctx context.Context, jobToken string) string {
+	status, body, err := validateProbeDo(ctx, http.MethodGet, qoderUserinfoURL, map[string]string{
+		"Authorization": "Bearer " + jobToken,
+		"Accept":        "application/json",
+		"User-Agent":    qoderProbeUserAgent,
+	}, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return ""
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ""
+	}
+	for _, key := range []string{"id", "userId", "user_id"} {
+		if v, ok := out[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}

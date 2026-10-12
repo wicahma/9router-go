@@ -678,7 +678,7 @@ func TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest(t *testing
 			// Exactly the shape this repo publishes: no sha256 key at all.
 			w.Header().Set("Content-Type", "application/json")
 			json.MarshalWrite(w, map[string]any{
-				"downloadUrl":  "https://example.invalid/releases/latest",
+				"downloadUrl":   "https://example.invalid/releases/latest",
 				"latestVersion": "1.9.7",
 				"releaseNotes":  "notes",
 			})
@@ -795,5 +795,119 @@ func TestCheckUpdate_UpToDateManifestNeedsNoDigest(t *testing.T) {
 	}
 	if info.Source != "manifest" {
 		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+}
+
+func TestExecutableTargetPrefersTheInstalledPath(t *testing.T) {
+	installedPathMu.Lock()
+	before := installedPath
+	installedPath = ""
+	installedPathMu.Unlock()
+	t.Cleanup(func() { rememberInstalledPath(before) })
+
+	fallback, err := executableTarget()
+	if err != nil {
+		t.Fatalf("executableTarget before any update: %v", err)
+	}
+	if _, err := os.Stat(fallback); err != nil {
+		t.Fatalf("the path before any update must exist: %v", err)
+	}
+
+	rememberInstalledPath("/usr/local/bin/9router-go")
+	got, err := executableTarget()
+	if err != nil {
+		t.Fatalf("executableTarget after a swap: %v", err)
+	}
+	if got != "/usr/local/bin/9router-go" {
+		t.Fatalf("executableTarget after a swap = %q, want the installed path", got)
+	}
+}
+
+func TestIsDirectBinaryURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://github.com/wicahma/9router-go/releases/download/v1.9.5/9router-go-linux-arm64", true},
+		{"https://example.com/9router-go-windows-amd64.exe", true},
+		{"https://example.com/bundle.tar.gz", true},
+		{"https://mirror.example.com/downloads/9router-go", true},
+		{"https://github.com/wicahma/9router-go/releases/latest", false},
+		{"https://github.com/wicahma/9router-go/releases", false},
+		{"https://github.com/wicahma/9router-go/releases/tag/v1.9.5", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isDirectBinaryURL(tc.url); got != tc.want {
+			t.Errorf("isDirectBinaryURL(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestCheckUpdate_RepairsNonAssetManifestURL(t *testing.T) {
+	assetURL := ""
+	var gh *httptest.Server
+	gh = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/wicahma/9router-go/releases/latest":
+			assetURL = gh.URL + "/downloads/v2.0.0/9router-go-" + runtime.GOOS + "-" + runtime.GOARCH
+			resp := map[string]any{
+				"tag_name": "v2.0.0",
+				"assets": []map[string]any{
+					{"name": assetFileName(assetURL), "browser_download_url": assetURL},
+					{"name": "SHA256SUMS.txt", "browser_download_url": gh.URL + "/downloads/v2.0.0/SHA256SUMS.txt"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, resp)
+		case "/downloads/v2.0.0/SHA256SUMS.txt":
+			sum := strings.Repeat("ab", 32)
+			fmt.Fprintf(w, "%s  %s\n", sum, assetFileName(assetURL))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"latestVersion": "2.0.0",
+			"downloadUrl":   "https://github.com/wicahma/9router-go/releases/latest",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.MarshalWrite(w, resp)
+	}))
+	defer manifest.Close()
+
+	os.Setenv("UPDATE_URL", manifest.URL)
+	defer os.Unsetenv("UPDATE_URL")
+	oldBase := githubReleasesAPIBase
+	githubReleasesAPIBase = gh.URL
+	t.Cleanup(func() { githubReleasesAPIBase = oldBase })
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate failed: %v", err)
+	}
+	if !strings.HasSuffix(info.DownloadURL, "/9router-go-"+runtime.GOOS+"-"+runtime.GOARCH) {
+		t.Errorf("expected the repaired release asset URL, got %q", info.DownloadURL)
+	}
+	if info.SHA256 != strings.Repeat("ab", 32) {
+		t.Errorf("expected the SHA256SUMS.txt checksum for the asset, got %q", info.SHA256)
+	}
+}
+
+func TestPerformSelfUpdate_RefusesNonExecutable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<!DOCTYPE html><html><body>releases</body></html>"))
+	}))
+	defer srv.Close()
+
+	err := PerformSelfUpdate(srv.URL, "")
+	if err == nil {
+		t.Fatal("expected PerformSelfUpdate to reject a non-executable payload")
+	}
+	if !strings.Contains(err.Error(), "not an executable") {
+		t.Fatalf("expected a not-an-executable error, got %v", err)
 	}
 }

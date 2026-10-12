@@ -3,6 +3,8 @@ package media
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -40,6 +42,41 @@ func TestDetectAll_OneFailingDetectorIsNull(t *testing.T) {
 	}
 }
 
+func TestLookupToolBin_FindsBinaryOutsidePATH(t *testing.T) {
+	// The service user's PATH never contains the operator's ~/.local/bin, so
+	// detection has to consult the extra install roots; a tool living only
+	// there must still be reported installed.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fakecli")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := userBinDirs
+	userBinDirs = []string{dir}
+	t.Cleanup(func() { userBinDirs = old })
+
+	if p, ok := lookupToolBin("fakecli"); !ok || p != bin {
+		t.Fatalf("expected %q to be found, got %q ok=%v", bin, p, ok)
+	}
+	if _, ok := lookupToolBin("definitely-not-installed-xyz"); ok {
+		t.Fatal("expected miss for a binary that does not exist")
+	}
+}
+
+func TestLookupToolBin_SkipsNonExecutable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "fakecli"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := userBinDirs
+	userBinDirs = []string{dir}
+	t.Cleanup(func() { userBinDirs = old })
+
+	if _, ok := lookupToolBin("fakecli"); ok {
+		t.Fatal("non-executable file must not count as installed")
+	}
+}
+
 func TestCLIDetectors_HasAllToolIDs(t *testing.T) {
 	// The tool ID set is load-bearing: it must match what the dashboard's
 	// status card renders. A missing or renamed ID silently drops a card.
@@ -48,7 +85,7 @@ func TestCLIDetectors_HasAllToolIDs(t *testing.T) {
 		"cowork", "copilot", "cline", "kilo", "deepseek-tui", "jcode",
 		"grok-build", "devin", "pi", "omp",
 	}
-	m := cliDetectors()
+	m := cliDetectors(nil)
 	for _, id := range want {
 		if _, ok := m[id]; !ok {
 			t.Errorf("missing tool detector for %q", id)

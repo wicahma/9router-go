@@ -84,6 +84,7 @@ type SettingsData struct {
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
 	ProviderOverrides          map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
 	ModelContextLimit          map[string]int                  `json:"modelContextLimit,omitempty"`
+	ModelRps                   map[string]float64              `json:"modelRps,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -238,6 +239,23 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["autoUpdate"].(bool); ok {
 		s.AutoUpdate = v
+	}
+
+	if mcl, ok := raw["modelContextLimit"].(map[string]any); ok {
+		s.ModelContextLimit = make(map[string]int, len(mcl))
+		for k, v := range mcl {
+			if fv, ok := v.(float64); ok && fv > 0 {
+				s.ModelContextLimit[k] = int(fv)
+			}
+		}
+	}
+	if mrps, ok := raw["modelRps"].(map[string]any); ok {
+		s.ModelRps = make(map[string]float64, len(mrps))
+		for k, v := range mrps {
+			if fv, ok := v.(float64); ok && fv > 0 {
+				s.ModelRps[k] = fv
+			}
+		}
 	}
 
 	// Global provider fallback strategy

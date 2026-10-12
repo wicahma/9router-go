@@ -515,3 +515,25 @@ func TestSetupServerRouter_CodexResetCreditsAreLive(t *testing.T) {
 		t.Errorf("anonymous status = %d, want 401", rec.Code)
 	}
 }
+
+// ---- spliced from local main (upstream merge dropped the local-only test) ----
+func TestModelTestRouteUsesDashboardGateNotApiKey(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/models/test", strings.NewReader(`{"model":"gpt-4o-mini"}`)))
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("open dashboard model test status = %d, want past auth gate: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("/api/models/test not mounted: %s", rec.Body.String())
+	}
+}

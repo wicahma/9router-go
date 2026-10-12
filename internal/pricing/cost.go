@@ -179,4 +179,82 @@ const (
 	SourceTable   Source = "table"
 	SourceDefault Source = "default"
 	SourceProvider Source = "provider"
+	// SourceCatalog means the rate came from the models.dev catalog rather than
+	// a static table: it is the more current of the two, and reporting it
+	// separately keeps the two sources from being confused.
+	SourceCatalog Source = "catalog"
 )
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// CatalogPriceLookup resolves a model to its consensus upstream price. It is a
+// variable so pricing can consume the providers catalog without importing that
+// package, which would be a cycle. Set once at startup.
+var CatalogPriceLookup func(model string) (inputPer1M, outputPer1M float64, ok bool)
+
+// pricingTable maps model name prefixes to their pricing.
+// Lookup uses longest-prefix matching so "claude-sonnet-4" catches
+// "claude-sonnet-4.5", "claude-sonnet-4-20250514", etc.
+//
+// These entries win over the upstream catalog. Two of them disagree with
+// models.dev consensus (claude-haiku is listed at 4x the local rate because the
+// prefix spans two generations), and deepseek-v4-flash has no upstream majority
+// at all, so letting the catalog overwrite them would make those worse. A
+// deliberate local rate is a decision; the catalog is a fallback for the
+// thousands of models nobody configured.
+var pricingTable = map[string]ModelPricing{
+	"claude-sonnet-4":   {InputPer1M: 3.0, OutputPer1M: 15.0},
+	"claude-haiku":      {InputPer1M: 0.25, OutputPer1M: 1.25},
+	"deepseek-v4-flash": {InputPer1M: 0.07, OutputPer1M: 0.28},
+	"gpt-4o":            {InputPer1M: 2.5, OutputPer1M: 10.0},
+}
+
+// defaultPricing is the fallback when no prefix matches.
+var defaultPricing = ModelPricing{InputPer1M: 1.0, OutputPer1M: 3.0}
+
+// EstimateCostWithSource returns the cost together with the reason that number
+// was chosen, so callers can persist how much of their spend is priced and how
+// much is invented.
+func EstimateCostWithSource(model string, promptTokens, completionTokens int) (float64, Source) {
+	p, source := lookupPricing(model)
+	inputCost := float64(promptTokens) / 1_000_000 * p.InputPer1M
+	outputCost := float64(completionTokens) / 1_000_000 * p.OutputPer1M
+	return inputCost + outputCost, source
+}
+
+// lookupPricing finds the best matching pricing entry for a model name and
+// reports whether the match came from the table or the fallback.
+func lookupPricing(model string) (ModelPricing, Source) {
+	model = strings.ToLower(model)
+
+	if p, ok := pricingTable[model]; ok {
+		return p, SourceTable
+	}
+
+	bestLen := 0
+	bestPricing := defaultPricing
+	for prefix, p := range pricingTable {
+		if strings.HasPrefix(model, prefix) && len(prefix) > bestLen {
+			bestLen = len(prefix)
+			bestPricing = p
+		}
+	}
+
+	if bestLen == 0 {
+		return catalogOrDefault(model)
+	}
+	return bestPricing, SourceTable
+}
+
+// catalogOrDefault fills the gap for models nobody configured a rate for. The
+// catalog is consulted first because a consensus upstream price is closer to
+// truth than the flat default, and it reports SourceCatalog so the two are never
+// summed together as if they meant the same thing.
+func catalogOrDefault(model string) (ModelPricing, Source) {
+	if CatalogPriceLookup != nil {
+		if in, out, ok := CatalogPriceLookup(model); ok {
+			return ModelPricing{InputPer1M: in, OutputPer1M: out}, SourceCatalog
+		}
+	}
+	return defaultPricing, SourceDefault
+}

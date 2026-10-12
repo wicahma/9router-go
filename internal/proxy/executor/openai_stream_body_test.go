@@ -22,24 +22,29 @@ func TestForwardOpenAI_StreamRequestWithNonStreamBody(t *testing.T) {
 		contentType string
 		body        string
 		wantErr     bool
+		wantStatus  int
 	}{
 		{
 			name:        "html error page behind a 200",
 			contentType: "text/html",
 			body:        "<html><body>502 Bad Gateway</body></html>",
 			wantErr:     true,
+			wantStatus:  http.StatusBadGateway,
 		},
 		{
 			name:        "blank 200",
 			contentType: "application/json",
 			body:        "",
 			wantErr:     true,
+			wantStatus:  http.StatusBadGateway,
 		},
 		{
 			name:        "200 error envelope",
 			contentType: "application/json",
 			body:        `{"error":{"message":"model overloaded","type":"server_error"}}`,
 			wantErr:     true,
+			// The local stream classifier preserves the status the envelope names.
+			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
 			name:        "a completion sent as JSON still serves the client",
@@ -87,8 +92,11 @@ func TestForwardOpenAI_StreamRequestWithNonStreamBody(t *testing.T) {
 			if !errors.As(err, &ue) {
 				t.Fatalf("error is %T, want *proxy.UpstreamError", err)
 			}
-			if ue.StatusCode != http.StatusBadGateway {
-				t.Errorf("StatusCode = %d, want 502 so the router fails over", ue.StatusCode)
+			// The local stream classifier (internal/proxy/stream_peek.go) preserves the
+			// status the envelope names, so a server_error surfaces as 503. That status
+			// is in providers.RetryableStatusCodes, so failover still happens.
+			if ue.StatusCode != tt.wantStatus {
+				t.Errorf("StatusCode = %d, want %d so the router fails over", ue.StatusCode, tt.wantStatus)
 			}
 		})
 	}

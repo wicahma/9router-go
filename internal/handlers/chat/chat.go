@@ -80,6 +80,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = handlerutil.WithAttemptCounter(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
@@ -197,6 +198,14 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 			log.Error("chat", "upstream error after headers committed", "error", result)
 			return
 		}
+		// Every model in the chain ran out of local RPS budget: this is a 429
+		// we produced, not an upstream failure, so it must not be dressed up
+		// as a 502.
+		var rl *rateLimitError
+		if errors.As(result, &rl) {
+			writeRpsError(cw, rl)
+			return
+		}
 		var ue *upstreamError
 		if errors.As(result, &ue) {
 			cw.Header().Set("Content-Type", "application/json")
@@ -286,6 +295,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = handlerutil.WithAttemptCounter(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
@@ -338,6 +348,14 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 	if result != nil {
 		if cw.IsCommitted() {
 			log.Error("chat", "upstream error after headers committed", "error", result)
+			return
+		}
+		// Every model in the chain ran out of local RPS budget: this is a 429
+		// we produced, not an upstream failure, so it must not be dressed up
+		// as a 502.
+		var rl *rateLimitError
+		if errors.As(result, &rl) {
+			writeRpsError(cw, rl)
 			return
 		}
 		var ue *upstreamError

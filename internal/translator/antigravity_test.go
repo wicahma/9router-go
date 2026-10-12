@@ -639,3 +639,42 @@ func TestWrapForAntigravity_StripsThinkingFields(t *testing.T) {
 		}
 	}
 }
+
+// ---- spliced from local main (upstream merge dropped the local-only test) ----
+//
+// validBackendModels is the independent literal list of ids the Antigravity
+// backend actually serves — it must NOT be derived from the maps under test,
+// or the check would be tautological. Keep it in step with
+// antigravityUpstreamModelIDs and the targets of AntigravityModelSynonyms in
+// internal/translator/antigravity.go.
+//
+// Upstream decolua/9router#24034f69 retired the gemini-3.5 family and the
+// shared "-tiered" id for 3.8: 3.8 now serves one bare id per tier, while 3.7
+// and 3.6 keep their tiered id. The list below is the post-#24034f69 shape.
+func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
+	validBackendModels := map[string]bool{
+		// 3.8 family: one backend id per tier.
+		"gemini-3.8-flash-medium": true,
+		"gemini-3.8-flash-high":   true,
+		"gemini-3.8-flash-low":    true,
+		// 3.7 / 3.6 families: one tiered id each.
+		"gemini-3.7-flash-tiered": true,
+		"gemini-3.6-flash-tiered": true,
+		// Pro tiers.
+		"gemini-pro-agent":   true,
+		"gemini-3.1-pro-low": true,
+		// Claude 5.5 tiers.
+		"claude-sonnet-5-5-high":   true,
+		"claude-sonnet-5-5-medium": true,
+		"claude-sonnet-5-5-low":    true,
+		"claude-opus-5-5-high":     true,
+		"claude-opus-5-5-medium":   true,
+		"claude-opus-5-5-low":      true,
+	}
+
+	for alias, targetModel := range translator.AntigravityModelSynonyms {
+		if !validBackendModels[targetModel] {
+			t.Errorf("Antigravity synonym %q maps to invalid upstream model %q (will cause 404)", alias, targetModel)
+		}
+	}
+}

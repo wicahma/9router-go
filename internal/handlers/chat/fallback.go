@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/ratelimit"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
@@ -43,7 +44,7 @@ func (h *ChatHandler) handleAccountFallback(
 ) error {
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
-		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
+		connObj, connData, err := h.getBestConnectionForModel(ctx, provider, pinnedConnectionID, nil, model, false)
 		if err != nil {
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
@@ -97,7 +98,7 @@ func (h *ChatHandler) handleAccountFallback(
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
-		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, c.ID, nil, model)
+		connObj, connData, err := h.getBestConnectionForModel(ctx, provider, c.ID, nil, model, false)
 		if err != nil || connObj == nil {
 			if lastErr == nil && err != nil {
 				lastErr = err
@@ -267,7 +268,23 @@ type forwardRequestParams struct {
 
 func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
+	// One call site for every upstream forward, so this is the only place an
+	// attempt can be counted without missing a path (fallback loop, combo,
+	// fusion).
+	handlerutil.CountAttempt(ctx)
 	provider, model := f.Provider, f.Model
+
+	// Local RPS ceiling, checked before anything is sent upstream so an
+	// over-budget request never costs a connection lookup or a real request.
+	// Every forward for this model — any connection, any route — draws from
+	// the same bucket, which is the point: the limit belongs to the
+	// subscription, not to the connection.
+	if ok, wait := ratelimit.Shared().Allow(provider + "/" + model); !ok {
+		RateLimitDenied.Add(1)
+		log.Warn("rps limit", "provider", provider, "model", model, "retry_in_ms", wait.Milliseconds())
+		return newRateLimitError(provider+"/"+model, wait)
+	}
+
 	connectionID, connData := f.ConnectionID, f.ConnData
 	body, isStream := f.Body, f.IsStream
 	translateResponse, endpoint := f.TranslateResponse, f.Endpoint
@@ -368,6 +385,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if compressDurMs <= 0 {
 		compressDurMs = 1
 	}
+	pipedBody = h.applyModelContextLimit(provider, model, pipedBody)
 	var claudeToolMap map[string]string
 	if upstreamClaude {
 		if !claudeNative {

@@ -283,6 +283,14 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 
 	body = translator.UnwrapClineEnvelope(body)
 
+	// A 200 that carries an error object is a failure the provider dressed as
+	// success: `{"error":{"code":404,...}}` must surface as the 404 it names,
+	// not as a 502 from the empty-completion check below, and it must not
+	// commit anything to the client.
+	if uerr := proxy.ClassifyErrorBody(body); uerr != nil {
+		return uerr
+	}
+
 	// An SSE-only upstream ignores `stream:false` and answers with an event
 	// stream anyway. Writing that under an `application/json` header hands the
 	// client text its JSON.parse cannot read, so fold the stream into one

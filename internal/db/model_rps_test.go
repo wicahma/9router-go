@@ -20,7 +20,7 @@ func TestModelRpsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := s.ModelRps["openai/gpt-4o"]; got != 10 {
-		t.Fatalf("ModelRps[openai/gpt-4o] = %d, want 10", got)
+		t.Fatalf("ModelRps[openai/gpt-4o] = %f, want 10", got)
 	}
 }
 
@@ -63,6 +63,6 @@ func TestModelRpsIgnoresNonPositiveValues(t *testing.T) {
 		t.Fatal("a negative rps entry must not be stored")
 	}
 	if got := s.ModelRps["c"]; got != 7 {
-		t.Fatalf("ModelRps[c] = %d, want 7", got)
+		t.Fatalf("ModelRps[c] = %f, want 7", got)
 	}
 }

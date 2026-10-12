@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -169,14 +170,18 @@ func (h *ChatHandler) GetBestConnection(provider string, connectionID string, ex
 
 // GetBestConnectionWithContext is the context-aware variant of GetBestConnection.
 func (h *ChatHandler) GetBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnectionWithContext(ctx, provider, connectionID, excludeIDs, model)
+	return h.getBestConnectionForModel(ctx, provider, connectionID, excludeIDs, model, false)
+}
+
+func (h *ChatHandler) GetBestConnectionPerModelCooldown(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionForModel(ctx, provider, connectionID, excludeIDs, model, true)
 }
 
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model)
+	return h.getBestConnectionForModel(context.Background(), provider, connectionID, excludeIDs, model, false)
 }
 
-func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+func (h *ChatHandler) getBestConnectionForModel(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string, cooldownPerModel bool) (*models.ProviderConnection, *ConnectionData, error) {
 	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
@@ -206,7 +211,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// row never matches and the request falls through to the configured
 		// strategy. Honouring the pin unconditionally made the dashboard's
 		// enable/disable toggle a no-op for every pinned request.
-		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
+		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model, cooldownPerModel)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
 			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
 				// Probes bypass cooldown / locks to test actual upstream reachability,
@@ -287,7 +292,6 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		conn = nil
 		var cooldownUntil time.Time
 		var inCooldown []*models.ProviderConnection
-		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
 				continue
@@ -310,10 +314,12 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				// dead accounts until a live 429/401 locked them, and a rejected
 				// grant cost a token-endpoint call on every request until the IP
 				// was rate limited. Upstream parity: filterAvailableAccounts.
-				if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
-					inCooldown = append(inCooldown, c)
-					if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
-						cooldownUntil = until
+				if h.cooldownHidesModel(c, provider, model, cooldownPerModel) {
+					if until, ok := db.ConnectionBlockedUntil(c.Data); ok {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
 					}
 					continue
 				}
@@ -420,7 +426,7 @@ func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider 
 // before it looks for a preferred connection (src/sse/services/auth.js:100-148):
 // disabled rows, explicitly excluded rows, active model locks, and connections
 // the provider's strict model assignment does not bind to this model.
-func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string) (bool, string) {
+func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string, cooldownPerModel bool) (bool, string) {
 	if conn == nil {
 		return true, "nil connection"
 	}
@@ -430,7 +436,8 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 	if slices.Contains(excludeIDs, conn.ID) {
 		return true, "excluded"
 	}
-	if until, ok := db.ConnectionBlockedUntil(conn.Data); ok && until.After(time.Now()) {
+	if h.cooldownHidesModel(conn, conn.Provider, model, cooldownPerModel) {
+		until, _ := db.ConnectionBlockedUntil(conn.Data)
 		return true, "account cooldown until " + until.UTC().Format(time.RFC3339)
 	}
 	if model == "" {
@@ -462,6 +469,41 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return true, "strict model assignment"
 	}
 	return false, ""
+}
+
+// connectionModelLocked reports whether the connection carries an active
+// per-model lock for model (canonical alias or the raw id).
+func (h *ChatHandler) connectionModelLocked(connID, provider, model string) bool {
+	if model == "" {
+		return false
+	}
+	lockKey := canonicalLockModel(provider, model)
+	if locked, _ := h.Repo.IsConnectionModelLocked(connID, lockKey); locked {
+		return true
+	}
+	if lockKey != model {
+		if locked, _ := h.Repo.IsConnectionModelLocked(connID, model); locked {
+			return true
+		}
+	}
+	return false
+}
+
+// cooldownHidesModel decides whether an account cooldown must skip this
+// connection for the requested model. With cooldownPerModel the skip is
+// lifted for a 429-origin cooldown when the model itself carries no lock —
+// the one attempt the combo owes the next model on this account. Auth
+// cooldowns (401/403) and a model that is itself locked stay account-wide.
+func (h *ChatHandler) cooldownHidesModel(c *models.ProviderConnection, provider, model string, cooldownPerModel bool) bool {
+	until, ok := db.ConnectionBlockedUntil(c.Data)
+	if !ok || !until.After(time.Now()) {
+		return false
+	}
+	_, status, _ := db.ConnectionCooldownStatus(c.Data)
+	if cooldownPerModel && status == http.StatusTooManyRequests && model != "" && !h.connectionModelLocked(c.ID, provider, model) {
+		return false
+	}
+	return true
 }
 
 // codexAccountServesModel reports whether a codex connection can serve model.
@@ -571,6 +613,8 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
+	mergeConnectionHeaders(baseCfg, connData)
+
 	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
 	if connData != nil {
 		var relayURL string
@@ -603,6 +647,30 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	}
 
 	return h.applyProviderOverrides(provider, baseCfg), nil
+}
+
+// mergeConnectionHeaders copies per-connection providerSpecificData.headers into
+// the provider config; the provider's own fingerprint headers always win.
+func mergeConnectionHeaders(cfg *providers.ProviderConfig, connData *ConnectionData) {
+	if cfg == nil || connData == nil {
+		return
+	}
+	headers, ok := connData.ProviderSpecificData["headers"].(map[string]any)
+	if !ok || len(headers) == 0 {
+		return
+	}
+	for key, value := range headers {
+		if key == "" || value == nil {
+			continue
+		}
+		if _, exists := cfg.StaticHeaders[key]; exists {
+			continue
+		}
+		if cfg.StaticHeaders == nil {
+			cfg.StaticHeaders = make(map[string]string)
+		}
+		cfg.StaticHeaders[key] = fmt.Sprint(value)
+	}
 }
 
 // chatCompletionsURL completes a configured endpoint into the chat-completions

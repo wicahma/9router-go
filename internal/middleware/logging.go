@@ -6,7 +6,22 @@ import (
 	"time"
 
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/usagetracker"
 )
+
+var upstreamPrefixes = []string{
+	"/chat/", "/messages", "/responses", "/embeddings", "/completions",
+	"/images/", "/audio/", "/search", "/scrape", "/videos/", "/rerank",
+}
+
+func isUpstreamPath(path string) bool {
+	for _, p := range upstreamPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // statusWriter wraps http.ResponseWriter to capture the status code
 // and guard against duplicate WriteHeader calls.
@@ -79,6 +94,12 @@ func RequestLogger(next http.Handler) http.Handler {
 		if reqID != "" {
 			w.Header().Set("X-Request-ID", reqID)
 		}
+
+		if isUpstreamPath(path) {
+			usagetracker.StartFlight(reqID, strings.TrimPrefix(path, "/"), "", "")
+			defer usagetracker.EndFlight(reqID)
+		}
+
 		ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(ww, req)
 

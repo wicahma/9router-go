@@ -572,6 +572,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasPSD := rawBody["providerSpecificData"]
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
+	_, hasProjectID := rawBody["projectId"]
+	_, hasProjectIDSnake := rawBody["project_id"]
+	hasProject := hasProjectID || hasProjectIDSnake
 	// Issue #154: rotating the credential from the edit modal. Blank (or
 	// whitespace-only) means "keep the stored key" — the modal shows it as a
 	// mask and sends nothing when the user did not type one.
@@ -610,7 +613,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey && !hasProject {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -639,7 +642,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey || hasProject {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -710,6 +713,27 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			} else {
 				dataMap["proxyPoolId"] = proxyPoolID
 				mergeMapField(dataMap, "providerSpecificData", map[string]any{"proxyPoolId": proxyPoolID})
+			}
+		}
+
+		if hasProject {
+			pid := ""
+			if s, ok := rawBody["projectId"].(string); ok {
+				pid = strings.TrimSpace(s)
+			} else if s, ok := rawBody["project_id"].(string); ok {
+				pid = strings.TrimSpace(s)
+			}
+			if pid == "" {
+				delete(dataMap, "projectId")
+				delete(dataMap, "project_id")
+				if psd, ok := dataMap["providerSpecificData"].(map[string]any); ok {
+					delete(psd, "projectId")
+					delete(psd, "project_id")
+				}
+			} else {
+				dataMap["projectId"] = pid
+				delete(dataMap, "project_id")
+				mergeMapField(dataMap, "providerSpecificData", map[string]any{"projectId": pid})
 			}
 		}
 

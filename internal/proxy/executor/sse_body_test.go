@@ -32,27 +32,10 @@ func TestJSONResponse_LeavesPlainJSONUntouched(t *testing.T) {
 
 // A provider that answers 200 with an error envelope is a failure, not a
 // body to relay: relaying it ended combo fallback and marked the account
-// healthy, so the router stayed on the model that had just failed.
-func TestJSONResponse_ErrorEnvelopeBehindA200FailsOver(t *testing.T) {
-	const upstream = `{"error":{"message":"model not found","type":"invalid_request_error","code":404}}`
-
-	rec := httptest.NewRecorder()
-	err := jsonResponse(t.Context(), rec, strings.NewReader(upstream), false, nil)
-	if err == nil {
-		t.Fatal("jsonResponse served an error envelope as a completion")
-	}
-	var ue *proxy.UpstreamError
-	if !errors.As(err, &ue) {
-		t.Fatalf("error is %T, want *proxy.UpstreamError", err)
-	}
-	if ue.StatusCode != http.StatusBadGateway {
-		t.Errorf("StatusCode = %d, want 502", ue.StatusCode)
-	}
-	if rec.Body.Len() != 0 {
-		t.Errorf("nothing may reach the client on a failure, got %q", rec.Body.String())
-	}
-}
-
+// healthy, so the router stayed on the model that had just failed. The
+// status the envelope names is the status the client sees (see
+// TestJSONResponse_ErrorEnvelopeFailsOver below).
+//
 // A 200 with a blank body is the same failure with no envelope to inspect.
 func TestJSONResponse_BlankBodyFailsOver(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -63,5 +46,27 @@ func TestJSONResponse_BlankBodyFailsOver(t *testing.T) {
 	var ue *proxy.UpstreamError
 	if !errors.As(err, &ue) || ue.StatusCode != http.StatusBadGateway {
 		t.Fatalf("want a 502 *proxy.UpstreamError, got %v", err)
+	}
+}
+
+// ---- spliced from local main (upstream merge dropped the local-only test) ----
+// An upstream can answer 200 with an error object (quota, auth, overload).
+// Writing that as a successful completion silently ends fallback, so it must
+// surface as an UpstreamError carrying the status the envelope named, before
+// anything is committed to the client.
+func TestJSONResponse_ErrorEnvelopeFailsOver(t *testing.T) {
+	const upstream = `{"error":{"message":"model not found","type":"invalid_request_error","code":404}}`
+
+	rec := httptest.NewRecorder()
+	err := jsonResponse(t.Context(), rec, strings.NewReader(upstream), false, nil)
+	ue, ok := err.(*proxy.UpstreamError)
+	if !ok {
+		t.Fatalf("expected *proxy.UpstreamError, got %T (%v)", err, err)
+	}
+	if ue.StatusCode != 404 {
+		t.Errorf("status: got %d want 404", ue.StatusCode)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("nothing may reach the client on a failure, got %q", rec.Body.String())
 	}
 }

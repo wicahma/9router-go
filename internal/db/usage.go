@@ -1,7 +1,10 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"time"
 )
 
@@ -347,3 +350,176 @@ func (r *Repo) PruneUsageHistoryBefore(cutoff string) (int64, error) {
 	}
 	return n, nil
 }
+
+type LatencyStats struct {
+	Model    string
+	Provider string
+	Samples  int
+	P50Ms    int
+	P95Ms    int
+	P99Ms    int
+}
+
+func (r *Repo) GetLatencyStatsSince(cutoff string, limit int) ([]LatencyStats, error) {
+	rows, err := r.db.Query(`SELECT model, provider, meta FROM usageHistory WHERE timestamp >= ? AND meta != ''`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("query usage history latency: %w", err)
+	}
+	defer rows.Close()
+
+	type key struct {
+		model    string
+		provider string
+	}
+	groups := make(map[key][]int)
+
+	for rows.Next() {
+		var model, provider, meta string
+		if err := rows.Scan(&model, &provider, &meta); err != nil {
+			continue
+		}
+		if meta == "" {
+			continue
+		}
+		lat := extractLatencyMs(meta)
+		if lat > 0 {
+			k := key{model: model, provider: provider}
+			groups[k] = append(groups[k], lat)
+		}
+	}
+
+	var res []LatencyStats
+	for k, lats := range groups {
+		if len(lats) == 0 {
+			continue
+		}
+		sort.Ints(lats)
+		n := len(lats)
+		p50 := percentile(lats, 50)
+		p95 := percentile(lats, 95)
+		p99 := percentile(lats, 99)
+		res = append(res, LatencyStats{
+			Model:    k.model,
+			Provider: k.provider,
+			Samples:  n,
+			P50Ms:    p50,
+			P95Ms:    p95,
+			P99Ms:    p99,
+		})
+	}
+	return res, nil
+}
+
+func extractLatencyMs(meta string) int {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(meta), &m); err != nil {
+		return 0
+	}
+	if v, ok := m["latencyMs"]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		}
+	}
+	return 0
+}
+
+func percentile(sorted []int, pct int) int {
+	if len(sorted) == 0 {
+		return 0
+	}
+	f := float64(pct) * float64(len(sorted)) / 100.0
+	idx := int(math.Ceil(f)) - 1
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	return sorted[idx]
+}
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+// (UpdateConnectionLastUsed lives in rotation.go — upstream's rotation-stamp
+// implementation is authoritative here; the local copy was dropped on purpose.)
+
+type UsageTrend struct {
+	Timestamp        string
+	Requests         int
+	PromptTokens     int64
+	CompletionTokens int64
+	CachedTokens     int64
+	Cost             float64
+	AvgLatencyMs     int64
+}
+
+// GetUsageTrendSince returns UTC hour/day buckets from persisted request data.
+func (r *Repo) GetUsageTrendSince(cutoff string, daily bool) ([]UsageTrend, error) {
+	bucket := "substr(timestamp, 1, 13) || ':00:00Z'"
+	if daily {
+		bucket = "substr(timestamp, 1, 10) || 'T00:00:00Z'"
+	}
+	query := fmt.Sprintf(`
+		SELECT %s, COUNT(*), COALESCE(SUM(promptTokens), 0),
+		       COALESCE(SUM(completionTokens), 0), COALESCE(SUM(json_extract(tokens, '$.cached_tokens')), 0),
+		       COALESCE(SUM(cost), 0),
+		       CAST(COALESCE(AVG(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.latencyMs') END), 0) AS INTEGER)
+		FROM usageHistory
+		WHERE timestamp >= ?
+		GROUP BY 1 ORDER BY 1`, bucket)
+	rows, err := r.db.Query(query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("query usage trend: %w", err)
+	}
+	defer rows.Close()
+	var result []UsageTrend
+	for rows.Next() {
+		var item UsageTrend
+		if err := rows.Scan(&item.Timestamp, &item.Requests, &item.PromptTokens,
+			&item.CompletionTokens, &item.CachedTokens, &item.Cost, &item.AvgLatencyMs); err != nil {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+// latencyPercentilesQuery computes p50/p95/p99 per model+provider in SQL.
+//
+// The percentiles are nearest-rank on the ordered sample set, which needs no
+// interpolation and is exact for the rank it reports. Doing this in SQLite
+// keeps the whole meta column out of the process: only three integers per
+// model+provider pair cross into Go. latency_ms comes from json_extract, which
+// is NULL for rows written before durations were recorded, so those rows drop
+// out instead of polluting the distribution with zeros.
+//
+// json_valid guards the whole query: json_extract raises on malformed input
+// rather than returning NULL, so without it a single junk meta value would make
+// the dashboard report nothing at all instead of ignoring that one row.
+const latencyPercentilesQuery = `
+WITH lat AS (
+  SELECT model,
+         COALESCE(provider, '') AS provider,
+         CAST(json_extract(meta, '$.latencyMs') AS INTEGER) AS v
+  FROM usageHistory
+  WHERE timestamp >= ?
+    AND json_valid(meta)
+    AND json_extract(meta, '$.latencyMs') IS NOT NULL
+),
+ranked AS (
+  SELECT model, provider, v,
+         ROW_NUMBER() OVER (PARTITION BY model, provider ORDER BY v) AS rn,
+         COUNT(*)     OVER (PARTITION BY model, provider)           AS cnt
+  FROM lat
+)
+SELECT model, provider, cnt,
+       MAX(CASE WHEN rn = (cnt * 50 + 99) / 100 THEN v END),
+       MAX(CASE WHEN rn = (cnt * 95 + 99) / 100 THEN v END),
+       MAX(CASE WHEN rn = (cnt * 99 + 99) / 100 THEN v END)
+FROM ranked
+GROUP BY model, provider
+ORDER BY cnt DESC
+LIMIT ?`

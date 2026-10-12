@@ -449,3 +449,66 @@ func StartBackgroundCatalogSync(ctx context.Context, client *http.Client, filePa
 		}
 	}()
 }
+
+// GetCatalogPrice returns the consensus upstream price for a model, or false
+// when the catalog has no clear majority for it.
+func GetCatalogPrice(model string) (SyncedModelPrice, bool) {
+	if model == "" {
+		return SyncedModelPrice{}, false
+	}
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	if globalCatalog == nil || globalCatalog.Prices == nil {
+		return SyncedModelPrice{}, false
+	}
+
+	if p, ok := globalCatalog.Prices[model]; ok {
+		return p, true
+	}
+
+	base := catalogBaseID(model)
+	if base == "" {
+		return SyncedModelPrice{}, false
+	}
+	if p, ok := globalCatalog.Prices[base]; ok {
+		return p, true
+	}
+
+	var best SyncedModelPrice
+	var found bool
+	for k, p := range globalCatalog.Prices {
+		if catalogBaseID(k) != base {
+			continue
+		}
+		if !found || p.Agreement > best.Agreement {
+			best, found = p, true
+		}
+	}
+	return best, found
+}
+
+func consensusPrices(votes map[string]map[[2]float64]int) map[string]SyncedModelPrice {
+	out := make(map[string]SyncedModelPrice, len(votes))
+	for model, tally := range votes {
+		var total, best int
+		var winner [2]float64
+		for pair, n := range tally {
+			if pair == ([2]float64{0, 0}) {
+				continue
+			}
+			total += n
+			if n > best {
+				best, winner = n, pair
+			}
+		}
+		if total == 0 || 2*best <= total {
+			continue
+		}
+		out[model] = SyncedModelPrice{
+			InputPer1M:  winner[0],
+			OutputPer1M: winner[1],
+			Agreement:   float64(best) / float64(total),
+		}
+	}
+	return out
+}

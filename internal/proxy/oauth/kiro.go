@@ -164,3 +164,57 @@ func refreshKiroSocial(ctx context.Context, client *http.Client, refreshToken st
 	}
 	return out, nil
 }
+
+// ---- spliced from local main (upstream merge dropped these) ----
+
+type kiroTokens struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresIn    int    `json:"expiresIn"`
+}
+
+// kiroPost POSTs a JSON refresh request and maps a 200 body to a TokenResult.
+// expiresIn is passed through as-is (0 means "omitted"); the background loop
+// substitutes a conservative window for that case.
+func kiroPost(ctx context.Context, client *http.Client, url string, body []byte, ua, refreshToken string) (*TokenResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("kiro: create refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: refresh request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("kiro: read refresh response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("kiro: refresh returned status %d: %s", resp.StatusCode, truncateBody(respBody))
+	}
+
+	var tokens kiroTokens
+	if err := json.Unmarshal(respBody, &tokens); err != nil {
+		return nil, fmt.Errorf("kiro: parse refresh response: %w", err)
+	}
+	if tokens.AccessToken == "" {
+		return nil, fmt.Errorf("kiro: empty access token in refresh response")
+	}
+	if tokens.RefreshToken == "" {
+		tokens.RefreshToken = refreshToken
+	}
+
+	return &TokenResult{
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresIn:    tokens.ExpiresIn,
+	}, nil
+}

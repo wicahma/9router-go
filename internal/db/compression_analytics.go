@@ -745,11 +745,10 @@ FROM requestDetails
 WHERE data IS NOT NULL AND json_valid(data)
   AND CAST(COALESCE(json_extract(data, '$.tokens.saved_tokens'), 0) AS INTEGER) > 0`
 
-	rows, err := db.Query(rdQuery)
-	if err == nil {
-		defer rows.Close()
-
-		insertStmt, prepErr := db.Prepare(`
+	// Prepare the insert BEFORE opening the read cursor: with a single-connection
+	// pool the read rows would otherwise hold the only connection and Prepare
+	// would block forever.
+	insertStmt, prepErr := db.Prepare(`
 INSERT INTO compressionAnalytics (
 	timestamp, provider, model, mode, originalTokens, compressedTokens, tokensSaved,
 	durationMs, requestId, actualPromptTokens, actualCompletionTokens,
@@ -757,9 +756,15 @@ INSERT INTO compressionAnalytics (
 )
 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ''
 WHERE NOT EXISTS (SELECT 1 FROM compressionAnalytics ca WHERE ca.requestId = ?)`)
+	if prepErr == nil {
+		defer insertStmt.Close()
+	}
+
+	rows, err := db.Query(rdQuery)
+	if err == nil {
+		defer rows.Close()
 
 		if prepErr == nil {
-			defer insertStmt.Close()
 			for rows.Next() {
 				var (
 					id, ts, prov, mdl, data                    string
@@ -807,11 +812,7 @@ FROM usageHistory
 WHERE tokens IS NOT NULL AND json_valid(tokens)
   AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0`
 
-	uhRows, err := db.Query(uhQuery)
-	if err == nil {
-		defer uhRows.Close()
-
-		uhInsertStmt, prepErr := db.Prepare(`
+	uhInsertStmt, uhPrepErr := db.Prepare(`
 INSERT INTO compressionAnalytics (
 	timestamp, provider, model, mode, originalTokens, compressedTokens, tokensSaved,
 	durationMs, requestId, actualPromptTokens, actualCompletionTokens,
@@ -822,9 +823,15 @@ WHERE NOT EXISTS (
 	SELECT 1 FROM compressionAnalytics ca
 	WHERE ca.timestamp = ? AND ca.provider = ? AND ca.tokensSaved = ?
 )`)
+	if uhPrepErr == nil {
+		defer uhInsertStmt.Close()
+	}
 
-		if prepErr == nil {
-			defer uhInsertStmt.Close()
+	uhRows, err := db.Query(uhQuery)
+	if err == nil {
+		defer uhRows.Close()
+
+		if uhPrepErr == nil {
 			for uhRows.Next() {
 				var (
 					ts, prov, mdl                              string

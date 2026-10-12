@@ -501,6 +501,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var retry passRetry
+	// A model rejected by the local RPS ceiling produces no *upstreamError, so
+	// lastErr stays nil when the whole combo is over budget. Keep the denial
+	// here instead: without it the client gets a 502 for what is really a 429
+	// and immediately retries, which is the hammering the limit prevents.
+	var rpsDenied *rateLimitError
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
@@ -537,6 +542,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
+			rpsDenied = nil
 		}
 
 		for _, entry := range models {
@@ -570,7 +576,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.GetBestConnectionPerModelCooldown(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -637,6 +643,16 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						break
 					}
 					var ue *upstreamError
+					// Local RPS denial: the model is over budget, not broken.
+					// Do not lock the connection, and do not treat it as an
+					// upstream 429 — move on to the next model in the combo.
+					if isRateLimited(fwdErr) {
+						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						if rl := rpsError(fwdErr); rl != nil && (rpsDenied == nil || rl.retryAfterMs < rpsDenied.retryAfterMs) {
+							rpsDenied = rl
+						}
+						break
+					}
 					if errors.As(fwdErr, &ue) {
 						// A 410 naming a dead model is a routing fact, not an account
 						// fault: every connection to this provider answers the same
@@ -712,6 +728,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	if cw.IsCommitted() {
 		return
 	}
+	if rpsDenied != nil {
+		writeRpsError(cw, rpsDenied)
+		return
+	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
@@ -723,6 +743,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var retry passRetry
+	// See handleComboFallback: without this an all-throttled combo answers 502.
+	var rpsDenied *rateLimitError
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -754,6 +776,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
+			rpsDenied = nil
 		}
 
 		for _, entry := range models {
@@ -787,7 +810,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.GetBestConnectionPerModelCooldown(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -843,6 +866,16 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						break
 					}
 					var ue *upstreamError
+					// Local RPS denial: the model is over budget, not broken.
+					// Do not lock the connection, and do not treat it as an
+					// upstream 429 — move on to the next model in the combo.
+					if isRateLimited(fwdErr) {
+						log.Info("combo", "rps limited, skipping model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						if rl := rpsError(fwdErr); rl != nil && (rpsDenied == nil || rl.retryAfterMs < rpsDenied.retryAfterMs) {
+							rpsDenied = rl
+						}
+						break
+					}
 					if errors.As(fwdErr, &ue) {
 						// Same contract as the OpenAI loop: a 410 naming a dead
 						// model is a provider-wide fact, so it is recorded and
@@ -911,6 +944,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	if cw.IsCommitted() {
 		return
 	}
+	if rpsDenied != nil {
+		writeRpsError(cw, rpsDenied)
+		return
+	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
@@ -959,7 +996,12 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
 		}
 	}
-	*excludeIDs = append(*excludeIDs, connID)
+	// Auth failures are account-wide: exclude the connection for the rest of
+	// the combo. Quota/transient failures are model-scoped here (see the
+	// GetBestConnectionPerModelCooldown contract).
+	if ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusForbidden {
+		*excludeIDs = append(*excludeIDs, connID)
+	}
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 }
 

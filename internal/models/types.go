@@ -77,13 +77,14 @@ type APIKey struct {
 
 // Combo represents a multi-model routing combinated alias.
 type Combo struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Kind      *string `json:"kind,omitempty"`
-	Models    string  `json:"models"`   // JSON string representing model selection details
-	Strategy  string  `json:"strategy"` // routing strategy: "fallback", "round-robin", "capacity", "fusion"
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Kind        *string `json:"kind,omitempty"`
+	Models      string  `json:"models"`                // JSON string representing model selection details
+	Strategy    string  `json:"strategy"`              // routing strategy: "fallback", "round-robin", "capacity", "fusion"
+	ContextSize int     `json:"contextSize,omitempty"` // Minimum context length among models in combo
+	CreatedAt   string  `json:"createdAt"`
+	UpdatedAt   string  `json:"updatedAt"`
 }
 
 // KV represents a scoped key-value store entry.
