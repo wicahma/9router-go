@@ -177,7 +177,9 @@ func jsonStreamError(payload, raw []byte) *UpstreamError {
 	}
 	_, hasError := m["error"]
 	typeIsError, _ := m["type"].(string)
-	if (!hasError || !nonEmptyJSON(m["error"])) && !strings.EqualFold(typeIsError, "error") {
+	if (!hasError || !nonEmptyJSON(m["error"])) &&
+		!strings.EqualFold(typeIsError, "error") &&
+		!isProviderErrorEnvelope(m) {
 		return nil
 	}
 	status := errorStatus(m)
@@ -187,16 +189,54 @@ func jsonStreamError(payload, raw []byte) *UpstreamError {
 	return &UpstreamError{StatusCode: status, Body: append([]byte(nil), raw...)}
 }
 
+// isProviderErrorEnvelope reports whether m is a provider error body that
+// carries no "error" member. Trust Is Gold rejects a request with
+// {"code":11148,"msg":"...","extError":{"StatusCode":400}} while still
+// answering HTTP 200 and an SSE Content-Type, so the stream path would
+// otherwise forward it as a successful empty completion. Completion bodies
+// and healthy stream chunks always carry a "choices" member, so its presence
+// disqualifies the body regardless of the other fields.
+func isProviderErrorEnvelope(m map[string]any) bool {
+	if _, ok := m["choices"]; ok {
+		return false
+	}
+	if nonEmptyJSON(m["extError"]) {
+		return true
+	}
+	if _, ok := numericStatus(m["code"]); !ok {
+		return false
+	}
+	for _, key := range []string{"msg", "message", "error_msg"} {
+		if s, ok := m[key].(string); ok && strings.TrimSpace(s) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// numericStatus reads a JSON number or numeric string as an integer.
+func numericStatus(v any) (int, bool) {
+	switch t := v.(type) {
+	case float64:
+		return int(t), true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		return n, err == nil
+	}
+	return 0, false
+}
+
 // errorStatus reads the HTTP status an upstream error body implies. It only
 // needs to be right about 401 (reactive token refresh), 429 (rate-limit
 // cooldown) and the 5xx family; anything unrecognized falls back to 502.
 func errorStatus(m map[string]any) int {
 	nested, _ := m["error"].(map[string]any)
-	for _, src := range []map[string]any{nested, m} {
+	ext, _ := m["extError"].(map[string]any)
+	for _, src := range []map[string]any{ext, nested, m} {
 		if src == nil {
 			continue
 		}
-		for _, key := range []string{"code", "status"} {
+		for _, key := range []string{"StatusCode", "status_code", "code", "status"} {
 			switch v := src[key].(type) {
 			case float64:
 				if n := int(v); n >= 400 && n <= 599 {
@@ -212,7 +252,7 @@ func errorStatus(m map[string]any) int {
 			}
 		}
 	}
-	for _, src := range []map[string]any{nested, m} {
+	for _, src := range []map[string]any{ext, nested, m} {
 		if src == nil {
 			continue
 		}

@@ -36,6 +36,9 @@ func TestPeekStreamError_JSONErrorBodyIsRetryable(t *testing.T) {
 		{"sse error event", "event: error\ndata: {\"message\":\"nope\"}\n\n", http.StatusBadGateway},
 		{"sse data error", "data: {\"error\":{\"message\":\"quota\",\"code\":429}}\n\n", http.StatusTooManyRequests},
 		{"empty body", ``, http.StatusBadGateway},
+		{"provider error envelope", `{"code":11148,"msg":"tool calls and tool results do not match, please start a new conversation and retry","requestId":"9dbbd213","extError":{"code":"invalid_request_error","message":"tool calls and tool results do not match","StatusCode":400}}`, http.StatusBadRequest},
+		{"provider envelope via msg", `{"code":50001,"msg":"quota exceeded"}`, http.StatusBadGateway},
+		{"provider envelope via message", `{"code":50002,"message":"upstream busy"}`, http.StatusBadGateway},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,5 +105,32 @@ func TestClassifyErrorBody_CompletionIsNotAnError(t *testing.T) {
 	}
 	if ue := ClassifyErrorBody([]byte(`{"error":{"message":"x","code":429}}`)); ue == nil {
 		t.Error("error body not classified")
+	}
+}
+
+func TestPeekStreamError_HealthyBodiesAreNotErrorEnvelopes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"completion chunk", "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"},
+		{"usage-only chunk", "data: {\"id\":\"x\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n"},
+		{"non-stream completion", `{"id":"x","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1}}`},
+		{"code with choices", `{"code":200,"choices":[{"delta":{"content":"hi"}}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := PeekStreamError(strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("healthy body classified as error: %v", err)
+			}
+			if r == nil {
+				t.Fatal("expected a reader for a healthy body")
+			}
+			got, _ := io.ReadAll(r)
+			if string(got) != tc.body {
+				t.Errorf("body not replayed intact:\n got %q\nwant %q", got, tc.body)
+			}
+		})
 	}
 }
