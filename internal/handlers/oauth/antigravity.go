@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -10,10 +11,39 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 )
+
+var fetchProjectIDFn = chat.FetchAntigravityProjectID
+
+// antigravityProjectIDForToken probes Google for the connection's
+// cloudaicompanionProject during the OAuth callback. The 25s cap keeps the
+// probe (which retries with a 12s backoff) from hanging the callback.
+func antigravityProjectIDForToken(ctx context.Context, accessToken string) string {
+	if accessToken == "" {
+		return ""
+	}
+	c, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	pid, _, _, _ := fetchProjectIDFn(c, &http.Client{Timeout: 15 * time.Second}, accessToken)
+	return pid
+}
+
+func setAntigravityProjectID(dataMap map[string]any, pid string) {
+	if pid == "" {
+		return
+	}
+	dataMap["projectId"] = pid
+	psd, _ := dataMap["providerSpecificData"].(map[string]any)
+	if psd == nil {
+		psd = make(map[string]any)
+		dataMap["providerSpecificData"] = psd
+	}
+	psd["projectId"] = pid
+}
 
 var (
 	googleOAuthAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -235,6 +265,9 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	}
 	if tokenData.ExpiresIn > 0 {
 		dataMap["expiresAt"] = time.Now().Add(time.Duration(tokenData.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
+	if pid := antigravityProjectIDForToken(r.Context(), tokenData.AccessToken); pid != "" {
+		setAntigravityProjectID(dataMap, pid)
 	}
 
 	dataBytes, err := json.Marshal(dataMap)

@@ -256,7 +256,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 	for _, f := range []string{
 		"displayName", "defaultModel", "testStatus", "lastError", "lastErrorAt",
 		"errorCode", "expiresAt", "lastUsedAt", "consecutiveUseCount",
-		"globalPriority", "plan", "message",
+		"globalPriority", "plan", "message", "projectId",
 		// Operational (non-secret) state the dashboard renders: cooldown
 		// badges (⏱), quota/rate-limit panels, model assignment. Secret
 		// keys (apiKey/accessToken/refreshToken/authToken/...) stay dropped.

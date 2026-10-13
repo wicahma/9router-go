@@ -615,6 +615,7 @@
   let editingConnection = $state<ProviderConnection | null>(null)
   let editName = $state('')
   let editPriority = $state<number>(1)
+  let editProjectId = $state('')
   let editTestStatus = $state<'ok' | 'error' | null>(null)
   let editTestError = $state<string | null>(null)
   let isTestingEdit = $state(false)
@@ -1314,6 +1315,8 @@
     editingConnection = conn
     editName = conn.name || ''
     editPriority = conn.priority ?? 1
+    const connProjectId = conn.providerSpecificData?.projectId ?? conn.projectId
+    editProjectId = typeof connProjectId === 'string' ? connProjectId : ''
     editTestStatus = null
     editTestError = null
   }
@@ -1345,7 +1348,8 @@
     try {
       await api.updateConnection(editingConnection.id, {
         name: editName.trim() || undefined,
-        priority: editPriority
+        priority: editPriority,
+        projectId: editProjectId.trim()
       })
       editingConnection = null
       onRefresh()
@@ -3899,6 +3903,18 @@
             class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
           />
         </div>
+
+        {#if editingConnection.provider === 'antigravity'}
+          <div>
+            <label class="block text-xs font-medium text-text-muted mb-1" for="edit-conn-project">Project ID</label>
+            <input
+              id="edit-conn-project"
+              bind:value={editProjectId}
+              placeholder="auto-detected on login"
+              class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+            />
+          </div>
+        {/if}
 
         {#if editTestStatus}
           <div class="text-xs {editTestStatus === 'ok' ? 'text-green-500' : 'text-red-500'}">

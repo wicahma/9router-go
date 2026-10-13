@@ -16,6 +16,7 @@ export interface ProviderConnection {
   lastError?: string | null
   displayName?: string | null
   assignedModel?: string | null
+  projectId?: string | null
   providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
 }
 
