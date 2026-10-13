@@ -218,111 +218,115 @@
               ondragover={(e) => onDragOver(e, idx)}
               ondrop={(e) => onDrop(e, idx)}
               ondragend={onDragEnd}
-              class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors {dragIdx === idx
+              class="group flex flex-col gap-1.5 min-w-0 rounded-md border border-black/5 dark:border-white/5 p-2 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors {dragIdx === idx
                 ? 'opacity-40'
                 : ''} {overIdx === idx && dragIdx !== null && dragIdx !== idx
                 ? 'ring-1 ring-brand-500'
                 : ''}"
             >
-              <span
-                class="flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-text-muted active:cursor-grabbing focus-visible:cursor-grab"
-                role="button"
-                tabindex="0"
-                aria-label={`Reorder ${model}. Use arrow up and arrow down keys to move.`}
-                onkeydown={(e) => onGripKeydown(e, idx)}
-              >
-                <GripVertical class="w-3.5 h-3.5" />
-              </span>
-              <span class="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{idx + 1}</span>
-              {#if editingIdx === idx}
-                <input
-                  autofocus
-                  bind:value={editDraft}
-                  onblur={() => commitEdit(idx)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter') commitEdit(idx)
-                    if (e.key === 'Escape') editingIdx = null
-                  }}
-                  class="min-w-0 flex-1 rounded border border-brand-500/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20"
-                />
-              {:else}
-                <div
-                  class="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
-                  onclick={() => startEdit(idx, model)}
-                  onkeydown={(e) => e.key === 'Enter' && startEdit(idx, model)}
-                  role="textbox"
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span
+                  class="flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-text-muted active:cursor-grabbing focus-visible:cursor-grab"
+                  role="button"
                   tabindex="0"
-                  title="Click to edit"
+                  aria-label={`Reorder ${model}. Use arrow up and arrow down keys to move.`}
+                  onkeydown={(e) => onGripKeydown(e, idx)}
                 >
-                  {model}
+                  <GripVertical class="w-3.5 h-3.5" />
+                </span>
+                <span class="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{idx + 1}</span>
+                {#if editingIdx === idx}
+                  <input
+                    autofocus
+                    bind:value={editDraft}
+                    onblur={() => commitEdit(idx)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') commitEdit(idx)
+                      if (e.key === 'Escape') editingIdx = null
+                    }}
+                    class="min-w-0 flex-1 rounded border border-brand-500/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20"
+                  />
+                {:else}
+                  <div
+                    class="min-w-0 flex-1 cursor-text break-all rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+                    onclick={() => startEdit(idx, model)}
+                    onkeydown={(e) => e.key === 'Enter' && startEdit(idx, model)}
+                    role="textbox"
+                    tabindex="0"
+                    title="Click to edit"
+                  >
+                    {model}
+                  </div>
+                {/if}
+                {#if caps.vision}
+                  <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
+                {/if}
+                {#if caps.reasoning}
+                  <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
+                {/if}
+                <div class="flex shrink-0 items-center gap-0.5">
+                  <button
+                    type="button"
+                    onclick={() => moveModel(idx, -1)}
+                    disabled={idx === 0}
+                    class="p-0.5 rounded {idx === 0 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
+                    title="Move up"
+                  >
+                    <ArrowUp class="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => moveModel(idx, 1)}
+                    disabled={idx === models.length - 1}
+                    class="p-0.5 rounded {idx === models.length - 1 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
+                    title="Move down"
+                  >
+                    <ArrowDown class="w-3 h-3" />
+                  </button>
                 </div>
-              {/if}
-              {#if caps.vision}
-                <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
-              {/if}
-              {#if caps.reasoning}
-                <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
-              {/if}
-              <label class="flex shrink-0 items-center gap-1" title="Requests per second ceiling. 0 = unlimited. Applies to this model in every combo.">
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  inputmode="numeric"
-                  placeholder="∞"
-                  data-model={model}
-                  data-limit="rps"
-                  value={getModelLimit(modelRps, model) || ''}
-                  onchange={(e) => onSetModelRps(model, parseLimitInput(e.currentTarget.value))}
-                  aria-label={`Requests per second limit for ${model}`}
-                  class="w-14 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
-                <span class="text-[10px] text-text-muted">rps</span>
-              </label>
-              <label class="flex shrink-0 items-center gap-1" title="Input context ceiling in tokens. 0 = whatever the provider allows. Applies to this model in every combo — older messages are dropped to fit.">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  inputmode="numeric"
-                  placeholder="auto"
-                  data-model={model}
-                  data-limit="ctx"
-                  value={getModelLimit(modelContextLimit, model) || ''}
-                  onchange={(e) => onSetModelContextLimit(model, parseLimitInput(e.currentTarget.value))}
-                  aria-label={`Input context token limit for ${model}`}
-                  class="w-16 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
-                <span class="text-[10px] text-text-muted">ctx</span>
-              </label>
-              <div class="flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
-                  onclick={() => moveModel(idx, -1)}
-                  disabled={idx === 0}
-                  class="p-0.5 rounded {idx === 0 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
-                  title="Move up"
+                  onclick={() => removeModel(idx)}
+                  class="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 transition-all cursor-pointer"
+                  title="Remove"
                 >
-                  <ArrowUp class="w-3 h-3" />
-                </button>
-                <button
-                  type="button"
-                  onclick={() => moveModel(idx, 1)}
-                  disabled={idx === models.length - 1}
-                  class="p-0.5 rounded {idx === models.length - 1 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
-                  title="Move down"
-                >
-                  <ArrowDown class="w-3 h-3" />
+                  <X class="w-3 h-3" />
                 </button>
               </div>
-              <button
-                type="button"
-                onclick={() => removeModel(idx)}
-                class="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 transition-all cursor-pointer"
-                title="Remove"
-              >
-                <X class="w-3 h-3" />
-              </button>
+              <div class="flex items-center gap-3 pl-7 text-[10px]">
+                <label class="flex shrink-0 items-center gap-1" title="Requests per second ceiling. 0 = unlimited. Applies to this model in every combo.">
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="∞"
+                    data-model={model}
+                    data-limit="rps"
+                    value={getModelLimit(modelRps, model) || ''}
+                    onchange={(e) => onSetModelRps(model, parseLimitInput(e.currentTarget.value))}
+                    aria-label={`Requests per second limit for ${model}`}
+                    class="w-20 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span class="text-[10px] text-text-muted">rps</span>
+                </label>
+                <label class="flex shrink-0 items-center gap-1" title="Input context ceiling in tokens. 0 = whatever the provider allows. Applies to this model in every combo — older messages are dropped to fit.">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputmode="numeric"
+                    placeholder="auto"
+                    data-model={model}
+                    data-limit="ctx"
+                    value={getModelLimit(modelContextLimit, model) || ''}
+                    onchange={(e) => onSetModelContextLimit(model, parseLimitInput(e.currentTarget.value))}
+                    aria-label={`Input context token limit for ${model}`}
+                    class="w-24 rounded border border-border bg-surface-2 px-1 py-0.5 text-center text-[10px] text-text-main outline-none focus:border-brand-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span class="text-[10px] text-text-muted">ctx</span>
+                </label>
+              </div>
             </div>
           {/each}
         </div>
