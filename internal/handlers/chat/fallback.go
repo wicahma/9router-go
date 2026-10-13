@@ -373,7 +373,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
 	}()
 
-	httpClient := h.getClientForConnection(connData)
+	httpClient, usedProxyURL := h.clientForConnectionWithURL(connData)
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {
@@ -448,6 +448,26 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			} else {
 				fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 			}
+		}
+	}
+
+	// Proxy liveness verdict: ONLY transport-level failures mark the proxy URL
+	// bad. Any *upstreamError means the proxy did its job (upstream answered,
+	// whatever the status — 401/429/500 all prove the tunnel works), and a
+	// nil error is success. Parking healthy proxies on a 401 wave would be a
+	// false-positive storm, so the ok=false branch explicitly excludes
+	// upstream errors and client cancels.
+	var reportUE *upstreamError
+	if usedProxyURL != "" && connData != nil {
+		switch {
+		case fwdErr == nil:
+			h.NoteProxyResult(connData, usedProxyURL, true)
+		case isClientCanceled(ctx, fwdErr):
+			// Client went away — says nothing about the proxy. No report.
+		case errors.As(fwdErr, &reportUE):
+			h.NoteProxyResult(connData, usedProxyURL, true)
+		default:
+			h.NoteProxyResult(connData, usedProxyURL, false)
 		}
 	}
 

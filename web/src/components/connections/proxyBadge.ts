@@ -21,6 +21,25 @@ export interface ProxyBadgeInfo {
  * The endpoint is masked via `new URL()` (protocol + hostname + port only) so
  * proxy credentials never reach the dashboard.
  */
+/** Strip creds/path/query from a proxy endpoint, e.g. "http://user:p@h:8080/x" -> "http://h:8080". Non-URL input returned as-is. */
+export function maskProxyEndpoint(raw: string): string {
+  if (!raw) return ''
+  try {
+    const parsed = new URL(raw)
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`
+  } catch {
+    return raw
+  }
+}
+
+/** First masked endpoint of a pool plus a "+N more" suffix when it carries multiple urls. */
+export function poolEndpointDisplay(pool: Pick<ProxyPool, 'proxyUrl' | 'urls'>): string {
+  const urls = pool.urls && pool.urls.length > 0 ? pool.urls : pool.proxyUrl ? [pool.proxyUrl] : []
+  if (urls.length === 0) return ''
+  const first = maskProxyEndpoint(urls[0])
+  return urls.length > 1 ? `${first} +${urls.length - 1} more` : first
+}
+
 export function proxyBadgeInfo(
   conn: Pick<ProviderConnection, 'providerSpecificData'>,
   pools: ProxyPool[] = []
@@ -34,15 +53,7 @@ export function proxyBadgeInfo(
   const hasAnyProxy = !!poolId || hasLegacyProxy
 
   const rawProxyUrl = pool?.proxyUrl || legacyUrl
-  let maskedProxyUrl = ''
-  if (rawProxyUrl) {
-    try {
-      const parsed = new URL(rawProxyUrl)
-      maskedProxyUrl = `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`
-    } catch {
-      maskedProxyUrl = rawProxyUrl
-    }
-  }
+  const maskedProxyUrl = rawProxyUrl ? maskProxyEndpoint(rawProxyUrl) : ''
 
   return {
     hasAnyProxy,

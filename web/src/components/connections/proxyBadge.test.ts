@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { proxyBadgeInfo } from './proxyBadge'
+import { maskProxyEndpoint, poolEndpointDisplay, proxyBadgeInfo } from './proxyBadge'
 import type { ProviderConnection, ProxyPool } from '../../api/client'
 
 function pool(overrides: Partial<ProxyPool> = {}): ProxyPool {
@@ -87,5 +87,47 @@ describe('proxyBadgeInfo', () => {
       pool({ id: 'p', proxyUrl: 'not a url' })
     ])
     expect(info.maskedProxyUrl).toBe('not a url')
+  })
+})
+
+describe('maskProxyEndpoint', () => {
+  test('strips creds and path, keeps protocol/host/port', () => {
+    expect(maskProxyEndpoint('http://user:pass@10.0.0.1:8080/p')).toBe('http://10.0.0.1:8080')
+  })
+
+  test('keeps socks5 scheme and encoded special chars out of output', () => {
+    expect(maskProxyEndpoint('socks5://us%40er:p%3Ass@proxy.example.com:1080/x?q=1')).toBe(
+      'socks5://proxy.example.com:1080'
+    )
+  })
+
+  test('port-less URL keeps no trailing colon', () => {
+    expect(maskProxyEndpoint('socks5://proxy.example.com')).toBe('socks5://proxy.example.com')
+  })
+
+  test('garbage and empty input returned as-is', () => {
+    expect(maskProxyEndpoint('not a url')).toBe('not a url')
+    expect(maskProxyEndpoint('')).toBe('')
+  })
+})
+
+describe('poolEndpointDisplay', () => {
+  test('single proxyUrl shows with no suffix', () => {
+    expect(poolEndpointDisplay(pool())).toBe('http://proxy.example.com:8080')
+  })
+
+  test('multiple urls show first masked plus count', () => {
+    expect(
+      poolEndpointDisplay(
+        pool({
+          proxyUrl: 'http://user:secret@a.example.com:8080',
+          urls: ['http://user:secret@a.example.com:8080', 'http://b:b@b.example.com:8080', 'http://c:c@c.example.com:8080']
+        })
+      )
+    ).toBe('http://a.example.com:8080 +2 more')
+  })
+
+  test('empty pool returns empty string', () => {
+    expect(poolEndpointDisplay(pool({ proxyUrl: undefined, urls: [] }))).toBe('')
   })
 })

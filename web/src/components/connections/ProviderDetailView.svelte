@@ -37,7 +37,7 @@
     type ProviderModelItem,
     type SuggestedModel
   } from './types'
-  import { proxyBadgeInfo } from './proxyBadge'
+  import { maskProxyEndpoint, poolEndpointDisplay, proxyBadgeInfo } from './proxyBadge'
   import AddConnectionModal from './AddConnectionModal.svelte'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
   import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
@@ -1194,6 +1194,44 @@
   // Per-row proxy badge (upstream ConnectionRow) — see proxyBadge.ts.
   function proxyBadgeFor(conn: ProviderConnection) {
     return proxyBadgeInfo(conn, proxyPools)
+  }
+
+  function proxyPoolById(id: string | null): ProxyPool | null {
+    if (!id) return null
+    return proxyPools.find((p) => p.id === id) || null
+  }
+
+  // Masked tooltip for a pool row: name + masked endpoints + status + latency.
+  // Creds never reach the DOM, even in titles.
+  function poolRowTitle(pool: ProxyPool): string {
+    const endpoint =
+      pool.urls && pool.urls.length > 0
+        ? pool.urls.map((u) => maskProxyEndpoint(u)).join(', ')
+        : maskProxyEndpoint(pool.proxyUrl || '')
+    const bits = [pool.name, endpoint, pool.testStatus || 'unknown']
+    if (typeof pool.latency === 'number') bits.push(`~${pool.latency}ms`)
+    return bits.filter(Boolean).join(' · ')
+  }
+
+  function poolStatusDot(pool: ProxyPool): string {
+    return pool.testStatus === 'passed'
+      ? 'bg-green-500'
+      : pool.testStatus === 'failed'
+        ? 'bg-red-500'
+        : 'bg-gray-400'
+  }
+
+  // Detail-line endpoint: multi-URL pools show first masked + "+N more" with the
+  // full masked list as tooltip; single/legacy paths keep the badge value.
+  function proxyDetailFor(poolId: string | null, maskedFallback: string): { text: string; title: string } {
+    const pool = proxyPoolById(poolId)
+    if (pool && pool.urls && pool.urls.length > 1) {
+      return {
+        text: poolEndpointDisplay(pool),
+        title: pool.urls.map((u) => maskProxyEndpoint(u)).join(', ')
+      }
+    }
+    return { text: maskedFallback, title: maskedFallback }
   }
 
   // Proxy assignment
@@ -2796,18 +2834,20 @@
                     {/if}
                     <!-- Proxy detail line: pool/legacy label, masked endpoint, no_proxy -->
                     {#if proxyBadge.hasAnyProxy}
+                      {@const proxyDetail = proxyDetailFor(assignedPoolId, proxyBadge.maskedProxyUrl)}
                       <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2">
                         <span
-                          class="max-w-full truncate text-[11px] text-text-muted sm:max-w-[420px]"
+                          class="max-w-full break-words text-[11px] text-text-muted sm:max-w-[420px]"
                           title={proxyBadge.displayText}
                         >
                           {proxyBadge.displayText}
                         </span>
-                        {#if proxyBadge.maskedProxyUrl}
+                        {#if proxyDetail.text}
                           <code
-                            class="max-w-full truncate rounded bg-black/5 px-1 py-0.5 font-mono text-[10px] text-text-muted dark:bg-white/5 sm:max-w-[260px]"
+                            title={proxyDetail.title}
+                            class="max-w-full break-all rounded bg-black/5 px-1 py-0.5 font-mono text-[11px] text-text-muted dark:bg-white/5"
                           >
-                            {proxyBadge.maskedProxyUrl}
+                            {proxyDetail.text}
                           </code>
                         {/if}
                         {#if proxyBadge.noProxyText}
@@ -2863,12 +2903,27 @@
                             <button
                               type="button"
                               onclick={() => assignProxyPool(conn, pool.id)}
+                              title={poolRowTitle(pool)}
                               class="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors cursor-pointer {assignedPoolId === pool.id ? 'text-primary font-medium' : 'text-text-main'}"
                             >
-                              <span class="truncate">{pool.name}</span>
-                              {#if !pool.isActive}
-                                <span class="text-[10px] text-text-muted shrink-0">(inactive)</span>
-                              {/if}
+                              <span class="size-1.5 rounded-full shrink-0 {poolStatusDot(pool)}"></span>
+                              <span class="min-w-0 flex-1">
+                                <span class="flex items-center gap-1.5">
+                                  <span class="truncate">{pool.name}</span>
+                                  {#if assignedPoolId === pool.id}
+                                    <span class="material-symbols-outlined text-[14px] shrink-0">check</span>
+                                  {/if}
+                                  {#if typeof pool.latency === 'number'}
+                                    <span class="text-[10px] text-text-muted shrink-0">~{pool.latency}ms</span>
+                                  {/if}
+                                  {#if !pool.isActive}
+                                    <span class="text-[10px] text-text-muted shrink-0">(inactive)</span>
+                                  {/if}
+                                </span>
+                                {#if poolEndpointDisplay(pool)}
+                                  <span class="block truncate font-mono text-[11px] text-text-muted">{poolEndpointDisplay(pool)}</span>
+                                {/if}
+                              </span>
                             </button>
                           {/each}
                         </div>
@@ -3823,17 +3878,24 @@
             type="button"
             onclick={() => handleApplyProxyPool(pool.id)}
             disabled={isApplyingProxy || !pool.isActive}
+            title={poolRowTitle(pool)}
             class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left border border-border hover:bg-surface-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
           >
             <span class="material-symbols-outlined text-text-muted text-lg">lan</span>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
+                <span class="size-1.5 rounded-full shrink-0 {poolStatusDot(pool)}"></span>
                 <div class="text-xs font-medium text-text-main truncate">{pool.name}</div>
+                {#if typeof pool.latency === 'number'}
+                  <span class="text-[10px] text-text-muted shrink-0">~{pool.latency}ms</span>
+                {/if}
                 {#if !pool.isActive}
                   <span class="text-[10px] text-text-muted">(inactive)</span>
                 {/if}
               </div>
-              <div class="text-[11px] text-text-muted truncate">{pool.proxyUrl}</div>
+              {#if poolEndpointDisplay(pool)}
+                <div class="text-[11px] text-text-muted truncate font-mono">{poolEndpointDisplay(pool)}</div>
+              {/if}
             </div>
           </button>
         {/each}

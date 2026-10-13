@@ -201,50 +201,91 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	start := time.Now()
-	proxyParsed, err := url.Parse(targetURL)
-	if err != nil {
-		_ = h.Repo.SetProxyPoolStatus(id, "failed", 0)
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"error":   "invalid proxy URL format",
-		})
-		return
+	type urlProbe struct {
+		URL     string `json:"url"`
+		Success bool   `json:"success"`
+		Latency int64  `json:"latency"`
 	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyParsed),
-		},
-		Timeout: 5 * time.Second,
-	}
-
-	resp, err := client.Get("https://www.google.com/generate_204")
-	latencyMs := time.Since(start).Milliseconds()
-
-	if err != nil || (resp != nil && resp.StatusCode >= 400) {
-		status := "failed"
-		_ = h.Repo.SetProxyPoolStatus(id, status, latencyMs)
-		errStr := "connection timed out or failed"
+	probeOne := func(target string) (bool, int64) {
+		parsed, err := url.Parse(target)
 		if err != nil {
-			errStr = err.Error()
+			return false, 0
 		}
+		client := &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(parsed),
+			},
+			Timeout: 5 * time.Second,
+		}
+		begin := time.Now()
+		resp, err := client.Get("https://www.google.com/generate_204")
+		el := time.Since(begin).Milliseconds()
+		if err != nil || (resp != nil && resp.StatusCode >= 400) {
+			return false, el
+		}
+		resp.Body.Close()
+		return true, el
+	}
+	// Test EVERY url: a pool with 1 dead + 4 live urls must not flap
+	// passed/failed on the round-robin position. Aggregate = success if ANY
+	// url passed, latency = min passing latency (feeds the best-live fallback).
+	var results []urlProbe
+	var bestLatency int64
+	anyPassed := false
+	for _, u := range pool.URLs {
+		ok, el := probeOne(u)
+		results = append(results, urlProbe{URL: maskProxyURL(u), Success: ok, Latency: el})
+		// Seed in-memory health so a manual test parks dead URLs immediately.
+		// pool is the shared cached pointer on a cache hit, so this is live;
+		// on a miss it is a throwaway object and the report is a harmless no-op.
+		pool.ReportURLResult(u, ok)
+		if ok && (!anyPassed || el < bestLatency) {
+			bestLatency = el
+		}
+		if ok {
+			anyPassed = true
+		}
+	}
+
+	if !anyPassed {
+		status := "failed"
+		_ = h.Repo.SetProxyPoolStatus(id, status, bestLatency)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success": false,
 			"status":  status,
-			"latency": latencyMs,
-			"error":   errStr,
+			"latency": bestLatency,
+			"results": results,
+			"error":   "all proxy URLs failed",
 		})
 		return
 	}
-	defer resp.Body.Close()
 
-	_ = h.Repo.SetProxyPoolStatus(id, "passed", latencyMs)
+	_ = h.Repo.SetProxyPoolStatus(id, "passed", bestLatency)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"status":  "passed",
-		"latency": latencyMs,
+		"latency": bestLatency,
+		"results": results,
 	})
+}
+
+// maskProxyURL strips credentials/path/query from a proxy URL for display and
+// API responses — creds must never reach the DOM, even in tooltips. Returns
+// protocol//host[:port]; garbage input is returned as-is.
+func maskProxyURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return raw
+	}
+	host := parsed.Hostname()
+	if port := parsed.Port(); port != "" {
+		host += ":" + port
+	}
+	scheme := parsed.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + host
 }
 
 // testRelayPool tests a deploy-relay pool (vercel/cloudflare/deno) the way

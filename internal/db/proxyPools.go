@@ -22,7 +22,32 @@ type ProxyPool struct {
 	NoProxy     string   `json:"noProxy"`
 	StrictProxy bool     `json:"strictProxy"`
 	index       uint64   // atomic counter for round-robin
+
+	// mu guards health. health is the live-traffic verdict per proxy URL
+	// (in-memory only, never persisted — proxyPools.data stays
+	// byte-compatible). proxyPoolCache shares *ProxyPool across goroutines
+	// and NextURL is lock-free atomic, so map access must stay guarded;
+	// p.URLs itself is never mutated by the health path.
+	mu     sync.RWMutex
+	health map[string]*urlHealth
 }
+
+// urlHealth is the live-traffic verdict for one proxy URL.
+type urlHealth struct {
+	consecutiveFails uint32
+	lastFailAt       time.Time // UTC
+	lastOKAt         time.Time // UTC
+}
+
+const (
+	// urlCooldownFails parks a URL after this many consecutive live-traffic
+	// failures. A single blip (1-2 fails) never sidelines a URL.
+	urlCooldownFails = 3
+	// urlCooldownWindow is how long a parked URL is skipped before it is
+	// retried (self-healing when the free proxy comes back). An OK report
+	// clears the park immediately.
+	urlCooldownWindow = 5 * time.Minute
+)
 
 var proxyPoolCache sync.Map // map[string]*ProxyPool
 
@@ -90,13 +115,108 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	return pool, nil
 }
 
-// NextURL returns the next proxy URL using round-robin selection.
+// NextURL returns the next proxy URL using round-robin selection, skipping
+// URLs currently cooling down (3 consecutive live-traffic fails within 5m).
+// It iterates at most len(URLs) positions from the atomic counter and returns
+// the first live one; when every URL is cooling down it returns the counter's
+// pick (same as the old blind round-robin) — a maybe-dead proxy beats no
+// proxy under non-strict mode, and the caller decides the fallback.
 func (p *ProxyPool) NextURL() string {
 	if len(p.URLs) == 0 {
 		return ""
 	}
 	idx := atomic.AddUint64(&p.index, 1)
-	return p.URLs[idx%uint64(len(p.URLs))]
+	n := uint64(len(p.URLs))
+	for i := uint64(0); i < n; i++ {
+		u := p.URLs[(idx+i)%n]
+		if !p.isURLCoolingDown(u) {
+			return u
+		}
+	}
+	return p.URLs[idx%n]
+}
+
+// ReportURLResult records a live-traffic verdict for one proxy URL.
+// ok=true resets the fail streak and stamps lastOKAt; ok=false bumps the
+// streak and stamps lastFailAt. Lazily creates the health entry.
+func (p *ProxyPool) ReportURLResult(url string, ok bool) {
+	if url == "" {
+		return
+	}
+	now := time.Now().UTC()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.health == nil {
+		p.health = make(map[string]*urlHealth)
+	}
+	h, found := p.health[url]
+	if !found {
+		h = &urlHealth{}
+		p.health[url] = h
+	}
+	if ok {
+		h.consecutiveFails = 0
+		h.lastOKAt = now
+		return
+	}
+	h.consecutiveFails++
+	h.lastFailAt = now
+}
+
+// isURLCoolingDown reports whether url is parked: 3+ consecutive fails with
+// the latest fail inside the 5-minute window.
+func (p *ProxyPool) isURLCoolingDown(url string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.health == nil {
+		return false
+	}
+	h, found := p.health[url]
+	if !found {
+		return false
+	}
+	if h.consecutiveFails < urlCooldownFails {
+		return false
+	}
+	return time.Since(h.lastFailAt) < urlCooldownWindow
+}
+
+// AllCoolingDown reports whether every URL in the pool is currently parked.
+// LiveURLs deliberately returns the full list in that case (never empty), so
+// callers that need to tell "has live URLs" from "all parked" — e.g. the
+// chat failover path deciding between rotation and a fallback pool — use this.
+func (p *ProxyPool) AllCoolingDown() bool {
+	if len(p.URLs) == 0 {
+		return false
+	}
+	for _, u := range p.URLs {
+		if !p.isURLCoolingDown(u) {
+			return false
+		}
+	}
+	return true
+}
+
+// LiveURLs returns the pool's URLs not currently cooling down, in pool order.
+// Empty p.URLs yields nil. When every URL is cooling down the full list is
+// returned anyway — never empty while URLs exist — so the caller (not this
+// func) decides between a maybe-dead proxy, a fallback pool, or direct.
+func (p *ProxyPool) LiveURLs() []string {
+	if len(p.URLs) == 0 {
+		return nil
+	}
+	live := make([]string, 0, len(p.URLs))
+	for _, u := range p.URLs {
+		if !p.isURLCoolingDown(u) {
+			live = append(live, u)
+		}
+	}
+	if len(live) == 0 {
+		out := make([]string, len(p.URLs))
+		copy(out, p.URLs)
+		return out
+	}
+	return live
 }
 
 // ProxyPoolData is the JSON payload stored in the proxyPools.data column for

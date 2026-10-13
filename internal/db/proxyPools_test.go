@@ -2,6 +2,7 @@ package db
 
 import (
 	json "encoding/json/v2"
+	"sync"
 	"testing"
 )
 
@@ -128,4 +129,65 @@ func TestGetProxyPool_SingleProxyUrl_AndMetadata(t *testing.T) {
 	if next := pool.NextURL(); next != "https://relay.example.com" {
 		t.Errorf("expected NextURL https://relay.example.com, got %s", next)
 	}
+}
+
+// A blip (1-2 consecutive fails) never sidelines; the 3rd parks the URL.
+func TestLiveURLs_CooldownAfterThreeFails(t *testing.T) {
+	p := &ProxyPool{ID: "p1", URLs: []string{"http://a:8080", "http://b:8080"}}
+	p.ReportURLResult("http://a:8080", false)
+	p.ReportURLResult("http://a:8080", false)
+	if got := p.LiveURLs(); len(got) != 2 {
+		t.Fatalf("blip must stay live, got %v", got)
+	}
+	p.ReportURLResult("http://a:8080", false)
+	got := p.LiveURLs()
+	if len(got) != 1 || got[0] != "http://b:8080" {
+		t.Fatalf("after 3 fails a:8080 must cool down, got %v", got)
+	}
+	// OK clears the park immediately.
+	p.ReportURLResult("http://a:8080", true)
+	if got := p.LiveURLs(); len(got) != 2 {
+		t.Fatalf("OK must clear cooldown, got %v", got)
+	}
+}
+
+// All cooling down returns the full list — maybe-dead beats no proxy.
+func TestLiveURLs_AllCoolingReturnsAll(t *testing.T) {
+	p := &ProxyPool{ID: "p2", URLs: []string{"http://a:8080", "http://b:8080"}}
+	for _, u := range p.URLs {
+		for i := 0; i < 3; i++ {
+			p.ReportURLResult(u, false)
+		}
+	}
+	if got := p.LiveURLs(); len(got) != 2 {
+		t.Fatalf("all cooling must return full list, got %v", got)
+	}
+}
+
+func TestNextURL_SkipsCoolingDown(t *testing.T) {
+	p := &ProxyPool{ID: "p3", URLs: []string{"http://dead:8080", "http://live:8080"}}
+	for i := 0; i < 3; i++ {
+		p.ReportURLResult("http://dead:8080", false)
+	}
+	for i := 0; i < 4; i++ {
+		if got := p.NextURL(); got != "http://live:8080" {
+			t.Fatalf("NextURL must skip cooling URL, got %s", got)
+		}
+	}
+}
+
+func TestReportURLResult_ConcurrentSafe(t *testing.T) {
+	p := &ProxyPool{ID: "p4", URLs: []string{"http://a:8080", "http://b:8080"}}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			u := p.URLs[i%2]
+			p.ReportURLResult(u, i%3 != 0)
+			_ = p.LiveURLs()
+			_ = p.NextURL()
+		}(i)
+	}
+	wg.Wait()
 }
