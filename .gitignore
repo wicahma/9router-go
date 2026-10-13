@@ -32,3 +32,4 @@ node_modules/
 web/node_modules/
 stitch-screens/
 stitch-screenshots/
+.pi/
