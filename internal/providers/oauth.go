@@ -162,6 +162,27 @@ func (o *OAuthConnectionData) IsExpired() bool {
 	return time.Now().After(exp.Add(-60 * time.Second))
 }
 
+// proactiveRefreshSkew is how early before expiry a refresh is attempted.
+// 5 minutes: wide enough that normal request latency never presents a dead
+// token, narrow enough not to churn refreshes.
+const proactiveRefreshSkew = 5 * time.Minute
+
+// NeedsRefresh reports whether the token should be refreshed now — either
+// expired (IsExpired) or expiring within proactiveRefreshSkew.
+func (o *OAuthConnectionData) NeedsRefresh() bool {
+	if o == nil {
+		return false
+	}
+	if o.ExpiresAt == "" {
+		return true // unparseable/missing expiry: same policy as IsExpired
+	}
+	exp, err := time.Parse(time.RFC3339, o.ExpiresAt)
+	if err != nil {
+		return true
+	}
+	return time.Now().After(exp.Add(-proactiveRefreshSkew))
+}
+
 // BuildRefreshPayload builds the URL-encoded form body for a token refresh request.
 func (c *OAuthClientConfig) BuildRefreshPayload(refreshToken string) string {
 	return url.Values{

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -22,14 +23,109 @@ var fetchProjectIDFn = chat.FetchAntigravityProjectID
 // antigravityProjectIDForToken probes Google for the connection's
 // cloudaicompanionProject during the OAuth callback. The 25s cap keeps the
 // probe (which retries with a 12s backoff) from hanging the callback.
+// Egress is direct; use antigravityProjectIDForTokenWithClient when a
+// proxy-pool hint was supplied so the probe leaves from the same IP chat
+// traffic will use.
 func antigravityProjectIDForToken(ctx context.Context, accessToken string) string {
+	return antigravityProjectIDForTokenWithClient(ctx, &http.Client{Timeout: 15 * time.Second}, accessToken)
+}
+
+func antigravityProjectIDForTokenWithClient(ctx context.Context, client *http.Client, accessToken string) string {
 	if accessToken == "" {
 		return ""
 	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	c, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	pid, _, _, _ := fetchProjectIDFn(c, &http.Client{Timeout: 15 * time.Second}, accessToken)
+	pid, _, _, _ := fetchProjectIDFn(c, client, accessToken)
 	return pid
+}
+
+// normalizeAntigravityProxyPoolHint mirrors the dashboard PUT semantics
+// (HandleUpdateConnection): trimmed "" or "__none__" means no binding.
+func normalizeAntigravityProxyPoolHint(v string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" || trimmed == "__none__" {
+		return ""
+	}
+	return trimmed
+}
+
+// buildAntigravityProxyClient constructs a proxied egress client the same way
+// connections_proxy.go does for proxyType == "http": cloned default
+// transport with Proxy set. Relay-type pools (vercel/cloudflare/deno) rewrite
+// at request time in chat, not at transport level, so they fall back to the
+// direct client here. Any failure also falls back to direct; the caller logs.
+func buildAntigravityProxyClient(poolID string, proxyURLStr string, proxyType string) *http.Client {
+	direct := &http.Client{Timeout: 15 * time.Second}
+	if proxyURLStr == "" {
+		return direct
+	}
+	if proxyType != "http" && proxyType != "" {
+		log.Warn("oauth", "antigravity probe pool is edge-relay type, using direct egress", "pool", poolID, "type", proxyType)
+		return direct
+	}
+	parsedURL, err := url.Parse(proxyURLStr)
+	if err != nil {
+		log.Warn("oauth", "antigravity probe invalid proxy url, using direct egress", "pool", poolID, "error", err)
+		return direct
+	}
+	var baseTransport *http.Transport
+	if origT, ok := http.DefaultTransport.(*http.Transport); ok {
+		baseTransport = origT.Clone()
+	} else {
+		baseTransport = constants.DefaultHTTPTransportConfig.NewTransport()
+	}
+	constants.DefaultHTTPTransportConfig.Configure(baseTransport)
+	baseTransport.Proxy = http.ProxyURL(parsedURL)
+	return &http.Client{
+		Transport: baseTransport,
+		Timeout:   15 * time.Second,
+	}
+}
+
+// antigravityEgressClient resolves an optional proxy-pool hint to the egress
+// client for the token exchange and project probe. Empty hint, unknown pool,
+// inactive pool, or relay-type pool all fall back to direct egress (log +
+// continue); only a healthy http pool changes behavior. The exchange handler
+// validates existence up front and fails unknown ids, so the fallback here is
+// defense in depth, never the caller's error path.
+func (h *OAuthHandler) antigravityEgressClient(poolID string) *http.Client {
+	direct := &http.Client{Timeout: 15 * time.Second}
+	if poolID == "" {
+		return direct
+	}
+	if h == nil || h.Repo == nil {
+		return direct
+	}
+	pool, err := h.Repo.GetProxyPool(poolID)
+	if err != nil || pool == nil {
+		log.Warn("oauth", "antigravity probe pool lookup failed, using direct egress", "pool", poolID, "error", err)
+		return direct
+	}
+	if !pool.IsActive {
+		log.Warn("oauth", "antigravity probe pool inactive, using direct egress", "pool", poolID)
+		return direct
+	}
+	return buildAntigravityProxyClient(pool.ID, pool.NextURL(), pool.Type)
+}
+
+// setAntigravityProxyPoolID dual-writes the pool binding the connection is
+// born with, mirroring setAntigravityProjectID, so later chat traffic uses the
+// pool without manual assignment.
+func setAntigravityProxyPoolID(dataMap map[string]any, poolID string) {
+	if poolID == "" {
+		return
+	}
+	dataMap["proxyPoolId"] = poolID
+	psd, _ := dataMap["providerSpecificData"].(map[string]any)
+	if psd == nil {
+		psd = make(map[string]any)
+		dataMap["providerSpecificData"] = psd
+	}
+	psd["proxyPoolId"] = poolID
 }
 
 func setAntigravityProjectID(dataMap map[string]any, pid string) {
@@ -145,6 +241,7 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	var body struct {
 		Code        string `json:"code"`
 		RedirectURI string `json:"redirectUri"`
+		ProxyPoolID string `json:"proxyPoolId"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -154,6 +251,22 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	if err := json.Unmarshal(raw, &body); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	// Also accept snake_case proxy_pool_id.
+	if body.ProxyPoolID == "" {
+		var rawMap map[string]any
+		if jerr := json.Unmarshal(raw, &rawMap); jerr == nil {
+			if s, ok := rawMap["proxy_pool_id"].(string); ok {
+				body.ProxyPoolID = s
+			}
+			if body.ProxyPoolID == "" {
+				if psd, ok := rawMap["providerSpecificData"].(map[string]any); ok {
+					if s, ok := psd["proxyPoolId"].(string); ok {
+						body.ProxyPoolID = s
+					}
+				}
+			}
+		}
 	}
 
 	code := cleanAuthCode(body.Code)
@@ -165,6 +278,22 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	if !validRedirectURI(redirectURI) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing or invalid redirectUri")
 		return
+	}
+
+	// Optional proxy-pool hint: mirror the dashboard PUT semantics —
+	// trimmed ""/"__none__" means none, anything else must reference an
+	// existing pool or the request fails.
+	poolHint := normalizeAntigravityProxyPoolHint(body.ProxyPoolID)
+	if poolHint != "" {
+		if h == nil || h.Repo == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Proxy pool not found")
+			return
+		}
+		pool, perr := h.Repo.GetProxyPool(poolHint)
+		if perr != nil || pool == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Proxy pool not found")
+			return
+		}
 	}
 
 	clientID, clientSecret, tokenURL := getAntigravityOAuthConfig()
@@ -187,7 +316,7 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	// endpoints, and any router brand here is pure self-identification.
 	// Go's default UA ("Go-http-client/2.0") is unbranded and sufficient.
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := h.antigravityEgressClient(poolHint)
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
 		log.Error("oauth", "antigravity token exchange failed", "error", err)
@@ -266,8 +395,11 @@ func (h *OAuthHandler) HandleAntigravityExchange(w http.ResponseWriter, r *http.
 	if tokenData.ExpiresIn > 0 {
 		dataMap["expiresAt"] = time.Now().Add(time.Duration(tokenData.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	}
-	if pid := antigravityProjectIDForToken(r.Context(), tokenData.AccessToken); pid != "" {
+	if pid := antigravityProjectIDForTokenWithClient(r.Context(), client, tokenData.AccessToken); pid != "" {
 		setAntigravityProjectID(dataMap, pid)
+	}
+	if poolHint != "" {
+		setAntigravityProxyPoolID(dataMap, poolHint)
 	}
 
 	dataBytes, err := json.Marshal(dataMap)

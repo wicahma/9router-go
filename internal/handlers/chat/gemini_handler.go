@@ -201,6 +201,23 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	if connectionID == "" {
 		return currentToken, "", nil
 	}
+	if !acquireRefresh(connectionID) {
+		// Another request is already refreshing this connection; reuse the
+		// caller's current token rather than firing a duplicate refresh.
+		db := h.Repo.RawDB()
+		var rawData string
+		projectID := ""
+		if err := db.QueryRow("SELECT data FROM providerConnections WHERE id = ?", connectionID).Scan(&rawData); err == nil {
+			var connMap map[string]any
+			if err := json.Unmarshal([]byte(rawData), &connMap); err == nil {
+				if oauthData := providers.ParseOAuthConnection(connMap); oauthData != nil {
+					projectID = oauthData.ProjectID
+				}
+			}
+		}
+		return currentToken, projectID, nil
+	}
+	defer releaseRefresh(connectionID)
 	db := h.Repo.RawDB()
 	row := db.QueryRow("SELECT provider, data FROM providerConnections WHERE id = ?", connectionID)
 	var provider string
@@ -219,7 +236,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	if oauthData != nil {
 		projectID = oauthData.ProjectID
 	}
-	if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.IsExpired() {
+	if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.NeedsRefresh() {
 		return currentToken, projectID, nil
 	}
 
@@ -301,6 +318,13 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	if connectionID == "" {
 		return "", "", nil
 	}
+	if !acquireRefresh(connectionID) {
+		// Another request is already refreshing this connection; report no
+		// refresh rather than firing a duplicate. Callers continue with the
+		// existing token.
+		return "", "", nil
+	}
+	defer releaseRefresh(connectionID)
 
 	db := h.Repo.RawDB()
 	row := db.QueryRow("SELECT provider, data FROM providerConnections WHERE id = ?", connectionID)
