@@ -296,6 +296,9 @@ func TestIntegration_OpenCode_UnionAlpha_Messages(t *testing.T) {
 	if rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusBadGateway || rec.Code == http.StatusServiceUnavailable {
 		t.Skipf("union-alpha free tier rate limited/unavailable (%d), skipping real upstream test: %s", rec.Code, rec.Body.String())
 	}
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "unavailable") {
+		t.Skipf("union-alpha retired upstream (%d), skipping real upstream test: %s", rec.Code, rec.Body.String())
+	}
 	// union-alpha is served only to authenticated OpenCode desktop sessions; an anonymous
 	// public call gets ModelError "Model union-alpha is not supported" (401). Routing to
 	// /zen/v1/messages is already proven by the Anthropic-format error envelope.
