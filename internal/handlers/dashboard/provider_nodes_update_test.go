@@ -5,7 +5,6 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -207,7 +206,7 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 	}
 
 	calls := withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
-		if !strings.Contains(p.url, ":fetchAvailableModels") {
+		if p.url != "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels" {
 			t.Errorf("unexpected probe url %q", p.url)
 		}
 		if p.headers.Get("Authorization") != "Bearer ya29.fake" {
@@ -251,5 +250,49 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected 1 probe call, got %d", len(*calls))
+	}
+}
+
+func TestHandleGetConnectionModels_AntigravityFallsBackToDaily(t *testing.T) {
+	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ag-fb', 'antigravity', 'oauth', 'AG', 1, 1, '{"accessToken":"ya29.fake","providerSpecificData":{"projectId":"ag-proj"}}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	calls := withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		switch p.url {
+		case "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels":
+			return http.StatusForbidden, []byte(`{"error":{"message":"forbidden"}}`), nil
+		case "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels":
+			return http.StatusOK, []byte(`{"models":{"gemini-3.1-pro-low":{"displayName":"Gemini 3.1 Pro Low","supportsThinking":true}}}`), nil
+		}
+		t.Errorf("unexpected probe url %q", p.url)
+		return http.StatusInternalServerError, nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/conn-ag-fb/models", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models) != 1 || out.Models[0]["id"] != "gemini-3.1-pro-low" {
+		t.Fatalf("unexpected models: %v", out.Models)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 probe calls, got %d", len(*calls))
+	}
+	if (*calls)[1].url != "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels" {
+		t.Fatalf("expected daily fallback, got %q", (*calls)[1].url)
 	}
 }

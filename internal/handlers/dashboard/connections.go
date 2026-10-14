@@ -712,7 +712,10 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			"Authorization": "Bearer " + token,
 			"User-Agent":    "antigravity/ide/2.11.0 darwin/arm64",
 		}
-		status, body, err := validateProbeDo(r.Context(), http.MethodPost, "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", headers, reqPayload)
+		status, body, err := validateProbeDo(r.Context(), http.MethodPost, antigravityDashboardBaseURL+"/v1internal:fetchAvailableModels", headers, reqPayload)
+		if err != nil || status != http.StatusOK {
+			status, body, err = validateProbeDo(r.Context(), http.MethodPost, antigravityDailyBaseURL+"/v1internal:fetchAvailableModels", headers, reqPayload)
+		}
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch antigravity models: "+err.Error())
 			return
