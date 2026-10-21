@@ -57,6 +57,7 @@ func (p *GeminiPart) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiFunctionCall struct {
+	ID   string         `json:"id,omitempty"`
 	Name string         `json:"name"`
 	Args map[string]any `json:"args"`
 }
@@ -71,6 +72,7 @@ type GeminiFunctionCall struct {
 const DefaultThinkingSignature = "EuwGCukGAXLI2nxwZIq54WWSoL/YN0P3TsDZ7zRnLi8g0S4aVr2HUGxvaHKySuY6HAVzcE0GPGjXrytLIldxthSvfxgUlJh6Qa9Z+Oj5QZBlYdg6HaJ6yuY5R7waE6rdwBsRf7Ft2j3DJ9rMi9qhWFqApewYtPhls3VHtuvND3l8Rm09+lbAXQs6KKWEWrxNLKTBkfpMgXhRERc/TQRMZu1twAablm6/Zk1tsYRvfWKLsNbeKF+CCojJdXJKvnR/8Ouuoa+Y2Ti20hcW7aZIIjZDFYPU//k6Ybmhg69J/imbFai2ckhfLaisqdDkdoIiBJScTOUvYqP6AE9d4MsydSC+UlhIMk4hoP76R8vUSCZRMkjOaDXstf/QoVZKbt94wyRZgAJ1G0BqI8L5ow86kLpA4wJEtxsRGymOE4bKUvApveBakYDNM9APkf+LbtbzWSseGjoZcSlycF9iN8Q2XNYKRrHbv3Lr5Y8JjdH/5y/6SHkNehTEZugaeGnSPSyCTWto1kQgHpxdWmhkLfJGNUGLmue7Mesj4TSms4J33mRpYVhNB/J333FCqIP0hr/E7BkkjEn7yZ4X7SQlh+xKPurapsnHRwiKmtsilmEFrnTE9iQr+pMr6M29qqFNv1tr5yumbaJw8JW9sB15tNsRv+dW6BjNanbsKz7HCgKUBc8tGy+7YuhXzAfViyRefcjK7eZW0Fbyt7AbybJTKz78W8NH7ye6LAwzOebXpeZ4D43fNIt8bKh26qgduSQv/7o+pAflkuqHZ99YWgHQ8h8OkZFi3eOiSYjsjhdZ/czWOdoPI/OnqIldzMPF5YlrKBLFX8VhRKVmqgsmWf5PHGulHhMkVlS+XG2UIseGy69ARa93D78Gsa+1n1kJr7EEB7Rh+27vUMxVYLdz1yMSvE5nalTAlg/ZeG8+XQ0cHuAI3KbQpHW2Q++RdXfm5JzD5WdJZUU+Zn8t8UUn85BH4RxZLeE0qJikgSsKoYVBc6YhiMjhPgkR95ReimY4Z0xCJdRo1gjexOFeODZMpQF6Yxnoic7IrdgsFA3iePTbFnPp3IAM1fAThWhXJUn3QInUOTd5o1qmTmn6REbL15g/JQNl+dqUoPkhleeb2V3kjqp1okmO3wMZbPknR3S1LZNmlS72/iBQUm+n2b/RCn4PjmM2"
 
 type GeminiFunctionResp struct {
+	ID       string          `json:"id,omitempty"`
 	Name     string          `json:"name"`
 	Response *GeminiFuncResp `json:"response,omitempty"`
 }
@@ -185,10 +187,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		if msg.Role == "assistant" {
 			for _, tc := range msg.ToolCalls {
 				if tc.ID != "" && tc.Function.Name != "" {
-					cleanID := tc.ID
-					if ts := strings.LastIndex(cleanID, "__ts__"); ts != -1 {
-						cleanID = cleanID[:ts]
-					}
+					cleanID := geminiCleanToolCallID(tc.ID)
 					tcID2Name[tc.ID] = tc.Function.Name
 					tcID2Name[cleanID] = tc.Function.Name
 				}
@@ -252,7 +251,11 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 					ts = DefaultThinkingSignature
 				}
 				firstFunctionCallSeen = true
-				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}, ThoughtSignature: ts}
+				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{
+					Name: tc.Function.Name,
+					Args: args,
+					ID:   geminiCleanToolCallID(tc.ID),
+				}, ThoughtSignature: ts}
 				parts = append(parts, gp)
 			}
 
@@ -262,10 +265,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 
 		case "tool":
 			content := extractContentString(msg.Content)
-			cleanID := msg.ToolCallID
-			if ts := strings.LastIndex(cleanID, "__ts__"); ts != -1 {
-				cleanID = cleanID[:ts]
-			}
+			cleanID := geminiCleanToolCallID(msg.ToolCallID)
 			name := tcID2Name[msg.ToolCallID]
 			if name == "" {
 				name = tcID2Name[cleanID]
@@ -293,6 +293,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			parts := []GeminiPart{{
 				FunctionResponse: &GeminiFunctionResp{
 					Name:     name,
+					ID:       cleanID,
 					Response: &GeminiFuncResp{Result: resultValue},
 				},
 			}}
@@ -398,6 +399,13 @@ func extractThoughtSig(id string) string {
 		return after
 	}
 	return ""
+}
+
+func geminiCleanToolCallID(id string) string {
+	if ts := strings.LastIndex(id, "__ts__"); ts != -1 {
+		return id[:ts]
+	}
+	return id
 }
 
 // effortToBudget converts reasoning_effort string to thinking budget tokens.
@@ -888,7 +896,34 @@ func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
 			})
 		}
 	}
+	if len(out) == 0 {
+		return out
+	}
+	if out[0].Role != "user" {
+		out = append([]GeminiContent{{Role: "user", Parts: []GeminiPart{{Text: "..."}}}}, out...)
+	}
+	if out[len(out)-1].Role == "model" {
+		last := out[len(out)-1]
+		out = append(out, GeminiContent{Role: "user", Parts: geminiTerminalUserParts(last.Parts)})
+	}
 	return out
+}
+
+func geminiTerminalUserParts(modelParts []GeminiPart) []GeminiPart {
+	var parts []GeminiPart
+	for _, p := range modelParts {
+		if p.FunctionCall != nil {
+			parts = append(parts, GeminiPart{FunctionResponse: &GeminiFunctionResp{
+				Name:     p.FunctionCall.Name,
+				ID:       p.FunctionCall.ID,
+				Response: &GeminiFuncResp{Result: "Continue."},
+			}})
+		}
+	}
+	if len(parts) == 0 {
+		return []GeminiPart{{Text: "Continue."}}
+	}
+	return parts
 }
 
 func isGeminiPartEmpty(p GeminiPart) bool {
