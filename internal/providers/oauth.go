@@ -63,11 +63,6 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("IFLOW_OAUTH_CLIENT_SECRET", "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW"),
 		TokenURL:     "https://iflow.cn/oauth/token",
 	},
-	"gemini-cli": {
-		ClientID:     envOr("GEMINI_CLI_OAUTH_CLIENT_ID", "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"),
-		ClientSecret: envOr("GEMINI_CLI_OAUTH_CLIENT_SECRET", "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"),
-		TokenURL:     "https://oauth2.googleapis.com/token",
-	},
 	"kimi-coding": {
 		ClientID:     envOr("KIMI_CODING_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("KIMI_CODING_OAUTH_CLIENT_SECRET", ""),

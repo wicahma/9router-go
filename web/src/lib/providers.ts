@@ -28,8 +28,8 @@ export interface ProviderCatalogItem {
   modelsFetcher?: { url: string; type: string }
   /** Upstream registry systemoneConfig */
   systemoneConfig?: { baseUrl?: string; format?: string; headers?: Record<string, string> }
-  searchConfig?: Record<string, any>
-  fetchConfig?: Record<string, any>
+  searchConfig?: Record<string, unknown>
+  fetchConfig?: Record<string, unknown>
   searchViaChat?: {
     defaultModel?: string
     endpoint?: string
@@ -337,20 +337,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "alias": "fb",
     "color": "#0a0a0b",
     "icon": "bolt",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
-    "id": "gemini-cli",
-    "name": "Gemini CLI",
-    "category": "free",
-    "alias": "gc",
-    "color": "#4285F4",
-    "icon": "terminal",
-    "website": "https://github.com/google-gemini/gemini-cli",
-    "notice": {"signupUrl":"https://github.com/google-gemini/gemini-cli"},
     "noAuth": false,
     "serviceKinds": [
       "llm"

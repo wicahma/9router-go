@@ -334,12 +334,11 @@ func TestTranslateOpenAIToGemini_ClaudeCodeToolResponseMapping(t *testing.T) {
 		t.Fatalf("unmarshal gemini request failed: %v", err)
 	}
 
-	if len(req.Contents) != 2 {
-		t.Fatalf("expected 2 contents, got %d", len(req.Contents))
+	if len(req.Contents) != 3 {
+		t.Fatalf("expected 3 contents, got %d", len(req.Contents))
 	}
 
-	// Tool response part must have exact name "plugin:claude-mem:mcp-search"
-	respPart := req.Contents[1].Parts[0]
+	respPart := req.Contents[2].Parts[0]
 	if respPart.FunctionResponse == nil {
 		t.Fatal("expected functionResponse part")
 	}

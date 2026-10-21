@@ -152,10 +152,6 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		acceptStatuses: []int{http.StatusBadRequest},
 		refreshable:    true,
 	},
-	"gemini-cli": {
-		url: googleUserinfoURL, method: http.MethodGet,
-		authHeader: "Authorization", authPrefix: "Bearer ", refreshable: true,
-	},
 	"antigravity": {
 		url: googleUserinfoURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ", refreshable: true,
@@ -491,8 +487,8 @@ func anthropicProbeMessagesURL(base string) string {
 	return base + "/v1/messages"
 }
 
-// probeOAuthConnection ports testOAuthConnection, including the gemini-cli /
-// antigravity cloud-code probe and cline's users/me probe.
+// probeOAuthConnection ports testOAuthConnection, including the antigravity
+// cloud-code probe and cline's users/me probe.
 func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *models.ProviderConnection, data connectionProbeData, client *http.Client) probeOutcome {
 	provider := providers.ResolveAlias(conn.Provider)
 	cfg, ok := oauthProbeConfigs[provider]
@@ -543,8 +539,8 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 	}
 
 	switch provider {
-	case "gemini-cli", "antigravity":
-		attempt := probeCloudCodeAssist(ctx, client, provider, accessToken)
+	case "antigravity":
+		attempt := probeCloudCodeAssist(ctx, client, accessToken)
 		if attempt.valid {
 			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens}
 		}
@@ -553,7 +549,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 			if retryTokens == nil || retryTokens.AccessToken == "" {
 				return probeOutcome{message: "Token invalid or revoked"}
 			}
-			retry := probeCloudCodeAssist(ctx, client, provider, retryTokens.AccessToken)
+			retry := probeCloudCodeAssist(ctx, client, retryTokens.AccessToken)
 			if retry.valid {
 				return probeOutcome{valid: true, refreshed: true, tokens: retryTokens}
 			}
@@ -772,11 +768,8 @@ func classifyOAuthProbe(status int, cfg oauthProbeConfig) oauthProbeAttempt {
 }
 
 // probeCloudCodeAssist ports probeCloudCodeAssistAccess.
-func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, accessToken string) oauthProbeAttempt {
-	userAgent := "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0"
-	if provider == "antigravity" {
-		userAgent = "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
-	}
+func probeCloudCodeAssist(ctx context.Context, client *http.Client, accessToken string) oauthProbeAttempt {
+	userAgent := "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
 	status, body, err := connectionProbeDo(ctx, client, http.MethodPost, cloudCodeAssistProbeURL, map[string]string{
 		"Authorization": "Bearer " + accessToken,
 		"Content-Type":  "application/json",

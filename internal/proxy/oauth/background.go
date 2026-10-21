@@ -30,7 +30,6 @@ const (
 // accounts cannot hammer the shared token endpoint.
 var sensitiveProviders = map[string]bool{
 	"antigravity": true,
-	"gemini-cli":  true,
 }
 
 var (

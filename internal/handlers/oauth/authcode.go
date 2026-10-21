@@ -33,23 +33,6 @@ type authcodeConfig struct {
 }
 
 var authcodeProviders = map[string]*authcodeConfig{
-	"gemini-cli": {
-		providers:    []string{"gemini-cli"},
-		clientID:     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-		clientEnv:    "GEMINI_CLI_OAUTH_CLIENT_ID",
-		secret:       "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",
-		secretEnv:    "GEMINI_CLI_OAUTH_CLIENT_SECRET",
-		authorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
-		tokenURL:     "https://oauth2.googleapis.com/token",
-		scopes: []string{
-			"https://www.googleapis.com/auth/cloud-platform",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-		userInfoURL: "https://www.googleapis.com/oauth2/v1/userinfo",
-		connPrefix:  "gc-",
-		display:     "Gemini CLI",
-	},
 	"iflow": {
 		providers:    []string{"iflow"},
 		clientID:     "10009311001",
@@ -89,12 +72,12 @@ func (c *authcodeConfig) creds() (id, secret string) {
 }
 
 // HandleAuthCodeAuthorize returns the authorization URL.
-// GET /api/oauth/authcode/authorize?provider=gemini-cli|iflow&redirect_uri=...&state=...
+// GET /api/oauth/authcode/authorize?provider=iflow&redirect_uri=...&state=...
 func (h *OAuthHandler) HandleAuthCodeAuthorize(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	cfg := authcodeLookup(provider)
 	if cfg == nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unsupported provider (want gemini-cli|iflow)")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unsupported provider (want iflow)")
 		return
 	}
 	clientID, _ := cfg.creds()
@@ -111,10 +94,6 @@ func (h *OAuthHandler) HandleAuthCodeAuthorize(w http.ResponseWriter, r *http.Re
 	}
 	if len(cfg.scopes) > 0 {
 		params.Set("scope", strings.Join(cfg.scopes, " "))
-		if provider == "gemini-cli" {
-			params.Set("access_type", "offline")
-			params.Set("prompt", "consent")
-		}
 	}
 	for k, v := range cfg.extraAuth {
 		params.Set(k, v)
@@ -145,7 +124,7 @@ func (h *OAuthHandler) HandleAuthCodeExchange(w http.ResponseWriter, r *http.Req
 	}
 	cfg := authcodeLookup(body.Provider)
 	if cfg == nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unsupported provider (want gemini-cli|iflow)")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unsupported provider (want iflow)")
 		return
 	}
 	if body.Code == "" {

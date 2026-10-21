@@ -86,7 +86,7 @@
   let isOAuth = $derived(selectedCatalogItem?.category === 'oauth')
   let isClineOAuth = $derived(providerId === 'cline' || providerId === 'clinepass')
   let isPKCEOAuth = $derived(providerId === 'claude' || providerId === 'codex' || providerId === 'xai' || providerId === 'gitlab')
-  let isAuthCodeOAuth = $derived(providerId === 'gemini-cli' || providerId === 'iflow')
+  let isAuthCodeOAuth = $derived(providerId === 'iflow')
   let isCustomOAuth = $derived(providerId === 'trae' || providerId === 'windsurf' || providerId === 'zed')
   // Upstream parity: providers with authModes ["apikey","oauth"] offer both an
   // OAuth login and a manual API Key button (data-driven, category-independent

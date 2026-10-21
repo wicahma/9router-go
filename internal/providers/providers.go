@@ -711,11 +711,6 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
-	"gemini-cli": {
-		BaseURL:    "https://daily-cloudcode-pa.googleapis.com/v1internal",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
-	},
 	"google-pse": {
 		BaseURL:    "https://www.googleapis.com/customsearch/v1",
 		AuthHeader: "Authorization",

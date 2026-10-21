@@ -137,7 +137,7 @@ const (
 // (registry features.usage).
 var usageSupportedProviders = []string{
 	"antigravity", "claude", "codebuddy-cn", "codebuddy-intl", "codex",
-	"commandcode", "deepseek", "gemini-cli", "github", "glm", "glm-cn",
+	"commandcode", "deepseek", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
 	"opencode-go", "qoder", "trae", "vercel-ai-gateway", "xiaomi-mimo", "zed",
 }
@@ -738,85 +738,6 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		}
 		var modelsList []modelItem
 		for k, m := range agResp.Models {
-			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
-				continue
-			}
-			displayName := m.DisplayName
-			if displayName == "" {
-				displayName = k
-			}
-			metadata, _ := providers.GetModelMetadata(conn.Provider, k)
-			item := modelItem{
-				ID:   k,
-				Name: displayName,
-				Capabilities: map[string]bool{
-					"vision":    m.SupportsImages,
-					"reasoning": m.SupportsThinking,
-				},
-			}
-			if metadata != nil {
-				item.InputCostPer1M = metadata.InputCostPer1M
-				item.OutputCostPer1M = metadata.OutputCostPer1M
-				item.CacheCostPer1M = metadata.CacheCostPer1M
-				item.ContextWindow = metadata.ContextWindow
-				item.MaxOutputTokens = metadata.MaxOutputTokens
-			}
-			modelsList = append(modelsList, item)
-		}
-		sort.Slice(modelsList, func(i, j int) bool {
-			return modelsList[i].ID < modelsList[j].ID
-		})
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"provider":     conn.Provider,
-			"connectionId": conn.ID,
-			"models":       modelsList,
-		})
-		return
-	}
-
-	if conn.Provider == "gemini-cli" {
-		token := connData.AccessToken
-		if token == "" {
-			token = connData.APIKey
-		}
-		if token == "" {
-			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
-			return
-		}
-		projectID := ""
-		if connData.ProviderSpecificData != nil {
-			if p, ok := connData.ProviderSpecificData["projectId"].(string); ok && p != "" {
-				projectID = p
-			}
-		}
-		reqPayload, _ := json.Marshal(map[string]any{"project": projectID})
-		headers := map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + token,
-		}
-		status, body, err := validateProbeDo(r.Context(), http.MethodPost, "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", headers, reqPayload)
-		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch gemini-cli models: "+err.Error())
-			return
-		}
-		if status != http.StatusOK {
-			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
-			return
-		}
-		var resp struct {
-			Models map[string]struct {
-				DisplayName      string `json:"displayName"`
-				SupportsImages   bool   `json:"supportsImages"`
-				SupportsThinking bool   `json:"supportsThinking"`
-				IsInternal       bool   `json:"isInternal"`
-			} `json:"models"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid JSON from gemini-cli models")
-			return
-		}
-		var modelsList []modelItem
-		for k, m := range resp.Models {
 			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
 				continue
 			}

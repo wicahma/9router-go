@@ -10,8 +10,7 @@ import (
 func TestHandleAuthCodeAuthorize_shapes(t *testing.T) {
 	handler := NewOAuthHandler(nil)
 	cases := map[string][]string{
-		"gemini-cli": {"accounts.google.com/o/oauth2/v2/auth", "681255809395", "access_type=offline", "cloud-platform"},
-		"iflow":      {"iflow.cn/oauth", "loginMethod=phone", "type=phone", "10009311001"},
+		"iflow": {"iflow.cn/oauth", "loginMethod=phone", "type=phone", "10009311001"},
 	}
 	for provider, wants := range cases {
 		req := httptest.NewRequest("GET", "/api/oauth/authcode/authorize?provider="+provider, nil)

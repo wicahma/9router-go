@@ -156,10 +156,6 @@ describe('providers & media separation', () => {
     assert.strictEqual(p.noAuth, true)
   })
 
-  it('matches upstream free category for gemini-cli', () => {
-    assert.strictEqual(PROVIDER_CATALOG.find((p) => p.id === 'gemini-cli')?.category, 'free')
-  })
-
   it('includes hidden mmf provider (upstream parity)', () => {
     const p = PROVIDER_CATALOG.find((e) => e.id === 'mmf')
     assert.ok(p)

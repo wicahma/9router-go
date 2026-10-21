@@ -34,7 +34,6 @@ var RegistryAliases = map[string]string{
 	"fal-ai":            "fal",
 	"featherless":       "fl",
 	"fish-audio":        "fish",
-	"gemini-cli":        "gc",
 	"github":            "gh",
 	"google-pse":        "gpse",
 	"grok-cli":          "gcli",
